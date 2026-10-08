@@ -1,0 +1,7 @@
+.azure
+.venv/
+__pycache__/
+.learning-coach/
+.env
+*.env
+.DS_Store
