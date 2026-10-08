@@ -1,177 +1,117 @@
-# Learning Coach — five-agent runtime
+# Edu-Agent 学习教练
 
-A Microsoft Foundry hosted learning coach built with Agent Framework. The existing project runs five real in-process agents: **coordinator, researcher, verifier, notes and visualizer**. The coordinator answers directly by default and requests a bounded tool path only when a capability is needed.
+一个面向教育场景的多 agent 对话系统，运行在 **Azure AI Foundry** 上，基于 Microsoft Agent Framework 构建。
+
+它要解决的问题不是"让 LLM 回答问题"——这件事直接调模型就能做——而是：**当模型输出本质上是概率性的、不可信的时候，一个教育产品如何被交付给用户。** 本项目给出的答案是：协议校验、能力分级、显式失败和可观测的意图决策。
+
+## 架构
+
+五个真实运行的 in-process agent，由主 agent 做任务编排：
 
 ```text
-learner → coordinator decide ── answer → validate → final four-field JSON
+learner → coordinator (decide) ── 直答 → 校验 → 最终四字段 JSON
                     │
-                    └─ tools → check reason + current-turn evidence
-                                    ↓
-                          selected research / quiz
-                                    ↓
-                     independent notes + visuals in parallel
-                                    ↓
-                        coordinator respond → validate
-                                    ↓
-                       commit → final four-field JSON
+                    └─ 需要工具 → 检索/查证（researcher + verifier）
+                    │             出题判分（quiz 状态机）
+                    │             笔记 + 可视化（并行、独立）
+                    ↓
+            coordinator (respond) → 运行时校验 → 发布 → 最终四字段 JSON
 ```
 
-## What is implemented
+- **coordinator**：意图识别、任务编排、面向学习者的回复
+- **researcher**：资料检索（默认 Wikipedia Action API，可选 Tavily）
+- **verifier**：信源交叉查证，输出证据分级
+- **notes**：学习笔记整理（错题归因、难点归纳）
+- **visualizer**：声明式互动图生成（模型不可提交可执行代码）
 
-- A normal direct answer completes the turn after one coordinator call, without a routine second `respond` call; format failures may still need the bounded retry below. Tool requests carry an enumerated reason and a quote from the current learner message; the program checks their consistency and quote origin, while semantic necessity still needs model evaluation. Existing program-managed quiz answers must go through grading.
-- Real search adapters: Wikipedia by default; optional Tavily when `TAVILY_API_KEY` is configured. Citations and quotations must come from retrieved records. Search failures are explicit; evidence grades are not factual guarantees.
-- Structured outputs and local Schema validation for every role, at most one format retry within the remaining budget, per-call/turn timeouts and a model-call budget. Native provider JSON mode is optional; runtime validation is always active.
-- Session-scoped task and quiz progress, including pause/stop, exactly one question at a time, private answer keys and retry deduplication. Generated quiz answers still require teaching-quality evaluation.
-- Recoverable quiz routing: an unambiguous answer to a pending question is graded even if a structurally valid `decide` chooses the wrong route. The program rebuilds a minimal continuation from saved quiz state, without another `decide` call, research or visuals; opt-in notes may record the trusted answer evidence. Pause/end/stop take priority, ambiguous answers are not forced, and real model failures still use the existing fallback.
-- Opt-in SQLite learning notes with quote evidence and provenance. `/memory on` enables, `/memory off` pauses, `/forget` deletes this session's saved notes and visual artifacts. Uncalibrated mastery stays unknown; observations do not imply validated ability.
-- Four declarative visuals rendered by application-owned HTML/JavaScript: comparisons, processes, flashcards and linear functions. The model cannot supply executable code. Artifacts expire after 24 hours.
-- One validated public response: `schema_version`, `intent`, `message`, `next_step`. Only accepted final intent is logged; no `log_intent` tool. Internal agent outputs never stream to the learner.
+## 核心设计决策
 
-`main.py` builds the pipeline and exposes it through `ResponsesHostServer`. The coordinator prompt is `instructions.md`; specialists use the existing `agents/` directory. `learning_coach/` owns routing, contracts, evidence validation, memory and rendering.
+这些是本仓库区别于"一个带工具的聊天 bot"的部分：
 
-Research is not a prerequisite for drawing a visual. The verifier runs only after real source material is retrieved. Emotion, boundary and clarification turns, explicit stopping or pausing, and disabled learning memory prevent the corresponding work from starting. Optional research, notes and visual capabilities reach a result or explicit failure state before the final reply; quiz or core failures use the fixed fallback. Independent notes and visual generation are awaited together, not detached background writes. Missing evidence does not trigger an unbounded attempt to run every role.
+1. **校验过的 wire protocol**。对外只有四字段协议（`schema_version / intent / message / next_step`，见 `response.schema.json`）。每个角色的模型输出都过本地 schema 校验，格式失败在调用预算内最多重试一次，仍失败则走固定兜底文案；笔记或可视化失败允许局部降级并在回复中明示（"这次未生成可用的互动图"）。
+2. **意图分类体系**。七类学习意图（讲解/举例/练习/测验/笔记/可视化/边界与情绪），区分显式与隐式意图（`is_implicit`），复合意图由对话状态机承接。意图依据与归因分类的来源讨论见 `docs/multi-agent.md`。每轮只记录最终生效的意图，供离线评测。
+3. **信源查证而非"听起来对"**。引用必须来自实际检索到的记录；证据分级（verified / likely / disputed / unavailable）直接决定回复措辞和能否出图；资料不足时回复明确标注，不装作确定。
+4. **opt-in 学习记忆**。SQLite 存储学习笔记（带来源引用），`/memory on` 开启、`/memory off` 暂停、`/forget` 删除本会话全部记录。未校准的掌握度保持"未知"，观察记录不等于能力验证。
+5. **服务端出题状态机**。一次只出一道题，答案 key 是私有程序状态、永远不进模型上下文；未作答时不强推下一题；会话内支持暂停/继续/结束任务。
+6. **声明式可视化**。对比、流程、记忆卡、线性函数四种模板渲染为应用自持的 HTML/JS；模型只能填参数，不能写代码，互动图以 artifact 链接交付（本地可打开，云端网关暂不透传该路由，见"已知限制"）。
+7. **可观测性**。每次模型调用记录 `agent_stage`（角色/阶段/尝试/耗时，不含消息内容）；意图日志按轮哈希脱敏。评测用例在 `evals/cases.jsonl`。
 
-Protocol transcripts use an in-memory store. Automatic cloud telemetry and message capture are disabled; application diagnostics omit message contents. The repository has a local chat prototype in `web/`, unchanged by this routing update; phase progress, word-by-word streaming and production UI acceptance remain unfinished. This is a **single-process local implementation**: authenticated accounts, cross-session learner identity, distributed session recovery and deployment are not included. Foundry gateway access to custom artifact URLs requires deployment validation.
+## 快速开始
 
-Each model call records `agent_stage` with role, phase, attempt, outcome and elapsed milliseconds. These logs exclude message contents and describe individual model calls, not full-turn latency or search-network time.
+前置：Python 3.13+、[uv](https://docs.astral.sh/uv/)、Azure 凭据，以及按 `src/agent-framework-agent-with-local-tools-responses/.env.example` 配置的 `.env`。
 
-## Run from the repository root
-
-Use the existing Foundry endpoint, model deployment and credentials documented in the source `.env.example`. Run the same pipeline interactively:
+本地跑 agent（Responses 协议服务，端口 8088，含互动图路由）：
 
 ```bash
-uv run --project src/agent-framework-agent-with-local-tools-responses --locked --group dev python src/agent-framework-agent-with-local-tools-responses/demo.py
+uv run --project src/agent-framework-agent-with-local-tools-responses --locked --group dev \
+  python src/agent-framework-agent-with-local-tools-responses/main.py
 ```
 
-Start the Responses host and artifact route in a separate terminal when needed:
+本地聊天页（端口 8600，无状态转发 + 对话 UI）：
 
 ```bash
-uv run --project src/agent-framework-agent-with-local-tools-responses --locked --group dev python src/agent-framework-agent-with-local-tools-responses/main.py
+python3 web/serve.py   # 打开 http://localhost:8600
 ```
 
-Local state defaults to the source directory's `.learning-coach/`. Set `LEARNING_COACH_DATA_DIR` for another local directory, and `LEARNING_COACH_PUBLIC_BASE_URL` for the actual artifact-serving URL. Set `LEARNING_COACH_NATIVE_JSON=1` only after checking the deployed model's schema support. No new cloud resources are created by these changes.
-
-## Tests and acceptance
-
-`jsonschema==4.26.0` is explicitly pinned for runtime validation and in the `dev` group. From the repository root:
+交互式脚本（不走服务）：
 
 ```bash
-uv run --project src/agent-framework-agent-with-local-tools-responses --locked --group dev python -m unittest discover -s tests -v
+uv run --project src/agent-framework-agent-with-local-tools-responses --locked --group dev \
+  python src/agent-framework-agent-with-local-tools-responses/demo.py
 ```
 
-The suite exercises real SDK interfaces with fake model/search responses, including the single-call direct-answer path, selective tool routing, storage, evidence, quiz replay and rendering. It does not call a live model, establish teaching accuracy or measure production latency. The host still sends one complete validated result; this change does not implement SSE progress messages or word-by-word answers. Validate every saved real final response separately:
+部署到 Foundry：`azd deploy`（详见下文 azd 一节）。本地状态默认写在源码目录 `.learning-coach/`，可用 `LEARNING_COACH_DATA_DIR` 改位置。
+
+## 测试与验收
 
 ```bash
-uv run --project src/agent-framework-agent-with-local-tools-responses --locked --group dev python scripts/validate_responses.py final-responses.jsonl --format raw-jsonl --failures failures.jsonl
+uv run --project src/agent-framework-agent-with-local-tools-responses --locked --group dev \
+  python -m unittest discover -s tests -v
 ```
 
-See [implementation and limits](docs/multi-agent.md), [architecture](docs/edu-agent-architecture.md) and [behavioral acceptance](docs/acceptance-v1.5.md). Earlier Prompt drafts and runtime reviews are historical records, not the current capability specification.
+测试套件用 fake 模型/检索响应覆盖真实 SDK 接口：直答单调用路径、选择性工具路由、存储、证据校验、测验回放、渲染。不调用真实模型，不评估教学准确性。当前 165 个用例全绿。
 
-## Option 1: Azure Developer CLI (`azd`)
-
-### Prerequisites
-
-1. **Azure Developer CLI (`azd`)** — [Install azd](https://learn.microsoft.com/en-us/azure/developer/azure-developer-cli/install-azd)
-2. Install the AI agent extension:
-   ```bash
-   azd ext install microsoft.foundry
-   ```
-3. Authenticate:
-   ```bash
-   azd auth login
-   ```
-
-### Initialize the agent project
-
-The following initialization command creates the upstream tools sample. If you already have this education repository, skip initialization and use its existing project; the upstream manifest does not include these v1.5 education changes. To start from the upstream sample in a new folder:
+真实响应的离线校验：
 
 ```bash
-mkdir my-tools-agent && cd my-tools-agent
-
-azd ai agent init -m https://github.com/microsoft-foundry/foundry-samples/blob/main/samples/python/hosted-agents/agent-framework/responses/02-tools/azure.yaml
+uv run --project src/agent-framework-agent-with-local-tools-responses --locked --group dev \
+  python scripts/validate_responses.py final-responses.jsonl --format raw-jsonl --failures failures.jsonl
 ```
 
-Follow the prompts to configure your Foundry project and model deployment. If you don't have an existing Foundry project, `azd ai agent init` will guide you through creating one.
+## 已知限制（诚实清单）
 
-### Provision Azure resources (if needed)
+- **无流式输出**：一轮一个完整文本。
+- **单进程本地实现**：无账号体系、无跨会话学习者身份、无分布式会话恢复。
+- **云端互动图打不开**：artifact 链接指向 `localhost:8088`，Foundry 网关不透传自定义路由（实测多种路径 404）；后续需将 ArtifactStore 换成 blob 存储。
+- **评测进行中**：意图分类与隐式意图识别的准确率尚未量化（`is_implicit` 误标问题待评测集验证）。
+- 出题的教学质量、长期学习效果未经真实用户验证。
 
-If you don't already have a Foundry project and model deployment:
+## 文档导航
+
+| 文件 | 内容 |
+| --- | --- |
+| `docs/multi-agent.md` | 多 agent 实现细节与设计取舍 |
+| `docs/edu-agent-architecture.md` | 架构说明 |
+| `docs/acceptance-v1.5.md` | 行为验收标准 |
+| `docs/frontend-handoff.md` | 前端对接说明（协议、运行模式、已知边界） |
+| `evals/cases.jsonl` | 评测用例 |
+
+## 部署（Azure Developer CLI）
+
+前置：`azd` + `azd ext install microsoft.foundry` + `azd auth login`。
 
 ```bash
-azd provision
-```
-
-### Run the agent locally
-
-```bash
-azd ai agent run
-```
-
-The agent host will start on `http://localhost:8088`.
-
-### Invoke the local agent
-
-In a separate terminal, from the project directory:
-
-```bash
+azd ai agent run                          # 本地运行（8088）
 azd ai agent invoke --local "请围绕一元一次方程考考我，一次只出一道题。"
-```
-
-### Deploy to Foundry
-
-Once tested locally, deploy to Microsoft Foundry:
-
-```bash
-azd deploy
-```
-
-For the full deployment guide, see [Deploy a hosted agent](https://learn.microsoft.com/en-us/azure/foundry/agents/how-to/deploy-hosted-agent).
-
-### Invoke the deployed agent
-
-```bash
+azd deploy                                # 部署到 Foundry
 azd ai agent invoke "请围绕一元一次方程考考我，一次只出一道题。"
 ```
 
-## Option 2: VS Code (Foundry Toolkit)
+也可以用 VS Code Foundry Toolkit 扩展调试与部署（F5 启动 + Agent Inspector）。完整指南见 [Deploy a hosted agent](https://learn.microsoft.com/en-us/azure/foundry/agents/how-to/deploy-hosted-agent)。
 
-### Prerequisites
+## Roadmap
 
-1. **VS Code** with the **[Foundry Toolkit](https://marketplace.visualstudio.com/items?itemName=ms-windows-ai-studio.windows-ai-studio)** extension installed.
-2. For debugging Python in VS Code, install the **[Python](https://marketplace.visualstudio.com/items?itemName=ms-python.python)** extension pack.
-
-### Set up the Python virtual environment
-
-- With Python 3.13 or later and [pipx](https://pipx.pypa.io/stable/installation/), install uv outside the project environment, then let uv create and synchronize the locked environment:
-
-  ```bash
-   pipx install uv==0.11.7
-   uv sync --project src/agent-framework-agent-with-local-tools-responses --locked --group dev --python 3.13
-  ```
-- Open the Command Palette (`Ctrl+Shift+P`), run **Python: Select Interpreter**, and select `src/agent-framework-agent-with-local-tools-responses/.venv` created by uv. Run the commands above from the repository root.
-
-### Run and debug the agent
-
-Press **F5** to start the agent. The agent starts and the **Agent Inspector** opens automatically. Chat with the agent in the Inspector. During protocol acceptance, inspect the raw final JSON. The separate `web/` local chat prototype reads the completed response and renders its visible fields; it is unchanged by this update and still requires production acceptance.
-
-### Or run manually, then open the Inspector
-
-1. Set the required environment variables and sign in to Azure with the Azure CLI (`az login`).
-2. Start the agent: `uv run --project src/agent-framework-agent-with-local-tools-responses --locked --group dev python src/agent-framework-agent-with-local-tools-responses/main.py` (listens on `http://localhost:8088`).
-3. Command Palette (`Ctrl+Shift+P`) → **Foundry Toolkit: Open Agent Inspector**, then send a message to test.
-
-### Deploy to Foundry
-
-1. Open the Command Palette (`Ctrl+Shift+P`) and run **Foundry Toolkit: Deploy Hosted Agent**. The extension opens a **Deploy Hosted Agent** wizard and reads `agent.yaml` to auto-populate settings.
-2. If prompted, complete **Foundry Project Setup** to select subscription and project.
-3. On the **Basics** tab, choose deployment method (**Code** or **Container**) and confirm the agent name.
-4. On **Review + Deploy**, confirm runtime details, pick **CPU and Memory** size, and click **Deploy**.
-5. After deployment, invoke the agent in the Agent Playground and stream live logs from the **Logs** tab.
-
-## Next steps
-
-- [Quickstart: Create a hosted agent](https://learn.microsoft.com/en-us/azure/foundry/agents/quickstarts/quickstart-hosted-agent) — end-to-end walkthrough using `azd`
-- [Tool catalog](https://learn.microsoft.com/en-us/azure/foundry/agents/concepts/tool-catalog) — browse available tools to extend your agent (Bing Search, Azure AI Search, file search, code interpreter, and more)
-- [Manage hosted agents](https://learn.microsoft.com/en-us/azure/foundry/agents/how-to/manage-hosted-agent) — monitor and manage deployed agents
-- [Basic agent](../01-basic/) — minimal agent with no tools
-- [Use Foundry Toolbox](../04-foundry-toolbox/) — sample with Azure Foundry Toolbox integration
+- 意图识别与归因的量化评测（评测集已建，跑分与阈值待定）
+- 互动图产物迁移到 blob 存储，云端可打开
+- 流式输出与生产级前端
+- 真实用户试用与迭代记录
