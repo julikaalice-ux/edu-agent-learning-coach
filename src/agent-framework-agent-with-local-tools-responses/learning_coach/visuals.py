@@ -59,6 +59,10 @@ VISUAL_SCHEMA = {
             "x_min": {"type": "number", "minimum": -20, "maximum": 20},
             "x_max": {"type": "number", "minimum": -20, "maximum": 20},
         }),
+        _variant("illustration", {
+            "prompt": _text(800),
+            "alt": _text(200),
+        }),
     ],
 }
 
@@ -159,10 +163,16 @@ _SCRIPT = """
 """
 
 
-def render_visual(spec: dict) -> str:
+def render_visual(spec: dict, image: bytes | None = None) -> str:
     """Validate a bounded declarative spec and render a self-contained page."""
     if not isinstance(spec, dict) or not _VALIDATOR.is_valid(spec):
         raise ValueError("invalid_visual_spec")
+    if spec["kind"] == "illustration":
+        if image is None:
+            raise ValueError("illustration_requires_image")
+        from .illustrate import image_page_html
+
+        return image_page_html(spec, image)
     if spec["kind"] == "linear_function":
         if not all(math.isfinite(spec[key]) for key in ("slope", "intercept", "x_min", "x_max")):
             raise ValueError("invalid_visual_number")
@@ -244,9 +254,9 @@ class ArtifactStore:
                 db.execute("DELETE FROM artifacts WHERE expires_at <= ?", (now,))
             self._prepared = {token: item for token, item in self._prepared.items() if item[4] > now}
 
-    def prepare(self, session_id: str, spec: dict) -> dict:
+    def prepare(self, session_id: str, spec: dict, image: bytes | None = None) -> dict:
         owner = self._owner(session_id)
-        document = render_visual(spec)
+        document = render_visual(spec, image=image)
         with self._lock:
             for _ in range(10):
                 token = secrets.token_urlsafe(24)
