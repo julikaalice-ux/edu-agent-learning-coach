@@ -17,7 +17,10 @@ SCOPE="/subscriptions/$SUBSCRIPTION/resourceGroups/$RESOURCE_GROUP/providers/Mic
 az account set --subscription "$SUBSCRIPTION"
 
 for ROLE in "Azure AI Developer" "Cognitive Services User"; do
-    if az role assignment list --scope "$SCOPE" --assignee "$SP_OBJECT_ID" --role "$ROLE" --query "[0]" -o tsv | grep -q .; then
+    # Filter by principalId locally: --assignee would call Microsoft Graph,
+    # which is unreliable from some networks and makes the script hang.
+    if az role assignment list --scope "$SCOPE" \
+            --query "[?principalId=='$SP_OBJECT_ID'&&roleDefinitionName=='$ROLE']" -o tsv | grep -q .; then
         echo "already assigned: $ROLE"
     else
         az role assignment create \
