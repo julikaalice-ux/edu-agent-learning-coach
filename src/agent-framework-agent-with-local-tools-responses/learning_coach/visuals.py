@@ -63,6 +63,17 @@ VISUAL_SCHEMA = {
             "prompt": _text(800),
             "alt": _text(200),
         }),
+        _variant("diagram", {
+            "nodes": {"type": "array", "minItems": 1, "maxItems": 12,
+                      "items": _object({"id": _text(40), "label": _text(80),
+                                         "x": {"type": "number", "minimum": 0, "maximum": 100},
+                                         "y": {"type": "number", "minimum": 0, "maximum": 100}})},
+            "edges": {"type": "array", "minItems": 0, "maxItems": 24,
+                      "items": {"type": "object",
+                                "properties": {"from": _text(40), "to": _text(40),
+                                               "label": {"type": "string", "maxLength": 60}},
+                                "required": ["from", "to"], "additionalProperties": False}},
+        }),
     ],
 }
 
@@ -163,6 +174,56 @@ _SCRIPT = """
 """
 
 
+def _diagram_svg(spec: dict) -> str:
+    """Render a node/edge diagram as static, escaped SVG (no scripts, no links)."""
+    nodes = {}
+    for node in spec["nodes"]:
+        if node["id"] in nodes:
+            raise ValueError("duplicate_node_id")
+        nodes[node["id"]] = node
+    for edge in spec["edges"]:
+        if edge["from"] not in nodes or edge["to"] not in nodes:
+            raise ValueError("diagram_dangling_edge")
+
+    width, height, pad = 900, 560, 80
+
+    def position(node):
+        return (pad + node["x"] / 100 * (width - 2 * pad),
+                pad + node["y"] / 100 * (height - 2 * pad))
+
+    parts = [
+        f'<svg viewBox="0 0 {width} {height}" role="img" '
+        f'aria-label="{html.escape(spec["title"], quote=True)}" '
+        'xmlns="http://www.w3.org/2000/svg">',
+        '<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" '
+        'markerHeight="7" orient="auto-start-reverse">'
+        '<path d="M 0 0 L 10 5 L 0 10 z" fill="#7694a9"/></marker></defs>',
+    ]
+    for edge in spec["edges"]:
+        x1, y1 = position(nodes[edge["from"]])
+        x2, y2 = position(nodes[edge["to"]])
+        parts.append(
+            f'<line x1="{x1:.0f}" y1="{y1:.0f}" x2="{x2:.0f}" y2="{y2:.0f}" '
+            'stroke="#7694a9" stroke-width="2" marker-end="url(#arrow)"/>')
+        if edge.get("label"):
+            mid_x, mid_y = (x1 + x2) / 2, (y1 + y2) / 2
+            parts.append(
+                f'<text x="{mid_x:.0f}" y="{mid_y - 8:.0f}" text-anchor="middle" '
+                'font-size="13" fill="#425d70">'
+                f'{html.escape(edge["label"])}</text>')
+    for node in spec["nodes"]:
+        x, y = position(node)
+        label = html.escape(node["label"])
+        box_w = min(240, max(96, len(node["label"]) * 15 + 28))
+        parts.append(
+            f'<g><rect x="{x - box_w / 2:.0f}" y="{y - 24:.0f}" width="{box_w:.0f}" height="48" rx="12" '
+            'fill="#e8f1f6" stroke="#8da6b8" stroke-width="1.5"/>'
+            f'<text x="{x:.0f}" y="{y + 5:.0f}" text-anchor="middle" font-size="15" '
+            f'fill="#18334b">{label}</text></g>')
+    parts.append("</svg>")
+    return "".join(parts)
+
+
 def render_visual(spec: dict, image: bytes | None = None) -> str:
     """Validate a bounded declarative spec and render a self-contained page."""
     if not isinstance(spec, dict) or not _VALIDATOR.is_valid(spec):
@@ -173,6 +234,19 @@ def render_visual(spec: dict, image: bytes | None = None) -> str:
         from .illustrate import image_page_html
 
         return image_page_html(spec, image)
+    if spec["kind"] == "diagram":
+        # Static SVG: no scripts, no dynamic data, so a simpler page suffices.
+        title = html.escape(spec["title"], quote=True)
+        return (
+            '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width,initial-scale=1">'
+            '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; '
+            'style-src \'unsafe-inline\'">'
+            '<meta name="referrer" content="no-referrer"><title>' + title + '</title>'
+            '<style>' + _CSS + '</style></head><body><main><h1>' + title + '</h1>'
+            + _diagram_svg(spec) +
+            '</main></body></html>'
+        )
     if spec["kind"] == "linear_function":
         if not all(math.isfinite(spec[key]) for key in ("slope", "intercept", "x_min", "x_max")):
             raise ValueError("invalid_visual_number")
