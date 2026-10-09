@@ -21,7 +21,16 @@ import sys
 import uuid
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1] / "src/agent-framework-agent-with-local-tools-responses"
+def _find_root() -> Path:
+    """Local dev runs from space/ next to src/; deployed builds are flat."""
+    here = Path(__file__).resolve().parent
+    nested = here.parents[0] / "src/agent-framework-agent-with-local-tools-responses"
+    if nested.is_dir():
+        return nested
+    return here
+
+
+ROOT = _find_root()
 sys.path.insert(0, str(ROOT))
 
 import gradio as gr
@@ -78,11 +87,19 @@ def iframe_for(document: str) -> str:
 async def respond(user_text, session):
     user_text = (user_text or "").strip()
     if not user_text:
-        return session, session["chat"], session["panel"], ""
+        yield session, session["chat"], session["panel"], ""
+        return
     if session.get("locked"):
-        return session, session["chat"], session["panel"], ""
+        yield session, session["chat"], session["panel"], ""
+        return
     session["locked"] = True
     try:
+        # First token: acknowledge immediately so the UI never looks frozen.
+        thinking = session["chat"] + [
+            {"role": "user", "content": user_text},
+            {"role": "assistant", "content": "我先想想…"},
+        ]
+        yield session, thinking, session["panel"], ""
         session["history"].append({"role": "user", "text": user_text})
         output, new_state = await asyncio.wait_for(
             PIPELINE.run(list(session["history"]), session_id=session["session_id"],
@@ -108,7 +125,13 @@ async def respond(user_text, session):
             {"role": "user", "content": user_text},
             {"role": "assistant", "content": text},
         ]
-        return session, session["chat"], panel, ""
+        yield session, session["chat"], panel, ""
+    except Exception:
+        session["chat"] = session["chat"] + [
+            {"role": "user", "content": user_text},
+            {"role": "assistant", "content": "这次处理没有顺利完成，请再试一次。"},
+        ]
+        yield session, session["chat"], session["panel"], ""
     finally:
         session["locked"] = False
 
@@ -156,7 +179,10 @@ def build_app() -> gr.Blocks:
         session = gr.State(new_session()[0])
 
         async def on_send(text, sess):
-            return await respond(text, sess)
+            # respond is an async generator: first yields the "我先想想…"
+            # placeholder, then the completed turn.
+            async for result in respond(text, sess):
+                yield result
 
         send.click(on_send, [input_box, session], [session, chatbot, panel, input_box])
         input_box.submit(on_send, [input_box, session], [session, chatbot, panel, input_box])
@@ -167,4 +193,4 @@ def build_app() -> gr.Blocks:
 
 
 if __name__ == "__main__":
-    build_app().launch(server_name="0.0.0.0", server_port=7860)
+    build_app().launch(server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 8000)))
