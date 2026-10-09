@@ -11,7 +11,8 @@ import sqlite3
 
 from .contracts import QUIZ_SCHEMA, ContractError, decision_schema, grade_choice, public_quiz, validate
 from .memory import NOTES_SCHEMA
-from .routing import (conservative_participant, empty_results, recover_practice_route,
+from .routing import (conservative_participant, empty_results, recover_explicit_visual_route,
+                      recover_practice_route,
                       recover_quiz_route, require_finished, select_tools)
 from .runner import BUDGET, CallBudget, StageFailure
 from .visuals import VISUAL_SCHEMA
@@ -152,6 +153,10 @@ class LearningPipeline:
             decision, practice_repaired = recover_practice_route(decision, state, messages[-1]["text"])
             if practice_repaired:
                 repair_kind = "practice_without_tools"
+        if repair_kind is None:
+            decision, visual_repaired = recover_explicit_visual_route(decision, messages[-1]["text"])
+            if visual_repaired:
+                repair_kind = "explicit_visual_without_tools"
         if decision["mode"] == "answer":
             output = decision["response"]
             task = decision["task"]

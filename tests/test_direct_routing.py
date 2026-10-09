@@ -62,6 +62,29 @@ class DirectRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.research.calls, [])
         self.assertEqual(self.artifacts.prepared, [])
 
+    async def test_explicit_visual_keyword_repairs_direct_answer_into_visual(self):
+        visual = {"kind": "diagram", "title": "细胞结构示意图",
+                  "nodes": [{"id": "a", "label": "细胞膜", "x": 50, "y": 20},
+                            {"id": "b", "label": "细胞核", "x": 50, "y": 80}],
+                  "edges": [{"from": "a", "to": "b"}]}
+        runner = FakeRunner([direct_decision("A")], visuals=[visual])
+        output, state = await self.pipeline(runner).run(
+            messages("画一张细胞结构的示意图"), session_id="s")
+        self.assert_wire(output)
+        roles = [(call["role"], call["payload"].get("phase")) for call in runner.calls]
+        self.assertIn(("visualizer", None), roles)
+        self.assertEqual(state["last_execution"]["tools"]["visual"], "published")
+        self.assertEqual(self.artifacts.committed[0][1]["spec"]["kind"], "diagram")
+
+    async def test_visual_opt_out_and_implicit_requests_are_not_forced(self):
+        for text in ("不用图，文字解释一下光合作用", "这个概念我不太懂"):
+            with self.subTest(text=text):
+                runner = FakeRunner([direct_decision("A")])
+                output, state = await self.pipeline(runner).run(messages(text), session_id="s")
+                self.assert_wire(output)
+                self.assertEqual(state["last_execution"]["mode"], "answer")
+        self.assertEqual(self.artifacts.prepared, [])
+
     async def test_each_requested_capability_runs_without_unselected_workers(self):
         cases = {
             "research": {"research_query": "分数定义"},

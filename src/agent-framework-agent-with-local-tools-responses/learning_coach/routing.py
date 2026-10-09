@@ -169,6 +169,56 @@ def recover_practice_route(decision, state, learner_text):
     return {"mode": "tools", "plan": validate(plan, PLAN_SCHEMA)}, True
 
 
+# Program-owned triggers: the coordinator's instructions demand a visual route
+# for these, but small models sometimes answer directly anyway (e.g. an ASCII
+# sketch). Recovery only fires on an explicit keyword in the learner's own
+# message, so implicit or declined requests are never forced.
+VISUAL_TRIGGERS = ("画图", "图片", "插图", "配图", "画面", "照片", "示意图", "结构图",
+                   "互动图", "可视化", "流程图", "思维导图")
+VISUAL_OPT_OUTS = ("不用图", "不要图", "别画", "不用画", "文字说明", "文字版")
+
+
+def _visual_quote(learner_text):
+    """Return a verbatim trigger quote from the learner's message, or None."""
+    text = learner_text.strip()
+    if any(opt in text for opt in VISUAL_OPT_OUTS):
+        return None
+    for trigger in VISUAL_TRIGGERS:
+        if trigger in text:
+            return trigger
+    return None
+
+
+def recover_explicit_visual_route(decision, learner_text):
+    """An explicit diagram/chart request must not be answered with plain text.
+
+    A structurally valid ``mode=answer`` whose message carries an explicit
+    visual keyword is rebuilt as the minimal visual plan. No extra model
+    request and no side effect happens here; the evidence quote is the
+    learner's own word, matching the ``explicit_visual`` reason contract.
+    """
+    if decision["mode"] != "answer":
+        return decision, False
+    task = decision["task"]
+    if task["end_task"] or task["pause_task"]:
+        return decision, False
+    quote = _visual_quote(learner_text)
+    if quote is None:
+        return decision, False
+    reasons = dict.fromkeys(TOOLS)
+    reasons["visual"] = {"code": "explicit_visual", "evidence_quote": quote}
+    plan = {
+        "intent": {"primary": "A", "is_implicit": False},
+        "research_query": None, "visual_request": learner_text.strip(),
+        "observe_learning": False,
+        "task_summary": task["task_summary"], "pause_task": False, "end_task": False,
+        "quiz_action": "none", "quiz_topic": None, "quiz_total": 3,
+        "difficulty": "简单", "participant": "learner",
+        "tool_reasons": reasons,
+    }
+    return {"mode": "tools", "plan": validate(plan, PLAN_SCHEMA)}, True
+
+
 def require_finished(results):
     """Do not publish a final response while a selected capability is pending."""
     if set(results) != set(TOOLS) or any(status not in TERMINAL_STATUS[name] for name, status in results.items()):
