@@ -210,7 +210,15 @@ class LearningPipeline:
                         "goal": plan["visual_request"], "research": research,
                         "profile": memory.get("profile", {}),
                     }, VISUAL_SCHEMA)
-                    artifact = self.artifacts.prepare(session_id, spec)
+                    image = None
+                    if spec["kind"] == "illustration":
+                        from .illustrate import generate_image
+
+                        image = await generate_image(spec["prompt"])
+                    # Only pass image when present so stores with the original
+                    # two-argument prepare() signature keep working unchanged.
+                    artifact = (self.artifacts.prepare(session_id, spec, image=image) if image is not None
+                                else self.artifacts.prepare(session_id, spec))
                     tool_results["visual"] = "ready"
                     return artifact
                 except (RuntimeError, ValueError, OSError, sqlite3.Error):

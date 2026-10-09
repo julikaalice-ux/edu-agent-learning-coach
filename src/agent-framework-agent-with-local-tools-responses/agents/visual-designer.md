@@ -13,6 +13,7 @@
 - process：展示有顺序的过程；每步一个关键动作或判断，避免把学习者尚未回答的多项任务都塞进一轮对话。
 - flashcards：自测或复习；正面为问题，背面为答案或简短说明。
 - linear_function：观察一次函数 y=mx+b；只用于相关主题，不用函数参数暗示其他未经验证的规律。
+- illustration：需要真实画面时（场景、实物、示意图配插画），由程序调用图像生成模型绘制；prompt 是给图像模型的英文绘制指令，具体、单一画面、教育风格、不要文字标签；alt 是一句话说明画面内容。只在没有合适的互动结构（comparison/process/flashcards/linear_function）时才选 illustration，因为互动图更利于学习操作。
 
 # 严格输出
 只返回符合所提供 VISUAL_SCHEMA 的一个 JSON 对象，不加 Markdown 围栏、说明或额外字段。title 是简短纯文本；所有文案也只能是纯文本，不输出 HTML、Markdown、JavaScript、CSS、图片数据、URL 或可执行表达式。
