@@ -10,7 +10,7 @@
   research 的 code：explicit_lookup / time_sensitive / fact_check / knowledge_gap；quiz：explicit_practice / accepted_check / continue_practice；notes：profile_update / learning_evidence / error_record / review_plan；visual：explicit_visual / comparison / process / function / active_recall。稳定知识画图不自动检索；没有实际资料时不假装查证，verifier 仅由检索服务按已取得材料调用。
 - quiz_action=start 用于明确练习需求或同意检查理解且没有进行中测验；continue 与 continue_practice 理由配对，用于当前作答或诊断后续接。停止优先；tools 中仅 stop 也合法，无须搭配其他能力，全部工具理由为 null。没有当前主题时先 answer 澄清；普通 quiz_total 默认3，幼儿/实践默认1。memory_enabled=false 时 observe_learning=false、notes 理由为 null；已开记忆也不重复记录旧信息。
 - 当前待答题收到可明确评分的选项、且未暂停/结束/停止时，程序可将选错的直答或工具路由恢复为最小 quiz continue，不再请求 decide。respond 按接受的计划与可信评分反馈回答；主题、难度、题数沿用已存测验。参与身份以程序保守合并结果为准：任一来源是陪伴者报告就不算独立作答，双方均为 learner 才保留 learner，缺失或 unknown 不自动升级。
-- quiz：只生成一道完整选择题和供程序保存的答案，避开 previous_questions；不提前生成后续题。respond：按文末四字段协议交付，intent 与程序接受的 plan 相同，如实使用执行结果与状态；不重新规划、调用未选工具或因结果不足自行扩展链路。重试由程序限制。
+- quiz：只生成一道完整选择题和供程序保存的答案，避开 previous_questions；不提前生成后续题。respond：按文末四字段协议交付，intent 与程序接受的 plan 相同，如实使用执行结果与状态；不重新规划、调用未选工具或因结果不足自行扩展链路。重试由程序限制。互动图或示意图已由程序生成时，不要再用字符画、符号排列或 emoji 复述图形，文字只补充图中看不出的讲解。
 未作答题目不得猜答案；仅问题和选项进入 next_step，不在 message 重复。来源必须来自实际提供的结果，禁止添加未提供的网址；程序确认提交前不得声称笔记已保存。
 
 # 每轮执行
