@@ -42,10 +42,25 @@ class LearningPipeline:
         self._recent = OrderedDict()
         self._accepted = OrderedDict()
 
-    async def run(self, messages, *, session_id, state=None, turn_id=None):
+    async def run(self, messages, *, session_id, state=None, turn_id=None,
+                  learner_id=None, returning_visitor=False):
+        """Run one turn.
+
+        session_id identifies this conversation. learner_id is an optional,
+        anonymous ID that the client keeps across conversations (for example in
+        the browser); learning records are stored under it so a returning
+        learner keeps their progress. Without it, records belong to the
+        conversation only. returning_visitor is a client hint that this device
+        has talked to the coach before; it only suppresses the first-meeting
+        introduction and grants nothing else.
+        """
         # IDs are supplied by the host/application, never by model output.
         if not isinstance(session_id, str) or not session_id or len(session_id) > 200:
             raise ValueError("invalid_session_id")
+        if learner_id is not None and (not isinstance(learner_id, str) or not learner_id.strip()
+                                       or len(learner_id) > 200):
+            raise ValueError("invalid_learner_id")
+        memory_key = learner_id or session_id
         clean = [{"role": m["role"], "text": m["text"][:12000]} for m in messages[-24:]
                  if m.get("role") in ("user", "assistant") and isinstance(m.get("text"), str)]
         if not clean or clean[-1]["role"] != "user" or not clean[-1]["text"].strip():
@@ -74,7 +89,8 @@ class LearningPipeline:
             token = BUDGET.set(CallBudget())
             try:
                 output, updated = await asyncio.wait_for(
-                    self._execute(clean, session_id, working, event_id), timeout=180,
+                    self._execute(clean, session_id, working, event_id, memory_key,
+                                  returning_visitor is True), timeout=180,
                 )
             except (StageFailure, ContractError, TimeoutError, OSError, ValueError, StorageError):
                 LOG.warning("learning_turn_failed")
@@ -101,7 +117,7 @@ class LearningPipeline:
                      "intent": output["intent"]}, ensure_ascii=False))
             return output, updated
 
-    async def _execute(self, messages, session_id, state, event_id):
+    async def _execute(self, messages, session_id, state, event_id, memory_key, returning_visitor):
         text = messages[-1]["text"].strip()
         if text in ("/memory on", "/memory off", "/forget"):
             if text == "/forget":
@@ -109,9 +125,9 @@ class LearningPipeline:
                     if key[0] == session_id:
                         del self._accepted[key]
                 complete = True
-                for remove in (self.store.clear, self.artifacts.delete_session):
+                for remove, key in ((self.store.clear, memory_key), (self.artifacts.delete_session, session_id)):
                     try:
-                        remove(session_id)
+                        remove(key)
                     except (OSError, StorageError):
                         complete = False
                         LOG.warning("forget_cleanup_incomplete")
@@ -122,7 +138,7 @@ class LearningPipeline:
             if not enabled:
                 state["memory_blocked"] = True
             try:
-                self.store.set_enabled(session_id, enabled)
+                self.store.set_enabled(memory_key, enabled)
             except StorageError:
                 if enabled:
                     return reply("未能开启记忆，本轮不会记录笔记。请稍后重试 /memory on。", "E"), state
@@ -143,13 +159,18 @@ class LearningPipeline:
         quiz = visible_state.get("quiz")
         if quiz and quiz.get("awaiting"):
             quiz["awaiting"] = public_quiz(quiz["awaiting"])
-        memory_enabled = not state.get("memory_blocked", False) and self.store.is_enabled(session_id)
-        memory = self.store.snapshot(session_id) if memory_enabled else {
+        memory_enabled = not state.get("memory_blocked", False) and self.store.is_enabled(memory_key)
+        memory = self.store.snapshot(memory_key) if memory_enabled else {
             "schema_version": "1.0", "profile": {}, "concepts": [], "error_records": [], "review_plan": [],
         }
+        # First meeting: the client has not seen this learner before, there is no
+        # reply yet in this conversation and nothing remembered.
+        first_meeting = (not returning_visitor
+                         and not any(item["role"] == "assistant" for item in messages)
+                         and not (memory.get("profile") or memory.get("concepts")))
         decision = validate(await self.runner("coordinator", {
             "phase": "decide", "messages": messages, "state": visible_state, "memory": memory,
-            "memory_enabled": memory_enabled,
+            "memory_enabled": memory_enabled, "first_meeting": first_meeting,
         }, self.decision_schema), self.decision_schema)
         decision, routing_repaired = recover_quiz_route(
             decision, state, messages[-1]["text"], memory_enabled=memory_enabled,
@@ -251,7 +272,7 @@ class LearningPipeline:
             "research": research, "quiz": quiz_context,
             "visual_status": "ready" if artifact else "unavailable" if visual_warning else "not_requested",
             "visual_context": visual_context,
-            "memory_enabled": memory_enabled,
+            "memory_enabled": memory_enabled, "first_meeting": first_meeting,
             "tool_results": deepcopy(tool_results),
         }
         output = await self.runner("coordinator", response_input, self.response_schema)
@@ -298,7 +319,11 @@ class LearningPipeline:
             tool_results["visual"] = "published"
         if notes is not None:
             try:
-                written = self.store.apply_notes(session_id, event_id, notes, text, quiz_evidence=quiz_evidence)
+                # Records under a learner ID span conversations, so the turn key
+                # then includes the conversation to keep turns distinct.
+                turn_key = event_id if memory_key == session_id else f"{session_id}:{event_id}"
+                written = self.store.apply_notes(memory_key, turn_key, notes, text,
+                                                 quiz_evidence=quiz_evidence)
                 tool_results["notes"] = "saved" if written else "not_written"
                 if not written:
                     output["message"] += "\n\n本轮未新增学习笔记。"

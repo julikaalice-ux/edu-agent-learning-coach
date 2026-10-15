@@ -70,13 +70,27 @@ def iframe_for(document: str) -> str:
     )
 
 
-async def respond(user_text, session):
+def ensure_device(device):
+    """Anonymous per-browser identity: a random ID plus a "visited before" flag.
+
+    Kept in the visitor's own browser storage. It holds no personal data and
+    lets learning records (when the learner turns them on) and the
+    first-meeting introduction carry across conversations on this device.
+    """
+    if not isinstance(device, dict) or not isinstance(device.get("learner_id"), str) \
+            or not device["learner_id"]:
+        device = {"learner_id": uuid.uuid4().hex, "seen": False}
+    return {"learner_id": device["learner_id"][:200], "seen": device.get("seen") is True}
+
+
+async def respond(user_text, session, device=None):
+    device = ensure_device(device)
     user_text = (user_text or "").strip()
     if not user_text:
-        yield session, session["chat"], session["panel"], ""
+        yield session, session["chat"], session["panel"], "", device
         return
     if session.get("locked"):
-        yield session, session["chat"], session["panel"], ""
+        yield session, session["chat"], session["panel"], "", device
         return
     session["locked"] = True
     try:
@@ -85,11 +99,13 @@ async def respond(user_text, session):
             {"role": "user", "content": user_text},
             {"role": "assistant", "content": "我先想想…"},
         ]
-        yield session, thinking, session["panel"], ""
+        yield session, thinking, session["panel"], "", device
         session["history"].append({"role": "user", "text": user_text})
         output, new_state = await asyncio.wait_for(
             PIPELINE.run(list(session["history"]), session_id=session["session_id"],
-                         state=session["state"]), timeout=240)
+                         state=session["state"], learner_id=device["learner_id"],
+                         returning_visitor=device["seen"]), timeout=240)
+        device = {**device, "seen": True}
         session["state"] = new_state
         text = learner_text(output)
         # Keep model context separate from presentation-only markup and image bytes.
@@ -114,13 +130,13 @@ async def respond(user_text, session):
             {"role": "user", "content": user_text},
             {"role": "assistant", "content": text},
         ]
-        yield session, session["chat"], panel, ""
+        yield session, session["chat"], panel, "", device
     except Exception:
         session["chat"] = session["chat"] + [
             {"role": "user", "content": user_text},
             {"role": "assistant", "content": "这次处理没有顺利完成，请再试一次。"},
         ]
-        yield session, session["chat"], session["panel"], ""
+        yield session, session["chat"], session["panel"], "", device
     finally:
         session["locked"] = False
 
@@ -164,17 +180,21 @@ def build_app() -> gr.Blocks:
                 send = gr.Button("发送", scale=1, variant="primary")
             with gr.Row():
                 reset = gr.Button("新会话")
-                gr.Markdown("记忆默认开启；输入 /memory off 暂停，/forget 删除记录。")
+                gr.Markdown("学习记录默认不保存；输入 /memory on 开启，/memory off 暂停，/forget 删除。"
+                            "记录只和这台设备上的浏览器关联。")
         session = gr.State(new_session()[0])
+        # Lives in this visitor's browser storage, so it survives "新会话" and reloads.
+        device = gr.BrowserState({"learner_id": "", "seen": False}, storage_key="edu-agent-device")
 
-        async def on_send(text, sess):
+        async def on_send(text, sess, dev):
             # respond is an async generator: first yields the "我先想想…"
             # placeholder, then the completed turn.
-            async for result in respond(text, sess):
+            async for result in respond(text, sess, dev):
                 yield result
 
-        send.click(on_send, [input_box, session], [session, chatbot, panel, input_box])
-        input_box.submit(on_send, [input_box, session], [session, chatbot, panel, input_box])
+        outputs = [session, chatbot, panel, input_box, device]
+        send.click(on_send, [input_box, session, device], outputs)
+        input_box.submit(on_send, [input_box, session, device], outputs)
         reset.click(new_session, None, [session, chatbot, panel, input_box])
         if os.environ.get("DEMO_PASSWORD"):
             enter.click(verify_password, pwd, [gate, main, gate_msg])
