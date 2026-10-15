@@ -185,6 +185,38 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         validate(output, RESPONSE_SCHEMA)
         self.assertEqual(set(output), {"schema_version", "intent", "message", "next_step"})
 
+    async def test_first_meeting_flag_reaches_coordinator(self):
+        runner = FakeRunner([plan(research_query="分数定义")])
+        await self.pipeline(runner).run(messages("你好，想学分数"), session_id="new", turn_id="1")
+        decide = runner.calls_for("coordinator", "decide")[0]
+        self.assertIs(decide["first_meeting"], True)
+        self.assertIs(runner.calls_for("coordinator", "respond")[0]["first_meeting"], True)
+        later = FakeRunner([plan()])
+        history = ({"role": "user", "text": "你好"}, {"role": "assistant", "text": "你好，我是学习教练。"})
+        await self.pipeline(later).run(messages("讲讲分数", *history), session_id="new2", turn_id="1")
+        self.assertIs(later.calls_for("coordinator", "decide")[0]["first_meeting"], False)
+
+    async def test_returning_visitor_is_not_greeted_again(self):
+        runner = FakeRunner([plan()])
+        await self.pipeline(runner).run(messages("你好"), session_id="c2", returning_visitor=True)
+        self.assertIs(runner.calls_for("coordinator", "decide")[0]["first_meeting"], False)
+
+    async def test_learner_records_carry_across_conversations(self):
+        self.store.set_enabled("learner-1", True)
+        runner = FakeRunner([plan(observe_learning=True)], note_results=[notes(True)])
+        await self.pipeline(runner).run(messages("我在工作，想学习分数"), session_id="c1",
+                                        turn_id="1", learner_id="learner-1")
+        later = FakeRunner([plan()])
+        await self.pipeline(later).run(messages("接着上次的"), session_id="c2", turn_id="1",
+                                       learner_id="learner-1")
+        decide = later.calls_for("coordinator", "decide")[0]
+        self.assertIn("learning_stage", decide["memory"]["profile"])
+        self.assertIs(decide["first_meeting"], False)
+        # Without the learner ID, a new conversation does not see those records.
+        other = FakeRunner([plan()])
+        await self.pipeline(other).run(messages("你好"), session_id="c3", turn_id="1")
+        self.assertEqual(other.calls_for("coordinator", "decide")[0]["memory"]["profile"], {})
+
     async def test_routes_learning_through_notes_research_and_visual_then_commits(self):
         self.store.set_enabled("s", True)
         runner = FakeRunner([plan(research_query="分数定义", visual_request="比较分子分母", observe_learning=True)], note_results=[notes(True)])

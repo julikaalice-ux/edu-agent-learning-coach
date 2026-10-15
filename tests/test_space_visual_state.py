@@ -16,6 +16,7 @@ class PipelineStub:
     def __init__(self):
         self.responses = deque()
         self.calls = []
+        self.options = []
         self.documents = {}
         self.artifacts = self
 
@@ -24,6 +25,7 @@ class PipelineStub:
 
     async def run(self, messages, **kwargs):
         self.calls.append(messages)
+        self.options.append(kwargs)
         return self.responses.popleft(), {}
 
 
@@ -64,6 +66,20 @@ class SpaceVisualStateTests(unittest.IsolatedAsyncioTestCase):
         second = await self.send("接着讲")
         self.assertEqual([event[2] for event in second], [panel, panel])
         self.assertEqual(self.session["panel"], panel)
+
+    async def test_device_marker_survives_new_conversation(self):
+        self.pipeline.responses.extend([response("你好，我是学习教练。"), response("欢迎回来。")])
+        first = [event async for event in self.app.respond("你好", self.session, None)]
+        device = first[-1][4]
+        self.assertTrue(device["learner_id"])
+        self.assertIs(device["seen"], True)
+        self.assertIs(self.pipeline.options[0]["returning_visitor"], False)
+        # "新会话" starts a new conversation; the browser keeps the device marker.
+        self.session = self.app.new_session()[0]
+        [event async for event in self.app.respond("在吗", self.session, device)]
+        self.assertIs(self.pipeline.options[1]["returning_visitor"], True)
+        self.assertEqual(self.pipeline.options[1]["learner_id"], device["learner_id"])
+        self.assertNotEqual(self.pipeline.options[1]["session_id"], self.pipeline.options[0]["session_id"])
 
     async def test_image_is_visible_but_never_forwarded_as_model_text(self):
         token = "b" * 32
