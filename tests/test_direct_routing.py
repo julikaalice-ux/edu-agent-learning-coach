@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from test_pipeline import FakeArtifacts, FakeResearch, FakeRunner, LearningPipeline, LearningStore
 from test_pipeline import RESPONSE_SCHEMA, VISUAL, messages, notes, plan, validate
-from learning_coach.runner import StageFailure
+from learning_coach.adapters.runner import StageFailure
 
 
 TOOLS = ("research", "quiz", "notes", "visual")
@@ -601,7 +601,7 @@ class DirectRoutingTests(unittest.IsolatedAsyncioTestCase):
 
         runner = UnexpectedFailureRunner([tool_decision(text, observe_learning=True, visual_request="分数对比")])
         before = {"active_task": "之前的任务", "revision": 3}
-        with self.assertLogs("learning_coach.pipeline", level="WARNING") as logs:
+        with self.assertLogs("learning_coach.service.pipeline", level="WARNING") as logs:
             output, after = await asyncio.wait_for(self.pipeline(runner).run(messages(text), session_id="s", state=before), timeout=5)
         self.assert_wire(output)
         self.assertEqual(output["intent"]["primary"], "G")

@@ -1,7 +1,6 @@
 """Offline retrieval/evidence tests: no model, credentials or public API calls."""
 
 import asyncio
-import importlib.util
 import io
 import json
 from pathlib import Path
@@ -10,10 +9,10 @@ from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request
 
-SOURCE = Path(__file__).resolve().parents[1] / "src/agent-framework-agent-with-local-tools-responses/learning_coach/research.py"
-spec = importlib.util.spec_from_file_location("research_under_test", SOURCE)
-research = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(research)
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/agent-framework-agent-with-local-tools-responses"))
+from learning_coach.service import research
+from learning_coach.adapters import search_providers as providers
 
 
 def source(url="https://one.example/article", excerpt="Water expands when it freezes under normal pressure.", kind="page_extract"):
@@ -171,8 +170,8 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         payloads = [{"query": {"search": [{"pageid": 123}]}},
                     {"query": {"pages": {"123": {"pageid": 123, "title": "水", "extract": "原文。",
                      "fullurl": "https://zh.wikipedia.org/wiki/水"}}}}]
-        with patch.object(research, "_fetch_json", side_effect=payloads) as fetch:
-            items = await research.WikipediaProvider().search("水 https://localhost/private")
+        with patch.object(providers, "_fetch_json", side_effect=payloads) as fetch:
+            items = await providers.WikipediaProvider().search("水 https://localhost/private")
         first = urlsplit(fetch.call_args_list[0].args[0].full_url)
         second = parse_qs(urlsplit(fetch.call_args_list[1].args[0].full_url).query)
         self.assertEqual(first.hostname, "zh.wikipedia.org")
@@ -187,8 +186,8 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         payload = {"answer": "not evidence", "results": [
             {"title": "A", "url": "https://one.example/a", "raw_content": "verbatim", "content": "summary"},
             {"title": "B", "url": "https://two.test/b", "raw_content": None, "content": "snippet"}]}
-        with patch.object(research, "_fetch_json", return_value=payload) as fetch:
-            items = await research.TavilyProvider("fake-test-key").search("water")
+        with patch.object(providers, "_fetch_json", return_value=payload) as fetch:
+            items = await providers.TavilyProvider("fake-test-key").search("water")
         request = fetch.call_args.args[0]
         body = json.loads(request.data)
         self.assertEqual(request.full_url, "https://api.tavily.com/search")
@@ -200,29 +199,29 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item["excerpt"] for item in items], ["verbatim", "snippet"])
 
     async def test_unconfigured_tavily_does_not_send_request(self):
-        with patch.object(research, "_fetch_json") as fetch:
-            with self.assertRaises(research.RetrievalError):
-                await research.TavilyProvider("").search("ice")
+        with patch.object(providers, "_fetch_json") as fetch:
+            with self.assertRaises(providers.RetrievalError):
+                await providers.TavilyProvider("").search("ice")
             fetch.assert_not_called()
 
 
 class HttpBoundaryTests(unittest.TestCase):
     def test_non_provider_endpoint_rejected_before_network(self):
-        with patch.object(research, "build_opener") as opener:
-            with self.assertRaises(research.RetrievalError):
-                research._fetch_json(Request("https://localhost/private"))
+        with patch.object(providers, "build_opener") as opener:
+            with self.assertRaises(providers.RetrievalError):
+                providers._fetch_json(Request("https://localhost/private"))
             opener.assert_not_called()
 
     def test_redirect_rejected(self):
-        with self.assertRaises(research.RetrievalError):
-            research._NoRedirect().redirect_request(None, None, 302, None, None, "https://evil.example")
+        with self.assertRaises(providers.RetrievalError):
+            providers._NoRedirect().redirect_request(None, None, 302, None, None, "https://evil.example")
 
     def test_response_size_limit(self):
-        with patch.object(research, "MAX_RESPONSE_BYTES", 10), patch.object(research, "build_opener") as opener:
+        with patch.object(providers, "MAX_RESPONSE_BYTES", 10), patch.object(providers, "build_opener") as opener:
             opener.return_value.open.return_value = io.BytesIO(b"x" * 11)
-            with self.assertRaisesRegex(research.RetrievalError, "too_large"):
-                research._fetch_json(Request("https://en.wikipedia.org/w/api.php"))
-            self.assertEqual(opener.return_value.open.call_args.kwargs["timeout"], research.HTTP_TIMEOUT)
+            with self.assertRaisesRegex(providers.RetrievalError, "too_large"):
+                providers._fetch_json(Request("https://en.wikipedia.org/w/api.php"))
+            self.assertEqual(opener.return_value.open.call_args.kwargs["timeout"], providers.HTTP_TIMEOUT)
 
     def test_private_result_urls_rejected_without_fetching(self):
         for url in ("http://127.0.0.1/item", "http://[::1]/item", "https://admin:pass@one.example/a", "file:///etc/passwd"):

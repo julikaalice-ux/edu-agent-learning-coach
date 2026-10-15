@@ -4,7 +4,6 @@ import base64
 import copy
 import hashlib
 from html.parser import HTMLParser
-import importlib.util
 import json
 from pathlib import Path
 import tempfile
@@ -14,11 +13,10 @@ from unittest.mock import patch
 from jsonschema import Draft202012Validator
 
 
-MODULE = (Path(__file__).resolve().parents[1]
-          / "src/agent-framework-agent-with-local-tools-responses/learning_coach/visuals.py")
-module_spec = importlib.util.spec_from_file_location("coach_visuals", MODULE)
-visuals = importlib.util.module_from_spec(module_spec)
-module_spec.loader.exec_module(visuals)
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/agent-framework-agent-with-local-tools-responses"))
+from learning_coach.adapters import visuals
+from learning_coach.db import artifacts
 
 EXAMPLES = [
     {"kind": "comparison", "title": "蒸发与沸腾", "left_label": "蒸发", "right_label": "沸腾",
@@ -144,7 +142,7 @@ class StoreTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.store = visuals.ArtifactStore(self.root)
+        self.store = artifacts.ArtifactStore(self.root, renderer=visuals.render_visual)
 
     def test_prepare_does_not_publish_and_commit_survives_restart(self):
         before = {path.name: path.read_bytes() for path in self.root.iterdir()}
@@ -157,7 +155,7 @@ class StoreTests(unittest.TestCase):
         self.assertIsNone(self.store.get(artifact["token"]))
         self.store.commit("session-one", artifact)
         self.assertEqual(self.store.get(artifact["token"]), artifact["html"])
-        restarted = visuals.ArtifactStore(self.root)
+        restarted = artifacts.ArtifactStore(self.root, renderer=visuals.render_visual)
         self.assertEqual(restarted.get(artifact["token"]), artifact["html"])
         self.assertFalse(any(path.suffix == ".tmp" for path in self.root.iterdir()))
         self.assertNotIn(b"session-one", (self.root / "index.sqlite3").read_bytes())
@@ -167,12 +165,12 @@ class StoreTests(unittest.TestCase):
         second = self.store.prepare("two", EXAMPLES[2])
         self.store.commit("one", first)
         self.store.commit("two", second)
-        restarted = visuals.ArtifactStore(self.root)
+        restarted = artifacts.ArtifactStore(self.root, renderer=visuals.render_visual)
         restarted.delete_session("one")
         self.assertIsNone(restarted.get(first["token"]))
         self.assertFalse((self.root / (first["token"] + ".html")).exists())
         self.assertEqual(restarted.get(second["token"]), second["html"])
-        self.assertEqual(visuals.ArtifactStore(self.root).get(second["token"]), second["html"])
+        self.assertEqual(artifacts.ArtifactStore(self.root, renderer=visuals.render_visual).get(second["token"]), second["html"])
 
     def test_cannot_commit_other_session_or_modified_html(self):
         artifact = self.store.prepare("one", EXAMPLES[0])
@@ -207,7 +205,7 @@ class StoreTests(unittest.TestCase):
                                            (artifact["token"],)).fetchone())
         with self.assertRaises(ValueError):
             self.store.commit("one", pending)
-        restarted = visuals.ArtifactStore(self.root)
+        restarted = artifacts.ArtifactStore(self.root, renderer=visuals.render_visual)
         restarted.delete_session("one")
         self.assertFalse(path.exists())
         self.assertIsNone(restarted.get(artifact["token"]))
@@ -221,22 +219,22 @@ class StoreTests(unittest.TestCase):
         self.assertIsNone(self.store.get("a" * 32))
 
     def test_expiry_is_fixed_24_hours_and_removes_file(self):
-        with patch.object(visuals.time, "time", return_value=1000):
+        with patch.object(artifacts.time, "time", return_value=1000):
             artifact = self.store.prepare("one", EXAMPLES[3])
             self.store.commit("one", artifact)
-        with patch.object(visuals.time, "time", return_value=1000 + self.store.TTL_SECONDS - 1):
+        with patch.object(artifacts.time, "time", return_value=1000 + self.store.TTL_SECONDS - 1):
             self.assertEqual(self.store.get(artifact["token"]), artifact["html"])
-        with patch.object(visuals.time, "time", return_value=1000 + self.store.TTL_SECONDS + 1):
-            restarted = visuals.ArtifactStore(self.root)
+        with patch.object(artifacts.time, "time", return_value=1000 + self.store.TTL_SECONDS + 1):
+            restarted = artifacts.ArtifactStore(self.root, renderer=visuals.render_visual)
             self.assertIsNone(restarted.get(artifact["token"]))
             self.assertFalse((self.root / (artifact["token"] + ".html")).exists())
 
     def test_failed_expiry_unlink_keeps_index_for_next_cleanup(self):
-        with patch.object(visuals.time, "time", return_value=1000):
+        with patch.object(artifacts.time, "time", return_value=1000):
             artifact = self.store.prepare("one", EXAMPLES[3])
             self.store.commit("one", artifact)
         path = self.root / (artifact["token"] + ".html")
-        with patch.object(visuals.time, "time", return_value=1000 + self.store.TTL_SECONDS + 1):
+        with patch.object(artifacts.time, "time", return_value=1000 + self.store.TTL_SECONDS + 1):
             with patch.object(Path, "unlink", side_effect=OSError("simulated unlink failure")):
                 with self.assertRaises(OSError):
                     self.store.get(artifact["token"])
@@ -244,13 +242,13 @@ class StoreTests(unittest.TestCase):
             with self.store._connection() as db:
                 self.assertIsNotNone(db.execute("SELECT token FROM artifacts WHERE token = ?",
                                                (artifact["token"],)).fetchone())
-            restarted = visuals.ArtifactStore(self.root)
+            restarted = artifacts.ArtifactStore(self.root, renderer=visuals.render_visual)
             self.assertFalse(path.exists())
             self.assertIsNone(restarted.get(artifact["token"]))
 
     def test_failed_atomic_write_does_not_publish_or_leave_temporary_file(self):
         artifact = self.store.prepare("one", EXAMPLES[0])
-        with patch.object(visuals.os, "replace", side_effect=OSError("simulated write failure")):
+        with patch.object(artifacts.os, "replace", side_effect=OSError("simulated write failure")):
             with self.assertRaises(OSError):
                 self.store.commit("one", artifact)
         self.assertIsNone(self.store.get(artifact["token"]))
@@ -269,8 +267,8 @@ class StoreTests(unittest.TestCase):
                      "https://example.com/#x", "https://example.com/ bad"):
             with self.subTest(base=base):
                 with self.assertRaises(ValueError):
-                    visuals.ArtifactStore(self.root, base)
-        store = visuals.ArtifactStore(self.root, "https://example.com/base/")
+                    artifacts.ArtifactStore(self.root, base, renderer=visuals.render_visual)
+        store = artifacts.ArtifactStore(self.root, "https://example.com/base/", renderer=visuals.render_visual)
         artifact = store.prepare("one", EXAMPLES[0])
         self.assertEqual(artifact["url"], "https://example.com/base/artifacts/" + artifact["token"])
 

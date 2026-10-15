@@ -4,7 +4,6 @@ from collections import deque
 from copy import deepcopy
 import json
 from pathlib import Path
-import sqlite3
 import sys
 import tempfile
 import unittest
@@ -14,11 +13,12 @@ from unittest.mock import patch
 SOURCE = Path(__file__).resolve().parents[1] / "src/agent-framework-agent-with-local-tools-responses"
 sys.path.insert(0, str(SOURCE))
 
-from learning_coach.contracts import validate
-from learning_coach.memory import LearningStore, NOTES_SCHEMA
-from learning_coach.pipeline import LearningPipeline
-from learning_coach.runner import StageFailure
-from learning_coach.visuals import VISUAL_SCHEMA
+from learning_coach.domain.contracts import validate
+from learning_coach.db.memory import LearningStore, NOTES_SCHEMA
+from learning_coach.service.pipeline import LearningPipeline
+from learning_coach.adapters.runner import StageFailure
+from learning_coach.service.ports import StorageError
+from learning_coach.adapters.visuals import VISUAL_SCHEMA
 
 
 RESPONSE_SCHEMA = json.loads((SOURCE / "response.schema.json").read_text(encoding="utf-8"))
@@ -65,12 +65,13 @@ def messages(text, *history):
 class FakeRunner:
     """Only implements the documented role/phase contract; does no I/O."""
 
-    def __init__(self, plans=(), *, replies=(), quiz=(), note_results=(), visuals=()):
+    def __init__(self, plans=(), *, replies=(), quiz=(), note_results=(), visuals=(), visual_reviews=()):
         self.plans = deque(plans)
         self.replies = deque(replies)
         self.questions = deque(quiz)
         self.note_results = deque(note_results)
         self.visuals = deque(visuals)
+        self.visual_reviews = deque(visual_reviews)
         self.calls = []
 
     async def __call__(self, role, payload, schema):
@@ -115,6 +116,12 @@ class FakeRunner:
             result = self.note_results.popleft() if self.note_results else notes()
         elif role == "visualizer":
             result = self.visuals.popleft() if self.visuals else VISUAL
+        elif role == "verifier" and payload.get("phase") == "visual_review":
+            result = self.visual_reviews.popleft() if self.visual_reviews else {
+                "verdict": "pass", "checks": {key: True for key in (
+                    "request_match", "factual_consistency", "labels_clear", "interaction_useful", "not_misleading")},
+                "issues": [], "fact_basis": "general_knowledge",
+            }
         else:
             raise AssertionError(f"Unexpected role or phase: {role}")
         if isinstance(result, Exception):
@@ -185,7 +192,7 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assert_protocol(output)
         self.assertEqual(self.research.calls, ["分数定义"])
         self.assertEqual([runner.calls[0]["role"], runner.calls[-1]["role"]], ["coordinator", "coordinator"])
-        self.assertCountEqual([call["role"] for call in runner.calls[1:-1]], ["notes", "visualizer"])
+        self.assertCountEqual([call["role"] for call in runner.calls[1:-1]], ["notes", "visualizer", "verifier"])
         self.assertEqual(len(self.artifacts.committed), 1)
         self.assertIn("learning_stage", self.store.snapshot("s")["profile"])
         self.assertEqual(state["revision"], 1)
@@ -244,7 +251,7 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         ], note_results=[notes(True)])
         pipeline = self.pipeline(runner)
         _, state = await pipeline.run(messages("考考我"), session_id="s", turn_id="start")
-        with patch.object(self.artifacts, "delete_session", side_effect=OSError("PRIVATE_DELETE_ERROR")), self.assertLogs("learning_coach.pipeline", level="WARNING"):
+        with patch.object(self.artifacts, "delete_session", side_effect=OSError("PRIVATE_DELETE_ERROR")), self.assertLogs("learning_coach.service.pipeline", level="WARNING"):
             output, state = await pipeline.run(messages("/forget"), session_id="s", state=state, turn_id="forget")
         self.assert_protocol(output)
         self.assertIn("部分已存内容未能删除", output["message"])
@@ -431,7 +438,7 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         pipeline = self.pipeline(runner)
         _, state = await pipeline.run(messages("考考我"), session_id="s", turn_id="start")
         before = deepcopy(state)
-        with self.assertLogs("learning_coach.pipeline", level="WARNING"):
+        with self.assertLogs("learning_coach.service.pipeline", level="WARNING"):
             output, after = await pipeline.run(messages("A"), session_id="s", state=state, turn_id="answer")
         self.assert_protocol(output)
         self.assertEqual(output["intent"]["primary"], "G")
@@ -490,7 +497,7 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         _, current_state = await pipeline.run(messages("A"), session_id="s", state=old_state, turn_id="first-answer")
         self.assertGreater(current_state["revision"], old_state["revision"])
         runner.replies.append(StageFailure("PRIVATE_FINAL_STAGE_ERROR"))
-        with self.assertLogs("learning_coach.pipeline", level="WARNING"):
+        with self.assertLogs("learning_coach.service.pipeline", level="WARNING"):
             output, returned = await pipeline.run(messages("A"), session_id="s", state=old_state, turn_id="second-answer")
         self.assert_protocol(output)
         self.assertNotIn("PRIVATE_FINAL_STAGE_ERROR", output["message"])
@@ -505,7 +512,7 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(method=method):
                 runner = FakeRunner()
                 baseline = {"revision": 3, "active_task": "已有学习任务"}
-                with patch.object(self.store, method, side_effect=sqlite3.OperationalError("PRIVATE_DATABASE_DETAIL")), self.assertLogs("learning_coach.pipeline", level="WARNING"):
+                with patch.object(self.store, method, side_effect=StorageError("PRIVATE_DATABASE_DETAIL")), self.assertLogs("learning_coach.service.pipeline", level="WARNING"):
                     output, state = await self.pipeline(runner).run(messages("继续"), session_id="s", state=baseline, turn_id=method)
                 self.assert_protocol(output)
                 self.assertEqual(output["intent"]["primary"], "G")
@@ -533,7 +540,7 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             "message": "PRIVATE_WRONG_STEP", "next_step": {"kind": "task", "text": "先做二十道题"},
         }
         runner = FakeRunner([plan("G")], replies=[wrong_step])
-        with self.assertLogs("learning_coach.pipeline", level="WARNING"):
+        with self.assertLogs("learning_coach.service.pipeline", level="WARNING"):
             output, state = await self.pipeline(runner).run(messages("这个"), session_id="s", turn_id="1")
         self.assert_protocol(output)
         self.assertEqual(output["next_step"]["kind"], "question")
@@ -547,7 +554,7 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             "next_step": {"kind": "question", "text": "理解了吗？"},
         }
         runner = FakeRunner([plan("A", visual_request="画图")], replies=[forged_source])
-        with self.assertLogs("learning_coach.pipeline", level="WARNING"):
+        with self.assertLogs("learning_coach.service.pipeline", level="WARNING"):
             output, _ = await self.pipeline(runner).run(messages("解释一下"), session_id="s", turn_id="1")
         self.assert_protocol(output)
         self.assertNotIn("private-fabricated-source", json.dumps(output))
@@ -577,7 +584,9 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.artifacts.committed, [])
 
     async def test_invalid_visual_spec_is_not_published(self):
-        runner = FakeRunner([plan(visual_request="展示关系")], visuals=[{"kind": "html", "content": "PRIVATE_MODEL_SCRIPT"}])
+        runner = FakeRunner([plan(visual_request="展示关系")], visuals=[
+            {"kind": "html", "content": "PRIVATE_MODEL_SCRIPT"},
+            {"kind": "html", "content": "PRIVATE_MODEL_SCRIPT"}])
         output, _ = await self.pipeline(runner).run(messages("画图解释"), session_id="s", turn_id="1")
         self.assert_protocol(output)
         self.assertIn("未生成可用的互动图", output["message"])
@@ -587,7 +596,7 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
     async def test_intent_cannot_change_after_routing_and_only_accepted_response_is_logged(self):
         rogue = {"schema_version": "1.0", "intent": {"primary": "F", "is_implicit": False}, "message": "PRIVATE_CHANGED_INTENT", "next_step": None}
         runner = FakeRunner([plan("A", research_query="分数定义")], replies=[rogue])
-        with self.assertLogs("learning_coach.pipeline", level="INFO") as captured:
+        with self.assertLogs("learning_coach.service.pipeline", level="INFO") as captured:
             output, state = await self.pipeline(runner).run(messages("请解释分数"), session_id="s", turn_id="bad")
         self.assertEqual(output["intent"]["primary"], "G")
         self.assertNotIn("PRIVATE_CHANGED_INTENT", json.dumps(output))
@@ -598,7 +607,7 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         expected = {"primary": "E", "is_implicit": True}
         runner = FakeRunner([plan("E", intent=expected)])
         pipeline = self.pipeline(runner)
-        with self.assertLogs("learning_coach.pipeline", level="INFO") as captured:
+        with self.assertLogs("learning_coach.service.pipeline", level="INFO") as captured:
             output, _ = await pipeline.run(messages("PRIVATE_LEARNER_EMOTION"), session_id="s", turn_id="raw-turn-id")
             await pipeline.run(messages("PRIVATE_LEARNER_EMOTION"), session_id="s", turn_id="raw-turn-id")
         events = [record.getMessage() for record in captured.records if record.getMessage().startswith("intent_result ")]

@@ -2,6 +2,68 @@
 
 当前代码已从单 Agent Prompt 扩展为五角色、进程内按需协作的学习教练。对外 `schema_version` 仍为 `"1.0"`；角色内部协议和存储不属于面向客户端的响应字段。实现细节、限制与本地验证见 [`multi-agent.md`](multi-agent.md)。本文描述代码状态，不代表已部署或完成真实模型验收。
 
+## 代码依赖与组装边界
+
+目录按职责划分；箭头表示源码依赖，不表示执行顺序。接口由使用它的 Service 定义，DB 和外部适配器实现这些接口；Server 选择具体实现并注入。
+
+```mermaid
+flowchart TB
+    Server[server.py：组装与启动] --> API[api：请求与响应]
+    Server --> DB[db：SQLite与产物存储]
+    Server --> Adapters[adapters：模型 / 搜索 / 渲染]
+    Server --> Service[service：业务流程与接口]
+    API --> Service
+    DB --> Service
+    Adapters --> Service
+    Service --> Domain[domain：领域规则与协议]
+    DB --> Domain
+    Adapters --> Domain
+```
+
+```text
+learning_coach/
+├── server.py                 # 唯一的生产依赖组装入口
+├── api/
+│   ├── http.py               # Responses 端点、产物读取路由
+│   └── host.py               # SDK 消息与应用输入/输出转换
+├── service/
+│   ├── pipeline.py           # 单轮教学用例编排
+│   ├── research.py           # 检索与查证用例
+│   ├── ports.py              # Service 所需接口与 StorageError
+│   └── execution.py          # 调用预算与阶段失败约定
+├── domain/
+│   ├── routing.py            # 工具准入、测验与出图恢复规则
+│   ├── mastery.py            # 掌握度计算；没有 SQL
+│   ├── contracts.py          # 回复协议、选择题评分
+│   ├── note_contracts.py     # 笔记数据协议
+│   ├── visual_contracts.py   # 图示数据协议
+│   └── research_contracts.py # 来源证据协议与校验
+├── db/
+│   ├── memory.py             # SQLite 笔记、事务、幂等
+│   ├── artifacts.py          # 产物文件、索引、过期与归属
+│   └── storage_errors.py     # 数据库异常转为 Service 错误
+└── adapters/
+    ├── runner.py             # 模型 SDK 实现
+    ├── search_providers.py   # Wikipedia / Tavily 实现
+    ├── illustrate.py         # AI 生图实现
+    └── visuals.py            # HTML / SVG 渲染；不读写存储
+```
+
+### 一次调用如何经过各层
+
+`main.py` 调用 Server 组装依赖并启动 HTTP 接入；`api/host.py` 转换请求并调用 `service/pipeline.py`。Service 使用 Domain 规则和自己定义的接口；实际数据库和模型调用由注入的实现完成。Server 也供 `space/app.py` 使用，两个入口保留各自的数据目录、公开地址和 native JSON 默认值。CLI 的 `main.create_pipeline` 导入仍可使用。
+
+### 更换实现时修改哪里
+
+- 换 SQLite：在 db 实现 `service.ports.LearningMemory`，由 Server 注入。Service 只捕获 StorageError，不依赖 sqlite3.Error；数据库事务先回滚再翻译异常。
+- 换搜索或生图：实现 SearchProvider / ImageGenerator，由 `server.create_pipeline(search_provider=..., image_generator=...)` 注入。ResearchService 必须显式传 provider，不自行选择供应商。
+- 换渲染：实现 VisualRenderer 并注入 ArtifactStore。产物存储不导入具体渲染器；渲染也不创建数据库。
+- 改教学规则：修改 domain；改工作流：修改 service；改传输方式：修改 api。协议使用 Python Protocol 表达，测试替身无需继承具体实现。
+
+组装根集中创建长期依赖，不限制业务层创建请求、结果等普通值对象。新增导入边界测试防止 domain/service 反向依赖 api/db/adapters/server；导入 Service 不加载模型 SDK、数据库或渲染模块。
+
+本次同步更新仓库内导入与测试，不保留旧的平铺模块。项目外若直接导入旧 `learning_coach.memory` 等内部路径，需要改用新目录；HTTP 公开协议、数据文件位置、数据库格式和既有评分/出图规则不变。旧 `architecture.png` 保留为历史图片，当前依赖方向以本节为准。
+
 ## 产品目标
 
 服务所有有学习需求的人，包括学龄前儿童、不同阶段的学生、工作技能学习者和兴趣学习者。教学效果以可观察的独立应用为依据，根据目标、相关基础、参与方式及实际表现调整方法。

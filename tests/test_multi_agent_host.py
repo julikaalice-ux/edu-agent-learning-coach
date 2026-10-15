@@ -21,13 +21,14 @@ if SDK_AVAILABLE:
     from agent_framework_foundry_hosting import ResponsesHostServer
     from azure.ai.agentserver.responses import InMemoryResponseProvider
     from starlette.requests import Request
-    from learning_coach.contracts import validate
-    from learning_coach.host import LearningCoachAgent
-    from learning_coach.memory import LearningStore
-    from learning_coach.pipeline import LearningPipeline
-    from learning_coach.research import ResearchService
-    from learning_coach.runner import BUDGET, CallBudget, ROLES, StageFailure, StructuredRunner, create_agents
-    from learning_coach.visuals import ArtifactStore, VISUAL_SCHEMA
+    from learning_coach.domain.contracts import validate
+    from learning_coach.api.host import LearningCoachAgent
+    from learning_coach.db.memory import LearningStore
+    from learning_coach.service.pipeline import LearningPipeline
+    from learning_coach.service.research import ResearchService
+    from learning_coach.adapters.runner import BUDGET, CallBudget, ROLES, StageFailure, StructuredRunner, create_agents
+    from learning_coach.adapters.visuals import VISUAL_SCHEMA, render_visual
+    from learning_coach.db.artifacts import ArtifactStore
 
 SCHEMA = {"type": "object", "properties": {"ok": {"type": "boolean"}},
           "required": ["ok"], "additionalProperties": False}
@@ -107,7 +108,7 @@ class StructuredRunnerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_provider_failure_has_no_private_exception_text(self):
         fake = FakeAgent(error=RuntimeError("secret-token learner-private-text"))
-        with self.assertLogs("learning_coach.runner", level="WARNING") as logs:
+        with self.assertLogs("learning_coach.adapters.runner", level="WARNING") as logs:
             with self.assertRaisesRegex(StageFailure, "provider_or_timeout_failure") as raised:
                 await self.make_runner(fake)("coordinator", {}, SCHEMA)
         self.assertNotIn("secret-token", " ".join(logs.output) + str(raised.exception))
@@ -115,7 +116,7 @@ class StructuredRunnerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stage_logs_record_retry_outcome_without_payload_or_response(self):
         fake = FakeAgent(["PRIVATE_BAD_MODEL_OUTPUT", '{"ok":true}'])
-        with self.assertLogs("learning_coach.runner", level="INFO") as logs:
+        with self.assertLogs("learning_coach.adapters.runner", level="INFO") as logs:
             await self.make_runner(fake)("coordinator", {"phase": "decide", "question": "PRIVATE_LEARNER_INPUT"}, SCHEMA)
         stages = [record.getMessage() for record in logs.records if record.getMessage().startswith("agent_stage ")]
         self.assertEqual(len(stages), 2)
@@ -123,7 +124,7 @@ class StructuredRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertRegex(stages[1], r"role=coordinator phase=decide attempt=2 outcome=ok elapsed_ms=\d+$")
         self.assertNotIn("PRIVATE", " ".join(logs.output))
         failure = FakeAgent(error=RuntimeError("PRIVATE_PROVIDER_SECRET"))
-        with self.assertLogs("learning_coach.runner", level="INFO") as errors:
+        with self.assertLogs("learning_coach.adapters.runner", level="INFO") as errors:
             with self.assertRaises(StageFailure):
                 await self.make_runner(failure)("coordinator", {"phase": "PRIVATE_PHASE"}, SCHEMA)
         self.assertNotIn("PRIVATE", " ".join(errors.output))
@@ -287,8 +288,8 @@ class ResponsesRouteTests(unittest.IsolatedAsyncioTestCase):
         # transcript directory, load credentials, or start telemetry exporters.
         with patch("azure.ai.agentserver.responses.store._file.FileResponseStore",
                    side_effect=AssertionError("unexpected transcript persistence")), \
-             patch.object(module, "DefaultAzureCredential", side_effect=AssertionError("unexpected credentials")), \
-             patch.object(module, "ResponsesHostServer", wraps=ResponsesHostServer) as factory:
+             patch("learning_coach.server.DefaultAzureCredential", side_effect=AssertionError("unexpected credentials")), \
+             patch("learning_coach.api.http.ResponsesHostServer", wraps=ResponsesHostServer) as factory:
             server = module.create_server(pipeline)
         self.assertIsInstance(server, ResponsesHostServer)
         self.assertIsInstance(factory.call_args.kwargs["store"], InMemoryResponseProvider)
@@ -320,7 +321,7 @@ class FiveRoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 runner = StructuredRunner(create_agents(client, SOURCE / "instructions.md"), native_json=native)
                 store = LearningStore(Path(directory) / "memory.sqlite3")
                 try:
-                    artifacts = ArtifactStore(Path(directory) / "artifacts")
+                    artifacts = ArtifactStore(Path(directory) / "artifacts", renderer=render_visual)
                     research = SimpleNamespace(run=None)
                     pipeline = LearningPipeline(runner, research, store, artifacts, FINAL_SCHEMA)
                     host = LearningCoachAgent(pipeline)
@@ -383,6 +384,11 @@ class FiveRoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     answer = {"schema_version": "1.0", "intent": FINAL["intent"],
                               "message": "普通条件下，冰的晶体结构比液态水疏松，因此相同质量的水结冰后体积会增大。",
                               "next_step": {"kind": "question", "text": "这能解释冰为什么浮在水上吗？"}}
+                elif data.get("phase") == "visual_review":
+                    role = "verifier"
+                    answer = {"verdict": "pass", "checks": {key: True for key in (
+                        "request_match", "factual_consistency", "labels_clear", "interaction_useful", "not_misleading")},
+                        "issues": [], "fact_basis": "provided_sources"}
                 elif "sources" in data:
                     role = "verifier"
                     answer = {"claims": [{"text": "Water expands upon freezing at normal pressure.",
@@ -417,7 +423,7 @@ class FiveRoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
             root = Path(directory)
             store = LearningStore(root / "memory.sqlite3")
             try:
-                artifacts = ArtifactStore(root / "artifacts")
+                artifacts = ArtifactStore(root / "artifacts", renderer=render_visual)
                 pipeline = LearningPipeline(runner, ResearchService(runner, provider), store, artifacts, FINAL_SCHEMA)
                 host = LearningCoachAgent(pipeline)
                 session = host.create_session()
@@ -439,10 +445,12 @@ class FiveRoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(set(client.roles), set(ROLES))
                 self.assertEqual(client.roles[:3], ["coordinator", "researcher", "verifier"])
                 self.assertCountEqual(client.roles[3:5], ["notes", "visualizer"])
+                self.assertEqual(client.roles[5:], ["verifier", "coordinator"])
                 self.assertEqual(client.roles[-1], "coordinator")
                 self.assertEqual(len(provider.calls), 2)
                 self.assertEqual(client.response_payload["research"]["overall"], "verified")
                 self.assertEqual(client.response_payload["visual_status"], "ready")
+                self.assertEqual(client.response_payload["visual_context"]["quality"]["fact_basis"], "provided_sources")
                 self.assertIn("https://first.example/water", final.text)
                 self.assertIn("https://second.test/ice", final.text)
                 token_match = re.search(r"http://localhost:8088/artifacts/([A-Za-z0-9_-]{32})", final.text)
@@ -477,7 +485,7 @@ class FiveRoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(events[0]["type"], "http.response.start")
                 self.assertEqual(events[0]["status"], 200)
                 self.assertIn("水与冰".encode(), b"".join(event.get("body", b"") for event in events))
-                self.assertEqual(len(client.roles), 6)  # Fetching an artifact never runs a model.
+                self.assertEqual(len(client.roles), 7)  # Fetching an artifact never runs a model.
             finally:
                 store.close()
 

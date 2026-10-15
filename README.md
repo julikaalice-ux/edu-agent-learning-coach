@@ -20,7 +20,7 @@ learner → coordinator (decide) ── 直答 → 校验 → 最终四字段 JS
 
 - **coordinator**：意图识别、任务编排、面向学习者的回复
 - **researcher**：资料检索（默认 Wikipedia Action API，可选 Tavily）
-- **verifier**：信源交叉查证，输出证据分级
+- **verifier**：信源交叉查证；在独立的 `visual_review` 阶段审阅教学图方案
 - **notes**：学习笔记整理（错题归因、难点归纳）
 - **visualizer**：声明式互动图生成（模型不可提交可执行代码）
 
@@ -33,7 +33,7 @@ learner → coordinator (decide) ── 直答 → 校验 → 最终四字段 JS
 3. **信源查证而非"听起来对"**。引用必须来自实际检索到的记录；证据分级（verified / likely / disputed / unavailable）直接决定回复措辞和能否出图；资料不足时回复明确标注，不装作确定。
 4. **opt-in 学习记忆**。SQLite 存储学习笔记（带来源引用），`/memory on` 开启、`/memory off` 暂停、`/forget` 删除本会话全部记录。未校准的掌握度保持"未知"，观察记录不等于能力验证。
 5. **服务端出题状态机**。一次只出一道题，答案 key 是私有程序状态、永远不进模型上下文；未作答时不强推下一题；会话内支持暂停/继续/结束任务。
-6. **声明式可视化**。对比、流程、记忆卡、线性函数四种模板渲染为应用自持的 HTML/JS；模型只能填参数，不能写代码，互动图以 artifact 链接交付（本地可打开，云端网关暂不透传该路由，见"已知限制"）。
+6. **通用教学图生成**。visualizer 根据知识点生成声明式场景与分步画面，程序验证后交给独立的视觉方案审阅调用；需要修改时最多重绘一次，仍未通过则明确降级。场景由固定版本 SVG.js 离线绘制，支持逐帧操作；模型不能提交可执行代码。模型审阅不等于检查真实渲染像素或保证事实正确，也不意味着支持任意连续物理仿真。AI 配图用于外观和场景，不作为原理演示的默认替代；图以 artifact 链接交付（本地可打开，云端路由限制见下文）。
 7. **可观测性**。每次模型调用记录 `agent_stage`（角色/阶段/尝试/耗时，不含消息内容）；意图日志按轮哈希脱敏。评测用例在 `evals/cases.jsonl`。
 
 ## 快速开始
@@ -69,7 +69,7 @@ uv run --project src/agent-framework-agent-with-local-tools-responses --locked -
   python -m unittest discover -s tests -v
 ```
 
-测试套件用 fake 模型/检索响应覆盖真实 SDK 接口：直答单调用路径、选择性工具路由、存储、证据校验、测验回放、渲染。不调用真实模型，不评估教学准确性。当前 165 个用例全绿。
+测试套件用 fake 模型/检索响应覆盖真实 SDK 接口：直答单调用路径、选择性工具路由、存储、证据校验、测验回放、视觉方案审阅与渲染。不调用真实模型，不评估教学准确性。交互行为测试使用 Node 执行应用固定脚本；未安装 Node 时相应测试跳过，实际执行结果以测试报告为准。
 
 真实响应的离线校验：
 
@@ -115,3 +115,7 @@ azd ai agent invoke "请围绕一元一次方程考考我，一次只出一道�
 - 互动图产物迁移到 blob 存储，云端可打开
 - 流式输出与生产级前端
 - 真实用户试用与迭代记录
+
+## Code layout
+
+`learning_coach/server.py` assembles the application. `api/` handles transport, `service/` owns use cases and dependency interfaces, `domain/` owns rules, `db/` implements persistence, and `adapters/` implements models, search, and rendering. See [dependency diagram and module map](docs/edu-agent-architecture.md#代码依赖与组装边界). Old flat internal imports have moved; public HTTP and database formats are unchanged.

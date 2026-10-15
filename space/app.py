@@ -42,36 +42,19 @@ try:
 except ImportError:
     pass
 
-from agent_framework.foundry import FoundryChatClient
-from azure.identity import DefaultAzureCredential
 
-from learning_coach.host import learner_text
-from learning_coach.memory import LearningStore
-from learning_coach.pipeline import LearningPipeline
-from learning_coach.research import ResearchService
-from learning_coach.runner import StructuredRunner, create_agents
-from learning_coach.visuals import ArtifactStore
+from learning_coach.api.host import learner_text
+from learning_coach.service.pipeline import LearningPipeline
+from learning_coach.server import create_pipeline
 
 ARTIFACT_LINK = re.compile(r"\n?\[打开互动图\]\(http://localhost:8088/artifacts/([A-Za-z0-9_-]+)\)")
 DATA_IMAGE = re.compile(r'data:image/[a-z]+;base64,[A-Za-z0-9+/=]+')
 
 
 def build_pipeline() -> LearningPipeline:
-    client = FoundryChatClient(
-        project_endpoint=os.environ["FOUNDRY_PROJECT_ENDPOINT"],
-        model=os.environ["AZURE_AI_MODEL_DEPLOYMENT_NAME"],
-        credential=DefaultAzureCredential(),
-    )
-    directory = Path(os.environ.get("LEARNING_COACH_DATA_DIR", "/tmp/learning-coach"))
-    directory.mkdir(parents=True, exist_ok=True)
-    runner = StructuredRunner(create_agents(client, ROOT / "instructions.md"), native_json=False)
-    artifacts = ArtifactStore(directory / "artifacts", public_base_url="http://localhost:8088")
-    from learning_coach.illustrate import generate_image
-
-    return LearningPipeline(
-        runner, ResearchService(runner), LearningStore(directory / "memory.sqlite3"), artifacts,
-        json.loads((ROOT / "response.schema.json").read_text(encoding="utf-8")),
-        image_generator=generate_image,
+    return create_pipeline(
+        data_dir=Path(os.environ.get("LEARNING_COACH_DATA_DIR", "/tmp/learning-coach")).resolve(),
+        public_base_url="http://localhost:8088", native_json=False,
     )
 
 
@@ -109,6 +92,8 @@ async def respond(user_text, session):
                          state=session["state"]), timeout=240)
         session["state"] = new_state
         text = learner_text(output)
+        # Keep model context separate from presentation-only markup and image bytes.
+        history_text = ARTIFACT_LINK.sub("", text).rstrip()
         panel = session["panel"]
         match = ARTIFACT_LINK.search(text)
         if match:
@@ -123,7 +108,8 @@ async def respond(user_text, session):
                 else:
                     # Interactive visual: embedded sandboxed frame below chat.
                     panel = iframe_for(document)
-        session["history"].append({"role": "assistant", "text": text})
+        session["history"].append({"role": "assistant", "text": history_text})
+        session["panel"] = panel
         session["chat"] = session["chat"] + [
             {"role": "user", "content": user_text},
             {"role": "assistant", "content": text},

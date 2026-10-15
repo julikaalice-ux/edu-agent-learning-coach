@@ -1,0 +1,7 @@
+<main><header><span class="eyebrow">互动图解</span><h1>{{TITLE}}</h1><p id="goal"></p></header>
+<div class="workspace"><section class="drawing" aria-label="教学场景"><div class="scene-top"><span id="position"></span><span>分步观察 · 可随时暂停</span></div><div class="viewport" tabindex="0" aria-label="图解画布，可左右滚动"><div id="scene"></div></div><p class="scroll-hint">↔ 左右滑动查看完整图解</p><p id="interaction-hint"></p></section>
+<aside><span class="eyebrow">观察步骤</span><div id="steps"></div><div class="controls"><button id="previous" type="button">上一步</button><button id="next" type="button">下一步</button></div><label for="timeline">选择步骤</label><input type="range" id="timeline" min="0" step="1"><button id="play" type="button" aria-pressed="false">自动播放</button></aside></div>
+<section class="explanation" aria-live="polite" aria-atomic="true"><span class="eyebrow">此刻看到了什么</span><h2 id="frame-title"></h2><p id="frame-explanation"></p></section>
+<section class="check"><span class="eyebrow">想一想</span><p id="check-question"></p></section>
+<details><summary>图解的适用范围</summary><p id="limitations"></p><p>这是分步图解，播放仅切换步骤，不代表真实时间、速度或连续物理计算。图形和步骤需要结合讲解核对。</p></details>
+<noscript>请启用 JavaScript 查看和操作分步图解。</noscript></main>
