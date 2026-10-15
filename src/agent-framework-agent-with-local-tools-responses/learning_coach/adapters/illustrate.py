@@ -2,10 +2,11 @@
 
 Two backends, selected by ``LEARNING_COACH_IMAGE_BACKEND``:
 
-- ``pollinations`` (default): keyless Pollinations endpoint. Used for demos
-  while the Foundry FLUX route is permission-gated for this account.
-- ``flux``: Foundry Black Forest Labs provider route. Requires the account
-  principal to have access to the ``providers/blackforestlabs`` operation.
+- ``flux`` (default): Foundry Black Forest Labs provider route, deployment
+  ``LEARNING_COACH_FLUX_DEPLOYMENT`` (default ``flux-2-pro``). Uses the
+  signed-in Azure identity; the resource has key authentication disabled.
+- ``pollinations``: keyless public endpoint, kept only as an offline-demo
+  fallback. Lower quality and watermarked.
 
 The caller (pipeline) only sees :func:`generate_image` returning PNG/JPEG
 bytes; failures raise and are handled by the existing visual fallback.
@@ -24,6 +25,14 @@ from azure.identity import DefaultAzureCredential
 
 FLUX_SCOPE = "https://ai.azure.com/.default"
 TIMEOUT_SECONDS = 90
+DEFAULT_FLUX_DEPLOYMENT = "flux-2-pro"
+# Labels are drawn by the application, never by the image model: generated
+# lettering is often wrong, especially for Chinese.
+NO_TEXT_SUFFIX = " No text, letters, captions, labels, logos or watermarks anywhere in the image."
+
+
+def with_no_text(prompt: str) -> str:
+    return prompt.rstrip() + NO_TEXT_SUFFIX
 
 
 def _default_account_endpoint() -> str | None:
@@ -35,7 +44,7 @@ def _default_account_endpoint() -> str | None:
 
 def _flux_url() -> str:
     account = os.environ.get("LEARNING_COACH_FLUX_ACCOUNT_ENDPOINT") or _default_account_endpoint()
-    deployment = os.environ.get("LEARNING_COACH_FLUX_DEPLOYMENT", "flux-2-flex")
+    deployment = os.environ.get("LEARNING_COACH_FLUX_DEPLOYMENT", DEFAULT_FLUX_DEPLOYMENT)
     if not account:
         raise RuntimeError("flux_endpoint_unavailable")
     return (f"{account}/providers/blackforestlabs/v1/{deployment}"
@@ -45,7 +54,7 @@ def _flux_url() -> str:
 def _flux_request(prompt: str, width: int, height: int) -> bytes:
     token = DefaultAzureCredential().get_token(FLUX_SCOPE).token
     body = json.dumps({
-        "model": os.environ.get("LEARNING_COACH_FLUX_DEPLOYMENT", "flux-2-flex"),
+        "model": os.environ.get("LEARNING_COACH_FLUX_DEPLOYMENT", DEFAULT_FLUX_DEPLOYMENT),
         "prompt": prompt,
         "width": width,
         "height": height,
@@ -105,7 +114,8 @@ def image_page_html(spec: dict, image: bytes) -> str:
 
 async def generate_image(prompt: str, *, width: int = 1024, height: int = 1024) -> bytes:
     """Generate one image and return its bytes; raise on any failure."""
-    backend = os.environ.get("LEARNING_COACH_IMAGE_BACKEND", "pollinations")
-    if backend == "flux":
-        return await asyncio.to_thread(_flux_request, prompt, width, height)
-    return await asyncio.to_thread(_pollinations_request, prompt, width, height)
+    backend = os.environ.get("LEARNING_COACH_IMAGE_BACKEND", "flux")
+    prompt = with_no_text(prompt)
+    if backend == "pollinations":
+        return await asyncio.to_thread(_pollinations_request, prompt, width, height)
+    return await asyncio.to_thread(_flux_request, prompt, width, height)
