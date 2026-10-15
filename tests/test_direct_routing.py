@@ -614,45 +614,76 @@ class DirectRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.artifacts.committed, [])
         self.assertEqual(self.store.snapshot("s")["profile"], {})
 
-    async def test_notes_and_visual_start_concurrently_after_research(self):
+    async def test_notes_run_at_once_and_research_dependents_wait(self):
         self.store.set_enabled("s", True)
-        notes_started, visual_started, research_finished, quiz_finished = (asyncio.Event() for _ in range(4))
+        research_finished, notes_started, quiz_started, visual_started = (asyncio.Event() for _ in range(4))
         text = "我在工作，请查资料、出一道题并画图解释，再记录学习情况"
 
-        class BarrierResearch(FakeResearch):
+        class SlowResearch(FakeResearch):
             async def run(self, query):
+                # Research only finishes once notes have started: notes must not wait for it.
+                await notes_started.wait()
                 result = await super().run(query)
                 research_finished.set()
                 return result
 
-        class BarrierRunner(FakeRunner):
+        class OrderRunner(FakeRunner):
             async def __call__(self, role, payload, schema):
-                if role == "coordinator" and payload.get("phase") == "quiz":
-                    result = await super().__call__(role, payload, schema)
-                    quiz_finished.set()
-                    return result
-                if role in ("notes", "visualizer"):
-                    if not research_finished.is_set() or not quiz_finished.is_set():
-                        raise AssertionError("dependent research and quiz did not complete before child work")
-                    if role == "notes":
-                        notes_started.set()
-                        await visual_started.wait()
-                    else:
+                if role == "notes":
+                    notes_started.set()
+                if role == "visualizer" or (role == "coordinator" and payload.get("phase") == "quiz"):
+                    if not research_finished.is_set():
+                        raise AssertionError("unstated research dependency must wait for research")
+                    # Question and visual do not depend on each other, so they overlap.
+                    if role == "visualizer":
                         visual_started.set()
-                        await notes_started.wait()
+                        await quiz_started.wait()
+                    else:
+                        quiz_started.set()
+                        await visual_started.wait()
                 return await super().__call__(role, payload, schema)
 
-        runner = BarrierRunner([tool_decision(text, research_query="分数", visual_request="分数对照", observe_learning=True,
-                                              quiz_action="start", quiz_topic="分数")], note_results=[notes(True)])
-        # The timeout only prevents a deadlocked test. Synchronization proves
-        # overlap; there is no assertion about elapsed execution time.
-        output, state = await asyncio.wait_for(self.pipeline(runner, BarrierResearch()).run(messages(text), session_id="s"), timeout=5)
+        runner = OrderRunner([tool_decision(text, research_query="分数", visual_request="分数对照", observe_learning=True,
+                                            quiz_action="start", quiz_topic="分数")], note_results=[notes(True)])
+        output, state = await asyncio.wait_for(self.pipeline(runner, SlowResearch()).run(messages(text), session_id="s"), timeout=5)
         self.assert_wire(output)
-        self.assertTrue(notes_started.is_set())
-        self.assertTrue(visual_started.is_set())
+        self.assertEqual(state["last_execution"]["order"], {
+            "visual_waits_research": True, "quiz_waits_research": True, "quiz_waits_visual": False})
         self.assertEqual(state["last_execution"]["tools"]["notes"], "saved")
         self.assertEqual(state["last_execution"]["tools"]["visual"], "published")
-        self.assertEqual(len(runner.calls_for("coordinator", "respond")), 1)
+        self.assertEqual(state["last_execution"]["tools"]["quiz"], "question_ready")
+        self.assertIn("research", runner.calls_for("coordinator", "quiz")[0])
+
+    async def test_visual_unrelated_to_research_does_not_wait_or_receive_it(self):
+        text = "查一下最新的火星探测进展，顺便画一下太阳系结构"
+        visual_started = asyncio.Event()
+
+        class GatedResearch(FakeResearch):
+            async def run(self, query):
+                await visual_started.wait()
+                return await super().run(query)
+
+        class Runner(FakeRunner):
+            async def __call__(self, role, payload, schema):
+                if role == "visualizer":
+                    visual_started.set()
+                return await super().__call__(role, payload, schema)
+
+        runner = Runner([tool_decision(text, research_query="火星探测", visual_request="太阳系结构",
+                                       visual_uses_research=False)])
+        _, state = await asyncio.wait_for(self.pipeline(runner, GatedResearch()).run(messages(text), session_id="m"), timeout=5)
+        self.assertFalse(state["last_execution"]["order"]["visual_waits_research"])
+        self.assertIsNone(runner.calls_for("visualizer")[0]["research"])
+
+    async def test_question_from_the_picture_waits_for_the_visual(self):
+        text = "画一张光合作用的图，然后看图出一道题考我"
+        runner = FakeRunner([tool_decision(text, visual_request="光合作用场所与原料", quiz_action="start",
+                                           quiz_topic="光合作用", quiz_uses_visual=True)])
+        _, state = await self.pipeline(runner).run(messages(text), session_id="v")
+        self.assertTrue(state["last_execution"]["order"]["quiz_waits_visual"])
+        roles = [(call["role"], call["payload"].get("phase")) for call in runner.calls]
+        self.assertLess(roles.index(("verifier", "visual_review")), roles.index(("coordinator", "quiz")))
+        self.assertEqual(runner.calls_for("coordinator", "quiz")[0]["visual_context"]["status"], "ready")
 
     async def test_cancellation_stops_both_parallel_children_without_commit(self):
         self.store.set_enabled("s", True)

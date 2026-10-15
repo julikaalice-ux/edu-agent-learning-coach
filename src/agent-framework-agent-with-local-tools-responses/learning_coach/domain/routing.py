@@ -3,7 +3,7 @@
 from copy import deepcopy
 import re
 
-from learning_coach.domain.contracts import ContractError, PLAN_SCHEMA, grade_choice, validate
+from learning_coach.domain.contracts import ContractError, DEPENDENCY_FIELDS, PLAN_SCHEMA, grade_choice, validate
 
 TOOLS = ("research", "quiz", "notes", "visual")
 TERMINAL_STATUS = {
@@ -129,6 +129,7 @@ def recover_quiz_route(decision, state, learner_text, *, memory_enabled):
         "quiz_action": "continue", "quiz_topic": quiz["topic"], "quiz_total": quiz["total"],
         "difficulty": quiz["difficulty"], "participant": participant,
         "tool_reasons": reasons,
+        **dict.fromkeys(DEPENDENCY_FIELDS),
     }
     return {"mode": "tools", "plan": validate(repaired, PLAN_SCHEMA)}, True
 
@@ -166,6 +167,7 @@ def recover_practice_route(decision, state, learner_text):
         "difficulty": quiz.get("difficulty", "简单") if continuing else "简单",
         "participant": quiz.get("participant", "unknown") if continuing else "learner",
         "tool_reasons": reasons,
+        **dict.fromkeys(DEPENDENCY_FIELDS),
     }
     return {"mode": "tools", "plan": validate(plan, PLAN_SCHEMA)}, True
 
@@ -249,6 +251,7 @@ def recover_explicit_visual_route(decision, learner_text):
         "quiz_action": "none", "quiz_topic": None, "quiz_total": 3,
         "difficulty": "简单", "participant": "learner",
         "tool_reasons": reasons,
+        **dict.fromkeys(DEPENDENCY_FIELDS),
     }
     return {"mode": "tools", "plan": validate(plan, PLAN_SCHEMA)}, True
 
@@ -257,3 +260,25 @@ def require_finished(results):
     """Do not publish a final response while a selected capability is pending."""
     if set(results) != set(TOOLS) or any(status not in TERMINAL_STATUS[name] for name, status in results.items()):
         raise ContractError("tool_result_not_terminal")
+
+
+def execution_order(plan):
+    """Derive waits from the coordinator's content dependencies.
+
+    The coordinator only says what depends on what; the program decides the
+    order. Notes never wait. A visual or question waits for this turn's
+    research unless the coordinator explicitly says it does not use it
+    (research only runs for uncertain or time-sensitive facts, so an unstated
+    dependency is treated as real). A question waits for the visual only when
+    the coordinator explicitly says it is answered from the picture. A wait
+    on a capability that does not run this turn is dropped, and waits only
+    point forward (research -> visual -> quiz), so they cannot deadlock.
+    """
+    research = plan["research_query"] is not None
+    visual = plan["visual_request"] is not None
+    quiz = plan["quiz_action"] in ("start", "continue")
+    return {
+        "visual_waits_research": research and visual and plan.get("visual_uses_research") is not False,
+        "quiz_waits_research": research and quiz and plan.get("quiz_uses_research") is not False,
+        "quiz_waits_visual": visual and quiz and plan.get("quiz_uses_visual") is True,
+    }

@@ -370,7 +370,9 @@ class FiveRoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                               "visual_request": "展示水和冰的结构差异", "observe_learning": True,
                               "task_summary": "理解水结冰体积变化", "pause_task": False, "end_task": False,
                               "quiz_action": "none", "quiz_topic": None, "quiz_total": 1,
-                              "difficulty": "简单", "participant": "learner"}
+                              "difficulty": "简单", "participant": "learner",
+                              "visual_uses_research": True, "quiz_uses_research": None,
+                              "quiz_uses_visual": None}
                     quote = data["messages"][-1]["text"]
                     answer["tool_reasons"] = {
                         "research": {"code": "explicit_lookup", "evidence_quote": quote}, "quiz": None,

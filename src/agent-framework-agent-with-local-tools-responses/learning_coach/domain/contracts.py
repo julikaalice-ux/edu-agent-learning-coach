@@ -17,6 +17,8 @@ def object_schema(properties):
 
 TEXT = {"type": "string", "minLength": 1, "maxLength": 2000, "pattern": r"\S"}
 OPTIONAL_TEXT = {"anyOf": [TEXT, {"type": "null"}]}
+OPTIONAL_BOOL = {"anyOf": [{"type": "boolean"}, {"type": "null"}]}
+DEPENDENCY_FIELDS = ("visual_uses_research", "quiz_uses_research", "quiz_uses_visual")
 INTENT_SCHEMA = object_schema({
     "primary": {"enum": list("ABCDEFG")}, "is_implicit": {"type": "boolean"},
 })
@@ -52,6 +54,11 @@ PLAN_SCHEMA = object_schema({
     "difficulty": {"enum": ["简单", "中等", "困难"]},
     "participant": {"enum": ["learner", "companion_report", "unknown"]},
     "tool_reasons": TOOL_REASONS_SCHEMA,
+    # Content dependencies only; the program derives the execution order.
+    # null means "not stated" and gets the program's safe default.
+    "visual_uses_research": OPTIONAL_BOOL,
+    "quiz_uses_research": OPTIONAL_BOOL,
+    "quiz_uses_visual": OPTIONAL_BOOL,
 })
 
 
