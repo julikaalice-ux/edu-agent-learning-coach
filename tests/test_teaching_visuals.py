@@ -110,6 +110,10 @@ class TeachingVisualPipelineTests(unittest.IsolatedAsyncioTestCase):
         retry = runner.calls_for("visualizer")[1]
         self.assertEqual(retry["revision_issues"], review("revise")["issues"])
         self.assertEqual(retry["previous_spec"], first)
+        first_review, second_review = runner.calls_for("verifier", "visual_review")
+        self.assertEqual((first_review["attempt"], first_review["previous_issues"]), (1, []))
+        self.assertEqual(second_review["attempt"], 2)
+        self.assertEqual(second_review["previous_issues"], review("revise")["issues"])
         self.assertEqual(len(self.artifacts.prepared), 2)
         self.assertEqual(len(self.artifacts.committed), 1)
         self.assertEqual(self.artifacts.committed[0][1]["spec"]["title"], corrected["title"])

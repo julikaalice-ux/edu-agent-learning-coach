@@ -110,6 +110,8 @@ class VisualGenerationService:
                     "spec": spec, "research": research,
                     "render_check": "passed", "review_scope": "specification_only",
                     "pixel_reviewed": False,
+                    # A redraw is re-reviewed against the issues it was meant to fix.
+                    "attempt": attempt, "previous_issues": deepcopy(issues),
                 }, VISUAL_REVIEW_SCHEMA)
                 validate_visual_review(review, research)
             except ContractError:
