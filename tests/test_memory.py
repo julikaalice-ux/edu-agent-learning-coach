@@ -2,7 +2,6 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
-import importlib.util
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -10,10 +9,9 @@ from threading import Barrier
 import unittest
 
 
-SOURCE = Path(__file__).resolve().parents[1] / "src/agent-framework-agent-with-local-tools-responses/learning_coach/memory.py"
-spec = importlib.util.spec_from_file_location("learning_memory_under_test", SOURCE)
-memory = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(memory)
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/agent-framework-agent-with-local-tools-responses"))
+from learning_coach.db import memory
 
 
 def notes():

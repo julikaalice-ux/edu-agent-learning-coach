@@ -1,8 +1,9 @@
 """Program-owned eligibility and completion rules for optional capabilities."""
 
 from copy import deepcopy
+import re
 
-from .contracts import ContractError, PLAN_SCHEMA, grade_choice, validate
+from learning_coach.domain.contracts import ContractError, PLAN_SCHEMA, grade_choice, validate
 
 TOOLS = ("research", "quiz", "notes", "visual")
 TERMINAL_STATUS = {
@@ -174,18 +175,49 @@ def recover_practice_route(decision, state, learner_text):
 # sketch). Recovery only fires on an explicit keyword in the learner's own
 # message, so implicit or declined requests are never forced.
 VISUAL_TRIGGERS = ("画图", "图片", "插图", "配图", "画面", "照片", "示意图", "结构图",
-                   "互动图", "可视化", "流程图", "思维导图")
+                   "互动图", "可视化", "流程图", "思维导图", "用图解释", "用图说明",
+                   "用图展示", "动画", "动图", "互动演示")
 VISUAL_OPT_OUTS = ("不用图", "不要图", "别画", "不用画", "文字说明", "文字版")
+_NON_VISUAL_DEMO = re.compile(r"模拟(?:考试|考|试卷|试题|面试)|演示文稿|幻灯片")
+_VISUAL_WORD = r"(?:演示|模拟|动画|动图|图片|插图|配图|照片|示意图|结构图|互动图|可视化|流程图|思维导图|画图|用图解释|用图说明|用图展示)"
+_VISUAL_DEFINITION = re.compile(
+    _VISUAL_WORD + r"[”\"’'」』]?(?:这个词|一词)?(?:是什么(?:意思|含义)?|什么意思|的意思|的含义|的定义|怎么定义)"
+    r"|(?:什么是|什么叫)[“\"‘'「『]?" + _VISUAL_WORD + r"[”\"’'」』]?(?:呢|啊|呀)?$"
+)
+_VISUAL_DECLINE = re.compile(
+    r"(?:不要|不需要|不想看|不想要|不用|不必|别|停止|取消).{0,8}" + _VISUAL_WORD
+    + r"|" + _VISUAL_WORD + r".{0,6}(?:不要了|不用了|不需要了|先不看|取消)"
+)
+_DEMO_REQUEST = re.compile(
+    r"(?:演示|模拟)(?:一下|一遍|给我看)"
+    r"|(?:^|请|帮我|给我|能否|可以|能不能)(?:做(?:个|一个)?|进行(?:一次)?)?(?:演示|模拟)"
+    r"|(?:演示|模拟).{0,100}(?:原理|过程|变化|形成|运动|发生|传播|作用|如何|怎么)"
+    r"|(?:原理|过程|变化|形成|运动|传播).{0,30}(?:演示|模拟)"
+)
+
+
+def visual_request_clauses(learner_text):
+    """Yield request clauses, excluding declined visuals and non-visual uses."""
+    # These are conservative recovery rules, not a subject-to-template router.
+    # Inspect clauses separately so "不要照片，用动画解释" still requests a visual.
+    for clause in re.split(r"[，,。；;！？!?\n]+|但是|但|不过|而是", learner_text.strip()):
+        if (any(opt in clause for opt in VISUAL_OPT_OUTS)
+                or _NON_VISUAL_DEMO.search(clause) or _VISUAL_DEFINITION.search(clause)
+                or _VISUAL_DECLINE.search(clause)):
+            continue
+        if clause.strip():
+            yield clause
 
 
 def _visual_quote(learner_text):
     """Return a verbatim trigger quote from the learner's message, or None."""
-    text = learner_text.strip()
-    if any(opt in text for opt in VISUAL_OPT_OUTS):
-        return None
-    for trigger in VISUAL_TRIGGERS:
-        if trigger in text:
-            return trigger
+    for clause in visual_request_clauses(learner_text):
+        for trigger in VISUAL_TRIGGERS:
+            if trigger in clause:
+                return trigger
+        match = _DEMO_REQUEST.search(clause)
+        if match:
+            return match.group(0)
     return None
 
 
@@ -201,6 +233,8 @@ def recover_explicit_visual_route(decision, learner_text):
         return decision, False
     task = decision["task"]
     if task["end_task"] or task["pause_task"]:
+        return decision, False
+    if decision["response"]["intent"]["primary"] in "EFG":
         return decision, False
     quote = _visual_quote(learner_text)
     if quote is None:

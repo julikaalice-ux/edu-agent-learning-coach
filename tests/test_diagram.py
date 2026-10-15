@@ -10,10 +10,11 @@ SOURCE = Path(__file__).resolve().parents[1] / "src/agent-framework-agent-with-l
 sys.path.insert(0, str(SOURCE))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from learning_coach.contracts import validate  # noqa: E402
-from learning_coach.memory import LearningStore  # noqa: E402
-from learning_coach.pipeline import LearningPipeline  # noqa: E402
-from learning_coach.visuals import VISUAL_SCHEMA, ArtifactStore, render_visual  # noqa: E402
+from learning_coach.domain.contracts import validate  # noqa: E402
+from learning_coach.db.memory import LearningStore  # noqa: E402
+from learning_coach.service.pipeline import LearningPipeline  # noqa: E402
+from learning_coach.adapters.visuals import VISUAL_SCHEMA, render_visual
+from learning_coach.db.artifacts import ArtifactStore  # noqa: E402
 from test_pipeline import FakeArtifacts, FakeResearch, FakeRunner, RESPONSE_SCHEMA, messages, plan  # noqa: E402
 
 
@@ -107,7 +108,7 @@ class DiagramPipelineTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_diagram_visual_commits_svg_artifact(self):
         self.store.set_enabled("s", True)
-        artifacts = ArtifactStore(Path(self.temp.name) / "artifacts")
+        artifacts = ArtifactStore(Path(self.temp.name) / "artifacts", renderer=render_visual)
         runner = FakeRunner([plan(visual_request="画一张光合作用示意图")], visuals=[photosynthesis_spec()])
         output, _ = await LearningPipeline(
             runner, self.research, self.store, artifacts, RESPONSE_SCHEMA,

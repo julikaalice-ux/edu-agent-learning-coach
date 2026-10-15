@@ -11,10 +11,11 @@ SOURCE = Path(__file__).resolve().parents[1] / "src/agent-framework-agent-with-l
 sys.path.insert(0, str(SOURCE))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from learning_coach.contracts import validate  # noqa: E402
-from learning_coach.memory import LearningStore  # noqa: E402
-from learning_coach.pipeline import LearningPipeline  # noqa: E402
-from learning_coach.visuals import VISUAL_SCHEMA, ArtifactStore, render_visual  # noqa: E402
+from learning_coach.domain.contracts import validate  # noqa: E402
+from learning_coach.db.memory import LearningStore  # noqa: E402
+from learning_coach.service.pipeline import LearningPipeline  # noqa: E402
+from learning_coach.adapters.visuals import VISUAL_SCHEMA, render_visual
+from learning_coach.db.artifacts import ArtifactStore  # noqa: E402
 from test_pipeline import (  # noqa: E402
     FakeArtifacts, FakeResearch, FakeRunner, RESPONSE_SCHEMA, messages, plan,
 )
@@ -64,7 +65,7 @@ class IllustrationPipelineTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_illustration_visual_commits_generated_image(self):
         self.store.set_enabled("s", True)
-        self.artifacts = ArtifactStore(Path(self.temp.name) / "artifacts")
+        self.artifacts = ArtifactStore(Path(self.temp.name) / "artifacts", renderer=render_visual)
         visual = {"kind": "illustration", "title": "圆明园复原图",
                   "prompt": "reconstructed view of Old Summer Palace, illustration",
                   "alt": "圆明园复原想象图"}

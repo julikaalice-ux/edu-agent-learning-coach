@@ -16,55 +16,11 @@ from threading import RLock
 from typing import Any
 
 
-SCHEMA_VERSION = "1.0"
+from learning_coach.domain.mastery import update_mastery
+from learning_coach.domain.note_contracts import NOTES_SCHEMA, SCHEMA_VERSION, ERROR_CATEGORIES, PROFILE_KEYS
+from learning_coach.db.storage_errors import storage_boundary
+
 DATABASE_VERSION = "1"
-ERROR_CATEGORIES = ("conceptual", "procedural", "careless", "negative_transfer", "unclassified")
-PROFILE_KEYS = (
-    "learning_stage", "age_band", "learning_goal", "prior_knowledge",
-    "preferred_language", "available_time", "accessibility_needs",
-    "companion_role", "preferred_method", "learning_context",
-)
-
-
-def _string(limit: int = 1000) -> dict[str, Any]:
-    return {"type": "string", "minLength": 1, "maxLength": limit, "pattern": r"\S"}
-
-
-def _object(properties: dict[str, Any]) -> dict[str, Any]:
-    return {"type": "object", "properties": properties, "required": list(properties), "additionalProperties": False}
-
-
-def _array(items: dict[str, Any]) -> dict[str, Any]:
-    return {"type": "array", "items": items, "maxItems": 30}
-
-
-NOTES_SCHEMA = _object({
-    "schema_version": {"type": "string", "const": SCHEMA_VERSION},
-    "profile": _array(_object({
-        "key": {"type": "string", "enum": list(PROFILE_KEYS)},
-        "value": _string(),
-        "origin": {"type": "string", "enum": ["self_report", "companion_report"]},
-        "evidence_quote": _string(4000),
-    })),
-    "concepts": _array(_object({
-        "concept_id": _string(200),
-        "label": _string(200),
-        "prerequisites": {"anyOf": [{"type": "null"}, _array(_string(200))]},
-        "related": {"anyOf": [{"type": "null"}, _array(_string(200))]},
-        "evidence_quote": _string(4000),
-    })),
-    "error_records": _array(_object({
-        "concept_id": _string(200),
-        "category": {"type": "string", "enum": list(ERROR_CATEGORIES)},
-        "cause_confirmed": {"type": "boolean"},
-        "evidence_quote": _string(4000),
-    })),
-    "review_plan": _array(_object({
-        "topic": _string(200),
-        "deadline": {"anyOf": [{"type": "null"}, _string(100)]},
-        "evidence_quote": _string(4000),
-    })),
-})
 
 
 def _validate(value: Any, schema: dict[str, Any], field: str = "notes") -> None:
@@ -147,6 +103,7 @@ class LearningStore:
             self._db.close()
             raise ValueError("Unsupported learning database version")
 
+    @storage_boundary
     def close(self) -> None:
         with self._lock:
             self._db.close()
@@ -160,11 +117,13 @@ class LearningStore:
         row = self._db.execute("SELECT enabled FROM session_settings WHERE session_id = ?", (session_id,)).fetchone()
         return bool(row and row[0])
 
+    @storage_boundary
     def is_enabled(self, session_id: str) -> bool:
         self._identifier(session_id, "session_id")
         with self._lock:
             return self._enabled(session_id)
 
+    @storage_boundary
     def set_enabled(self, session_id: str, enabled: bool) -> None:
         self._identifier(session_id, "session_id")
         if type(enabled) is not bool:
@@ -172,6 +131,7 @@ class LearningStore:
         with self._lock:
             self._db.execute("INSERT INTO session_settings VALUES (?, ?) ON CONFLICT(session_id) DO UPDATE SET enabled=excluded.enabled", (session_id, int(enabled)))
 
+    @storage_boundary
     def clear(self, session_id: str) -> None:
         self._identifier(session_id, "session_id")
         with self._lock:
@@ -184,6 +144,7 @@ class LearningStore:
                 self._db.execute("ROLLBACK")
                 raise
 
+    @storage_boundary
     def snapshot(self, session_id: str) -> dict[str, Any]:
         self._identifier(session_id, "session_id")
         empty = {"schema_version": SCHEMA_VERSION, "profile": {}, "concepts": [], "error_records": [], "review_plan": []}
@@ -208,6 +169,7 @@ class LearningStore:
                 self._db.execute("ROLLBACK")
                 raise
 
+    @storage_boundary
     def apply_notes(self, session_id: str, turn_id: str, notes: dict[str, Any], learner_text: str, quiz_evidence: dict[str, Any] | None = None) -> bool:
         self._identifier(session_id, "session_id")
         self._identifier(turn_id, "turn_id")
@@ -268,22 +230,10 @@ class LearningStore:
             raise ValueError("quiz_evidence.error_category is invalid")
         self._db.execute("INSERT OR IGNORE INTO concepts (session_id, concept_id, label) VALUES (?, ?, ?)", (session_id, concept_id, concept_id))
         current = self._db.execute("SELECT mastery_level FROM concepts WHERE session_id = ? AND concept_id = ?", (session_id, concept_id)).fetchone()[0]
-        if current is None:
-            if kind == "restatement":
-                # A trusted independent restatement is the diagnostic baseline.
-                current = 0.3 if evidence["correct"] else None
-            else:
-                # Trusted independent quiz evidence starts from a neutral floor.
-                # A score from a few observations is a heuristic, not calibrated mastery.
-                current = 0.0
-        if current is not None and kind == "quiz":
-            if evidence["correct"]:
-                current += {"简单": 0.1, "中等": 0.15, "困难": 0.2}[difficulty]
-            else:
-                current -= 0.15
-                last = self._db.execute("SELECT correct, error_category FROM quiz_events WHERE session_id = ? AND concept_id = ? AND kind = 'quiz' ORDER BY id DESC LIMIT 1", (session_id, concept_id)).fetchone()
-                if last is not None and not last["correct"] and category != "unclassified" and last["error_category"] == category:
-                    current -= 0.1
-            current = round(max(0.0, min(1.0, current)), 4)
+        previous = None
+        if kind == "quiz" and not evidence["correct"]:
+            previous = self._db.execute("SELECT correct, error_category FROM quiz_events WHERE session_id = ? AND concept_id = ? AND kind = 'quiz' ORDER BY id DESC LIMIT 1", (session_id, concept_id)).fetchone()
+        current = update_mastery(current, kind=kind, correct=evidence["correct"],
+                                 difficulty=difficulty, category=category, previous=previous)
         self._db.execute("UPDATE concepts SET mastery_level = ?, attempts = attempts + ?, correct_count = correct_count + ? WHERE session_id = ? AND concept_id = ?", (current, int(kind == "quiz"), int(kind == "quiz" and evidence["correct"]), session_id, concept_id))
         self._db.execute("INSERT INTO quiz_events (session_id, turn_id, concept_id, kind, correct, difficulty, error_category) VALUES (?, ?, ?, ?, ?, ?, ?)", (session_id, turn_id, concept_id, kind, int(evidence["correct"]), difficulty, category))

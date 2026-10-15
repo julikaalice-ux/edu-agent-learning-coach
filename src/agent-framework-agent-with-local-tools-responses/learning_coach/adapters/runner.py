@@ -1,8 +1,6 @@
 """Bounded, stateless calls to five actual Agent Framework agents."""
 
 import asyncio
-from contextvars import ContextVar
-from dataclasses import dataclass
 import json
 import logging
 from pathlib import Path
@@ -10,19 +8,14 @@ from time import perf_counter
 
 from agent_framework import Agent
 
-from .contracts import ContractError, parse, validate, object_schema
+from learning_coach.domain.contracts import ContractError, parse, validate, object_schema
 
 
 LOG = logging.getLogger(__name__)
 ROLES = ("coordinator", "researcher", "verifier", "notes", "visualizer")
 
 
-@dataclass
-class CallBudget:
-    remaining: int = 12
-
-
-BUDGET = ContextVar("learning_coach_budget", default=None)
+from learning_coach.service.execution import BUDGET, CALL_RESERVE, CallBudget, StageFailure
 
 
 def native_schema(schema):
@@ -35,10 +28,6 @@ def native_schema(schema):
             return [convert(item) for item in value]
         return value
     return object_schema({"result": convert(schema)})
-
-
-class StageFailure(RuntimeError):
-    pass
 
 
 class StructuredRunner:
@@ -54,11 +43,11 @@ class StructuredRunner:
             raise StageFailure("unknown_role")
         requested_schema = native_schema(schema) if self.native_json else schema
         request = {"input": payload, "output_schema": requested_schema}
-        phase = payload.get("phase") if payload.get("phase") in ("decide", "quiz", "respond") else "specialist"
+        phase = payload.get("phase") if payload.get("phase") in ("decide", "quiz", "respond", "visual_review") else "specialist"
         for attempt in range(2):
             budget = BUDGET.get()
             if budget is not None:
-                if budget.remaining <= 0:
+                if budget.remaining <= CALL_RESERVE.get():
                     raise StageFailure("call_budget_exhausted")
                 budget.remaining -= 1
             started = perf_counter()

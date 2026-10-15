@@ -3,82 +3,17 @@
 from __future__ import annotations
 
 import base64
-from contextlib import contextmanager
 import hashlib
 import html
 import json
 import math
-import os
-from pathlib import Path
-import re
-import secrets
-import sqlite3
-import tempfile
-import threading
-import time
-from urllib.parse import urlsplit
 
 from jsonschema import Draft202012Validator
 
 
-def _text(limit: int) -> dict:
-    return {"type": "string", "minLength": 1, "maxLength": limit, "pattern": "\\S"}
-
-
-def _object(properties: dict) -> dict:
-    return {
-        "type": "object", "properties": properties,
-        "required": list(properties), "additionalProperties": False,
-    }
-
-
-def _variant(kind: str, properties: dict) -> dict:
-    return _object({"kind": {"const": kind}, "title": _text(120), **properties})
-
-
-VISUAL_SCHEMA = {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "title": "TeachingVisual",
-    "oneOf": [
-        _variant("comparison", {
-            "left_label": _text(80), "right_label": _text(80),
-            "rows": {"type": "array", "minItems": 1, "maxItems": 8,
-                     "items": _object({"aspect": _text(80), "left": _text(600), "right": _text(600)})},
-        }),
-        _variant("process", {
-            "steps": {"type": "array", "minItems": 2, "maxItems": 8,
-                      "items": _object({"title": _text(80), "description": _text(600)})},
-        }),
-        _variant("flashcards", {
-            "cards": {"type": "array", "minItems": 1, "maxItems": 12,
-                      "items": _object({"front": _text(300), "back": _text(800)})},
-        }),
-        _variant("linear_function", {
-            "slope": {"type": "number", "minimum": -10, "maximum": 10},
-            "intercept": {"type": "number", "minimum": -20, "maximum": 20},
-            "x_min": {"type": "number", "minimum": -20, "maximum": 20},
-            "x_max": {"type": "number", "minimum": -20, "maximum": 20},
-        }),
-        _variant("illustration", {
-            "prompt": _text(800),
-            "alt": _text(200),
-        }),
-        _variant("diagram", {
-            "nodes": {"type": "array", "minItems": 1, "maxItems": 12,
-                      "items": _object({"id": _text(40), "label": _text(80),
-                                         "x": {"type": "number", "minimum": 0, "maximum": 100},
-                                         "y": {"type": "number", "minimum": 0, "maximum": 100}})},
-            "edges": {"type": "array", "minItems": 0, "maxItems": 24,
-                      "items": {"type": "object",
-                                "properties": {"from": _text(40), "to": _text(40),
-                                               "label": {"type": "string", "maxLength": 60}},
-                                "required": ["from", "to"], "additionalProperties": False}},
-        }),
-    ],
-}
+from learning_coach.domain.visual_contracts import VISUAL_SCHEMA
 
 _VALIDATOR = Draft202012Validator(VISUAL_SCHEMA)
-_TOKEN = re.compile(r"[A-Za-z0-9_-]{32}\Z")
 _CSS = """
 :root{font-family:system-ui,-apple-system,sans-serif;color:#18334b;background:#edf3f6;color-scheme:light}
 *{box-sizing:border-box}body{margin:0;padding:24px 14px}main{max-width:900px;margin:auto;background:white;padding:24px;border-radius:18px}
@@ -154,19 +89,29 @@ _SCRIPT = """
     const slider=(name,value,min,max)=>{const label=el('label');const text=el('span',name);const input=el('input');input.type='range';input.min=String(min);input.max=String(max);input.step='0.1';input.value=String(value);input.setAttribute('aria-label',name);label.append(text,input);root.append(label);return input;};
     root.append(equation,canvas);
     const slope=slider('斜率 m',data.slope,-10,10);const intercept=slider('截距 b',data.intercept,-20,20);
+    const xmin=data.x_min,xmax=data.x_max;
+    const fitExtent=()=>Math.max(1,Math.abs(xmin),Math.abs(xmax),Math.abs(Number(slope.value)*xmin+Number(intercept.value)),Math.abs(Number(slope.value)*xmax+Number(intercept.value)))*1.15;
+    // Keep the scale fixed while a parameter changes: otherwise m cancels out
+    // against the y-axis extent and different slopes appear identical.
+    const initialExtent=fitExtent();let extent=initialExtent;
+    const controls=el('div',undefined,'controls');
+    controls.append(button('适应当前直线',()=>{extent=fitExtent();draw();}),button('重置演示',()=>{slope.value=String(data.slope);intercept.value=String(data.intercept);extent=initialExtent;draw();}));
+    root.append(controls);
     const draw=()=>{
-      const m=Number(slope.value),b=Number(intercept.value),xmin=data.x_min,xmax=data.x_max;
+      const m=Number(slope.value),b=Number(intercept.value);
       equation.textContent=`y = ${m.toFixed(1)}x ${b<0?'−':'+'} ${Math.abs(b).toFixed(1)}`;
       canvas.setAttribute('aria-label',equation.textContent+`，横轴从 ${xmin} 到 ${xmax}`);
       const c=canvas.getContext('2d');if(!c){status.textContent='当前浏览器无法绘图，仍可通过上方公式观察数值变化。';return;}
-      const W=canvas.width,H=canvas.height,p=38,extent=Math.max(1,Math.abs(m*xmin+b),Math.abs(m*xmax+b))*1.15;
+      const W=canvas.width,H=canvas.height,p=38;
       const X=x=>p+(x-xmin)/(xmax-xmin)*(W-2*p),Y=y=>H-p-(y+extent)/(2*extent)*(H-2*p);
       c.clearRect(0,0,W,H);c.font='13px system-ui';c.lineWidth=1;c.strokeStyle='#dbe5ec';
       for(let i=0;i<=4;i++){const x=xmin+(xmax-xmin)*i/4,px=p+(W-2*p)*i/4;c.beginPath();c.moveTo(px,p);c.lineTo(px,H-p);c.stroke();c.fillStyle='#425d70';c.fillText(x.toFixed(1),px-12,H-12);}
       c.strokeStyle='#7694a9';c.beginPath();c.moveTo(p,Y(0));c.lineTo(W-p,Y(0));if(xmin<=0&&xmax>=0){c.moveTo(X(0),p);c.lineTo(X(0),H-p);}c.stroke();
-      c.strokeStyle='#176d9c';c.lineWidth=3;c.beginPath();c.moveTo(p,Y(m*xmin+b));c.lineTo(W-p,Y(m*xmax+b));c.stroke();
+      c.save();c.beginPath();c.rect(p,p,W-2*p,H-2*p);c.clip();
+      c.strokeStyle='#176d9c';c.lineWidth=3;c.beginPath();c.moveTo(p,Y(m*xmin+b));c.lineTo(W-p,Y(m*xmax+b));c.stroke();c.restore();
       c.fillStyle='#425d70';c.fillText(extent.toFixed(1),3,p+4);c.fillText((-extent).toFixed(1),3,H-p);c.fillText('y',7,18);c.fillText('x',W-14,H-12);
-      status.textContent='拖动滑块，观察斜率与截距改变后的直线；纵轴会自动缩放。';
+      const clipped=Math.abs(m*xmin+b)>extent||Math.abs(m*xmax+b)>extent;
+      status.textContent='拖动滑块，观察斜率与截距改变后的直线；坐标轴保持固定。'+(clipped?'部分直线超出视窗，可点“适应当前直线”调整视窗。':'');
     };
     slope.addEventListener('input',draw);intercept.addEventListener('input',draw);root.append(status);draw();
   }
@@ -228,10 +173,14 @@ def render_visual(spec: dict, image: bytes | None = None) -> str:
     """Validate a bounded declarative spec and render a self-contained page."""
     if not isinstance(spec, dict) or not _VALIDATOR.is_valid(spec):
         raise ValueError("invalid_visual_spec")
+    if spec["kind"] == "scene":
+        from learning_coach.adapters.scenes import render_scene
+
+        return render_scene(spec)
     if spec["kind"] == "illustration":
         if image is None:
             raise ValueError("illustration_requires_image")
-        from .illustrate import image_page_html
+        from learning_coach.adapters.illustrate import image_page_html
 
         return image_page_html(spec, image)
     if spec["kind"] == "diagram":
@@ -273,150 +222,3 @@ def render_visual(spec: dict, image: bytes | None = None) -> str:
     )
 
 
-class ArtifactStore:
-    """Store prepared visuals after acceptance; tokens expire 24h after commit.
-
-    A token is a bearer capability, not an authenticated user identity. Owners
-    are hashed session identifiers supplied by application code, never the model.
-    SQLite indexes survive restarts; only indexed files are readable. Prepared
-    objects are accepted only by the instance that created them.
-    """
-
-    TTL_SECONDS = 24 * 60 * 60
-
-    def __init__(self, root, public_base_url: str = "http://localhost:8088"):
-        parsed = urlsplit(public_base_url)
-        if (parsed.scheme not in ("http", "https") or not parsed.netloc
-                or parsed.username is not None or parsed.password is not None
-                or parsed.query or parsed.fragment or any(c.isspace() for c in public_base_url)):
-            raise ValueError("invalid_public_base_url")
-        self.root = Path(root).resolve()
-        self.root.mkdir(parents=True, exist_ok=True)
-        self.public_base_url = public_base_url.rstrip("/")
-        self._lock = threading.RLock()
-        self._prepared = {}
-        with self._connection() as db:
-            db.execute("CREATE TABLE IF NOT EXISTS artifacts "
-                       "(token TEXT PRIMARY KEY, session_hash TEXT NOT NULL, expires_at REAL NOT NULL)")
-            db.execute("CREATE INDEX IF NOT EXISTS artifacts_session ON artifacts(session_hash)")
-        self._cleanup_expired()
-
-    @contextmanager
-    def _connection(self):
-        connection = sqlite3.connect(self.root / "index.sqlite3", timeout=10)
-        try:
-            with connection:
-                yield connection
-        finally:
-            connection.close()
-
-    @staticmethod
-    def _owner(session_id: str) -> str:
-        if not isinstance(session_id, str) or not session_id.strip():
-            raise ValueError("invalid_session_id")
-        return hashlib.sha256(session_id.encode("utf-8")).hexdigest()
-
-    def _cleanup_expired(self):
-        with self._lock:
-            now = time.time()
-            with self._connection() as db:
-                expired = db.execute("SELECT token FROM artifacts WHERE expires_at <= ?", (now,)).fetchall()
-                # Keep the index if removal fails so a later cleanup can retry.
-                for (token,) in expired:
-                    if _TOKEN.fullmatch(token):
-                        (self.root / (token + ".html")).unlink(missing_ok=True)
-                db.execute("DELETE FROM artifacts WHERE expires_at <= ?", (now,))
-            self._prepared = {token: item for token, item in self._prepared.items() if item[4] > now}
-
-    def prepare(self, session_id: str, spec: dict, image: bytes | None = None) -> dict:
-        owner = self._owner(session_id)
-        document = render_visual(spec, image=image)
-        with self._lock:
-            for _ in range(10):
-                token = secrets.token_urlsafe(24)
-                if not _TOKEN.fullmatch(token):
-                    raise ValueError("invalid_generated_token")
-                with self._connection() as db:
-                    exists = db.execute("SELECT 1 FROM artifacts WHERE token = ?", (token,)).fetchone()
-                if token not in self._prepared and exists is None:
-                    break
-            else:
-                raise RuntimeError("artifact_token_collision")
-            url = self.public_base_url + "/artifacts/" + token
-            self._prepared[token] = (
-                owner, hashlib.sha256(document.encode("utf-8")).hexdigest(),
-                spec["title"], url, time.time() + self.TTL_SECONDS,
-            )
-        return {"token": token, "url": url, "title": spec["title"], "html": document}
-
-    def commit(self, session_id: str, artifact: dict) -> None:
-        owner = self._owner(session_id)
-        if (not isinstance(artifact, dict) or set(artifact) != {"token", "url", "title", "html"}
-                or not all(isinstance(value, str) for value in artifact.values())
-                or not _TOKEN.fullmatch(artifact["token"])):
-            raise ValueError("invalid_prepared_artifact")
-        token = artifact["token"]
-        with self._lock:
-            self._cleanup_expired()
-            prepared = self._prepared.get(token)
-            if (prepared is None or prepared[0] != owner
-                    or prepared[1] != hashlib.sha256(artifact["html"].encode("utf-8")).hexdigest()
-                    or prepared[2] != artifact["title"] or prepared[3] != artifact["url"]):
-                raise ValueError("artifact_not_prepared_for_session")
-            path = self.root / (token + ".html")
-            temporary = None
-            try:
-                with self._connection() as db:
-                    db.execute("BEGIN IMMEDIATE")
-                    if db.execute("SELECT 1 FROM artifacts WHERE token = ?", (token,)).fetchone():
-                        raise ValueError("artifact_already_committed")
-                    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=self.root,
-                                                     prefix=".artifact-", suffix=".tmp", delete=False) as handle:
-                        temporary = Path(handle.name)
-                        handle.write(artifact["html"])
-                        handle.flush()
-                        os.fsync(handle.fileno())
-                    os.replace(temporary, path)
-                    temporary = None
-                    db.execute("INSERT INTO artifacts(token, session_hash, expires_at) VALUES (?, ?, ?)",
-                               (token, owner, time.time() + self.TTL_SECONDS))
-                self._prepared.pop(token, None)
-            except BaseException:
-                # A failed commit must not leave a readable, partially accepted visual.
-                if temporary is not None:
-                    temporary.unlink(missing_ok=True)
-                with self._connection() as db:
-                    accepted = db.execute("SELECT 1 FROM artifacts WHERE token = ?", (token,)).fetchone()
-                if accepted is None:
-                    path.unlink(missing_ok=True)
-                raise
-
-    def get(self, token: str) -> str | None:
-        if not isinstance(token, str) or not _TOKEN.fullmatch(token):
-            return None
-        with self._lock:
-            self._cleanup_expired()
-            with self._connection() as db:
-                found = db.execute("SELECT 1 FROM artifacts WHERE token = ? AND expires_at > ?",
-                                   (token, time.time())).fetchone()
-            if found is None:
-                return None
-            path = self.root / (token + ".html")
-            if path.is_symlink():
-                return None
-            try:
-                return path.read_text(encoding="utf-8")
-            except (FileNotFoundError, UnicodeDecodeError):
-                return None
-
-    def delete_session(self, session_id: str) -> None:
-        owner = self._owner(session_id)
-        with self._lock:
-            # Pending artifacts are revoked even when disk cleanup needs a retry.
-            self._prepared = {token: item for token, item in self._prepared.items() if item[0] != owner}
-            with self._connection() as db:
-                rows = db.execute("SELECT token FROM artifacts WHERE session_hash = ?", (owner,)).fetchall()
-                for (token,) in rows:
-                    if _TOKEN.fullmatch(token):
-                        (self.root / (token + ".html")).unlink(missing_ok=True)
-                db.execute("DELETE FROM artifacts WHERE session_hash = ?", (owner,))

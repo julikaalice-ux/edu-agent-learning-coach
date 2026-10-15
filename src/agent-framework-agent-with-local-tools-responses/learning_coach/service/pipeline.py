@@ -7,15 +7,15 @@ import hashlib
 import json
 import logging
 import re
-import sqlite3
 
-from .contracts import QUIZ_SCHEMA, ContractError, decision_schema, grade_choice, public_quiz, validate
-from .memory import NOTES_SCHEMA
-from .routing import (conservative_participant, empty_results, recover_explicit_visual_route,
+from learning_coach.domain.contracts import QUIZ_SCHEMA, ContractError, decision_schema, grade_choice, public_quiz, validate
+from learning_coach.domain.note_contracts import NOTES_SCHEMA
+from learning_coach.domain.routing import (conservative_participant, empty_results, recover_explicit_visual_route,
                       recover_practice_route,
                       recover_quiz_route, require_finished, select_tools)
-from .runner import BUDGET, CallBudget, StageFailure
-from .visuals import VISUAL_SCHEMA
+from learning_coach.service.execution import BUDGET, CALL_RESERVE, CallBudget, StageFailure
+from learning_coach.service.visual_generation import VisualGenerationService
+from learning_coach.service.ports import AgentRunner, ResearchPort, LearningMemory, Artifacts, ImageGenerator, StorageError
 
 
 LOG = logging.getLogger(__name__)
@@ -27,14 +27,15 @@ def reply(message, primary="G", step=None):
 
 
 class LearningPipeline:
-    def __init__(self, runner, research, store, artifacts, response_schema, *,
-                 image_generator=None):
+    def __init__(self, runner: AgentRunner, research: ResearchPort, store: LearningMemory,
+                 artifacts: Artifacts, response_schema: dict, *,
+                 image_generator: ImageGenerator | None = None):
         self.runner, self.research = runner, research
         self.store, self.artifacts = store, artifacts
         self.response_schema = response_schema
         # Dependency inversion: the pipeline depends only on this callable
         # abstraction, never on a concrete image backend. Composition roots
-        # (main.py / app.py / tests) inject pollinations, FLUX, or a fake.
+        # (server.py / tests) inject pollinations, FLUX, or a fake.
         self.image_generator = image_generator
         self.decision_schema = decision_schema(response_schema)
         self._locks = {}
@@ -75,7 +76,7 @@ class LearningPipeline:
                 output, updated = await asyncio.wait_for(
                     self._execute(clean, session_id, working, event_id), timeout=180,
                 )
-            except (StageFailure, ContractError, TimeoutError, OSError, ValueError, sqlite3.Error):
+            except (StageFailure, ContractError, TimeoutError, OSError, ValueError, StorageError):
                 LOG.warning("learning_turn_failed")
                 output = reply("这次处理没有顺利完成，学习记录和进度没有继续推进。",
                                step={"kind": "question", "text": "要从刚才的问题再试一次吗？"})
@@ -111,7 +112,7 @@ class LearningPipeline:
                 for remove in (self.store.clear, self.artifacts.delete_session):
                     try:
                         remove(session_id)
-                    except (OSError, sqlite3.Error):
+                    except (OSError, StorageError):
                         complete = False
                         LOG.warning("forget_cleanup_incomplete")
                 message = ("已删除本会话保存的学习笔记和可视化文件，并关闭记忆。客户端的聊天记录需在客户端删除。" if complete else
@@ -122,7 +123,7 @@ class LearningPipeline:
                 state["memory_blocked"] = True
             try:
                 self.store.set_enabled(session_id, enabled)
-            except sqlite3.Error:
+            except StorageError:
                 if enabled:
                     return reply("未能开启记忆，本轮不会记录笔记。请稍后重试 /memory on。", "E"), state
                 return reply("本会话已暂停读取和记录笔记，但持久开关未能更新。请稍后重试 /memory off。", "E"), state
@@ -212,32 +213,21 @@ class LearningPipeline:
 
         async def prepare_visual():
             if tool_results["visual"] != "pending":
-                return None
-            # A graph derived from research requires verified evidence.
-            if research is None or research["overall"] == "verified":
-                try:
-                    spec = await self.runner("visualizer", {
-                        "goal": plan["visual_request"], "research": research,
-                        "profile": memory.get("profile", {}),
-                    }, VISUAL_SCHEMA)
-                    image = None
-                    if spec["kind"] == "illustration":
-                        if self.image_generator is None:
-                            raise ValueError("image_generator_not_configured")
-                        image = await self.image_generator(spec["prompt"])
-                    # Only pass image when present so stores with the original
-                    # two-argument prepare() signature keep working unchanged.
-                    artifact = (self.artifacts.prepare(session_id, spec, image=image) if image is not None
-                                else self.artifacts.prepare(session_id, spec))
-                    tool_results["visual"] = "ready"
-                    return artifact
-                except (RuntimeError, ValueError, OSError, sqlite3.Error):
-                    pass
-            tool_results["visual"] = "unavailable"
-            return None
+                return None, None
+            result = await VisualGenerationService(self.runner, self.artifacts, self.image_generator).generate(
+                session_id, {
+                    "goal": plan["visual_request"], "research": research,
+                    "learning_goal": (plan["task_summary"] or "")[:400],
+                    "recent_messages": [{"role": item["role"], "text": item["text"][:1500]}
+                                        for item in messages[-4:]],
+                    "profile": memory.get("profile", {}),
+                }, learner_text=text)
+            tool_results["visual"] = "ready" if result[0] else "unavailable"
+            return result
 
         # Independent preparation runs concurrently; nothing writes memory or
         # publishes artifacts until the final response has passed validation.
+        reservation = CALL_RESERVE.set(2)  # respond plus its allowed format retry
         try:
             async with asyncio.TaskGroup() as tasks:
                 notes_task = tasks.create_task(prepare_notes())
@@ -247,7 +237,10 @@ class LearningPipeline:
             # failures behind the same fixed turn fallback, without leaking
             # private exception text. External cancellation still propagates.
             raise StageFailure("preparation_failed") from None
-        notes, artifact = notes_task.result(), visual_task.result()
+        finally:
+            CALL_RESERVE.reset(reservation)
+        notes = notes_task.result()
+        artifact, visual_context = visual_task.result()
         notes_warning = tool_results["notes"] == "failed"
         visual_warning = tool_results["visual"] == "unavailable"
         require_finished(tool_results)
@@ -257,6 +250,7 @@ class LearningPipeline:
             "memory": memory, "state": {key: state.get(key) for key in ("active_task", "pending_tasks", "resume_stage")},
             "research": research, "quiz": quiz_context,
             "visual_status": "ready" if artifact else "unavailable" if visual_warning else "not_requested",
+            "visual_context": visual_context,
             "memory_enabled": memory_enabled,
             "tool_results": deepcopy(tool_results),
         }
@@ -308,7 +302,7 @@ class LearningPipeline:
                 tool_results["notes"] = "saved" if written else "not_written"
                 if not written:
                     output["message"] += "\n\n本轮未新增学习笔记。"
-            except (ValueError, OSError, sqlite3.Error):
+            except (ValueError, OSError, StorageError):
                 output["message"] += "\n\n本轮学习笔记未保存。"
                 tool_results["notes"] = "failed"
         require_finished(tool_results)

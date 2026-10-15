@@ -8,9 +8,9 @@
 |---|---|---|
 | `coordinator` | 识别 A—G 主意图、选择教学方式，优先直接回答，确有必要才请求工具。 | 首次 `decide` 返回内部 `answer` 或 `tools` 模式；对外结果仍为四字段响应。 |
 | `researcher` | 把问题拆成 2–4 个可搜索查询。 | 不生成网址或来源；程序执行真正的搜索。 |
-| `verifier` | 核查检索材料能否直接支持关键断言。 | 引用必须指向已有来源 ID，摘录必须是所检索文本的连续原文。 |
+| `verifier` | 核查检索材料；以独立调用的 `phase=visual_review` 审阅教学图方案。 | 信源引用必须来自已取得资料；视觉审阅检查声明式内容与教学目标，不能声称已检查真实渲染像素。 |
 | `notes` | 从本轮明确表达和受信任的练习证据提取学习笔记。 | 严格 JSON；只有用户明确开启记忆后才运行并写入。 |
-| `visualizer` | 选择适合知识点的交互结构并填充内容。 | 输出声明式 spec；受控模板生成 HTML，不执行模型生成的代码。 |
+| `visualizer` | 按知识点生成带标签、关系和分步变化的图示，必要时按审阅意见重绘。 | 输出声明式 spec；程序绘制 HTML/SVG，不执行模型生成的代码；内容重绘最多一次。 |
 
 ```text
 请求 → 会话上下文 / 记忆控制命令 → coordinator decide
@@ -45,13 +45,13 @@
 | 检索 | `explicit_lookup`、`time_sensitive`、`fact_check`、`knowledge_gap` | 明确查找、时效、核查或知识缺口；researcher 生成查询后由程序检索，取得真实材料后才调用 verifier。 |
 | 测验 | `explicit_practice`、`accepted_check`、`continue_practice` | `start` 对应前两项，`continue` 必须对应 `continue_practice`；范围不足先澄清，每次仅一道题，当前选择题答案由程序评分。 |
 | 笔记 | `profile_update`、`learning_evidence`、`error_record`、`review_plan` | 必须已开启本会话学习记忆，并且本轮有相应信息或证据；未开启不调用 notes。 |
-| 可视化 | `explicit_visual`、`comparison`、`process`、`function`、`active_recall` | 当前需求适合 comparison/process/linear_function/flashcards 四种受控模板之一；需要图不自动意味着需要检索。 |
+| 可视化 | `explicit_visual`、`comparison`、`process`、`function`、`active_recall` | 原理、机制和变化可生成通用 scene；也支持 comparison/process/linear_function/flashcards/diagram；外观/场景可用 illustration。需要图不自动意味着需要检索。 |
 
 E/F/G、明确结束或暂停均不启动这些工作能力；分别先处理情绪、安全边界、澄清或停止。直答和工具路径的暂停均将 `next_step` 设为 null。当前等待题收到可明确评分的作答时，除非暂停、结束或停止测验，否则必须走有效的 quiz continue；不能靠改标 E/F/G 或只选其他能力绕过评分。没有必要能力时直接回答或澄清。若实际请求了研究但材料存在争议或未完成核实，不将其转成确定性的教学图。
 
 对此类明确作答，如果 `decide` 已返回结构合法的直答，或工具计划未有效选择 quiz continue，程序从已存待答题重建最小续答计划，不额外调用 `decide`，也不只因选错路由让整轮进入 G。恢复计划使用 C / is_implicit=true，沿用已存 topic、total、difficulty；participant 以已存身份为基础，有本轮工具计划时再保守合并：任一为 companion_report 就保留陪伴者身份，双方均为 learner 才保留 learner，缺失或 unknown 不升级。仅继续评分，学习记忆已开启时可整理本轮可信答题证据；不检索、不生成图。正常有效续答不重建路由，但同样保守合并身份。
 
-无活动待答题、答案有歧义时不强制恢复；暂停、结束和 stop 优先。结构合法的控制计划先停止工作，被忽略的工具理由不阻止控制动作；`mode=tools` 中仅 `quiz_action=stop`、其他能力均未请求也可清理状态，不必为停止虚构需求。程序只修两种业务路由冲突：已有待答题的误路由，以及声称练习（intent C）却直答、无法评分且不进状态机的情形；后者重建最小 quiz 计划（无活动测验为 start，主题为答复的任务摘要，已有活动测验为 continue），同样不额外调用 `decide`。工具计划中 continue 而无活动测验时降级为 start，缺少主题则走既有 needs_topic 补问，不整轮兜底。JSON/Schema 错误仍由 runner 做有限格式重试，主角色、出题或汇总调用的真实异常仍按原有兜底处理。
+无活动待答题、答案有歧义时不强制恢复；暂停、结束和 stop 优先。结构合法的控制计划先停止工作，被忽略的工具理由不阻止控制动作；`mode=tools` 中仅 `quiz_action=stop`、其他能力均未请求也可清理状态，不必为停止虚构需求。测验恢复针对已有待答题的误路由，以及声称练习（intent C）却直答、无法评分且不进状态机的情形；后者重建最小 quiz 计划（无活动测验为 start，主题为答复的任务摘要，已有活动测验为 continue），同样不额外调用 `decide`。工具计划中 continue 而无活动测验时降级为 start，缺少主题则走既有 needs_topic 补问，不整轮兜底。JSON/Schema 错误仍由 runner 做有限格式重试，主角色、出题或汇总调用的真实异常仍按原有兜底处理。
 
 ### 完成依据与工具终态
 
@@ -59,7 +59,7 @@ E/F/G、明确结束或暂停均不启动这些工作能力；分别先处理情
 
 `respond.tool_results` 为四能力状态字典；接纳回合的 `state.last_execution` 含 `mode`（answer/tools）和四能力字典 `tools`，保留执行结果。二者都是内部字段，不新增公开响应字段，也不包含选择理由正文。
 
-仅实际恢复路由的回合另记 `state.last_execution.routing_repaired`（待答误路由为 `"pending_quiz_answer"`，声称练习却直答为 `"practice_without_tools"`）；新的正常直答或工具执行记录不写此标记。程序统一计划、quiz、评分证据与 notes 使用的保守合并身份，避免将陪伴者作答或未知来源算作独立掌握；该标记不加入公开四字段 JSON。
+仅实际恢复路由的回合另记 `state.last_execution.routing_repaired`（待答误路由为 `"pending_quiz_answer"`，声称练习却直答为 `"practice_without_tools"`，明确要求图示却直答为 `"explicit_visual_without_tools"`）；新的正常直答或工具执行记录不写此标记。视觉恢复只识别通用请求，不按知识点选择固定模板；排除拒绝、术语释义、模拟考试和演示文稿，并保留 E/F/G、暂停和结束优先。程序统一计划、quiz、评分证据与 notes 使用的保守合并身份，避免将陪伴者作答或未知来源算作独立掌握；该标记不加入公开四字段 JSON。
 
 | 能力 | 内部状态 |
 |---|---|
@@ -96,7 +96,7 @@ E/F/G、明确结束或暂停均不启动这些工作能力；分别先处理情
 
 ## 3. 检索与核查
 
-实现文件：[`research.py`](../src/agent-framework-agent-with-local-tools-responses/learning_coach/research.py)。接口为 `ResearchService(runner, provider=None)`，调用 `await service.run(question)` 得到 `queries / sources / claims / overall / warnings`。
+实现文件：[`research.py`](../src/agent-framework-agent-with-local-tools-responses/learning_coach/service/research.py)。接口为 `ResearchService(runner, provider)`，调用 `await service.run(question)` 得到 `queries / sources / claims / overall / warnings`。
 
 默认使用无需密钥的 Wikipedia Action API：先搜索页面，再通过 TextExtracts 获取纯文本节选。设置 `TAVILY_API_KEY` 时选用 Tavily，优先使用其返回的页面原文，原文缺失时明确标为搜索摘要。Tavily 的生成式 `answer` 不进入证据。实际使用 Tavily 可能产生该提供方的用量费用。
 
@@ -117,7 +117,7 @@ API 契约依据：[MediaWiki Search](https://www.mediawiki.org/wiki/API:Search)
 
 ## 4. 画像与记忆
 
-实现文件：[`memory.py`](../src/agent-framework-agent-with-local-tools-responses/learning_coach/memory.py)。SQLite 保存结构化 JSON 对应的画像、概念关系、错因、复习事项及练习证据。模型不能直接写入掌握度，分值由程序结合受信任的独立作答证据更新，且属于产品启发式指标。
+实现文件：[`memory.py`](../src/agent-framework-agent-with-local-tools-responses/learning_coach/db/memory.py)。SQLite 保存结构化 JSON 对应的画像、概念关系、错因、复习事项及练习证据。模型不能直接写入掌握度，分值由程序结合受信任的独立作答证据更新，且属于产品启发式指标。
 
 | 用户命令 | 效果 |
 |---|---|
@@ -133,18 +133,33 @@ API 契约依据：[MediaWiki Search](https://www.mediawiki.org/wiki/API:Search)
 
 ## 5. 可视化产物
 
-实现文件：[`visuals.py`](../src/agent-framework-agent-with-local-tools-responses/learning_coach/visuals.py)。支持四种声明式 spec：
+渲染实现：[`visuals.py`](../src/agent-framework-agent-with-local-tools-responses/learning_coach/adapters/visuals.py)。支持以下声明式 spec：
 
 | `kind` | 内容 |
 |---|---|
 | `comparison` | 两个对象及逐项对照。 |
 | `process` | 顺序步骤与说明。 |
 | `flashcards` | 可翻面的知识卡片。 |
-| `linear_function` | 在受限区间中探索一次函数。 |
+| `linear_function` | 固定坐标轴探索一次函数，可显式适配视窗和重置。 |
+| `diagram` | 带文字标签的节点关系图。 |
+| `illustration` | 外观或场景配图，需要配置可用的生图后端。 |
+| `scene` | 根据知识点生成的通用场景与多帧变化，支持逐帧观察和回看。 |
 
-模型仅提供受约束的数据，不提供 HTML、JavaScript 或外部资源 URL。模板转义文案，交互使用固定脚本，不加载外部资源。预备产物与提交分开，最终回复失败时不提前发布文件。
+模型仅提供受约束的数据，不提供 HTML、JavaScript 或外部资源 URL。模板转义文案，交互使用固定脚本；互动模板运行时不加载外部资源，illustration 在服务端调用生图后端。预备产物与提交分开，最终回复失败时不提前发布文件。
 
 产物使用随机能力 token，经本地 `/artifacts/{token}` 路由读取，有效期 24 小时。拿到链接的人在有效期内可以访问，它不是登录鉴权链接；内容应限于教学材料。文件及索引位于应用配置的本地存储目录。Foundry 入口或部署网关是否转发此自定义路由尚待部署验收，本地可访问不代表外部链接已可用。
+
+### 通用生成、校验与有界修正
+
+原理、过程和变化由 visualizer 根据当前知识点生成可观察的场景与多帧图解。路由不再用知识点关键词匹配某个固定教学模板；照片、实物外观和场景配图仍可选择 illustration，但不能把一张装饰性配图称为可操作的原理演示。
+
+视觉链路依次执行：`visualizer 生成 → 程序验证 → verifier 视觉方案审阅 → 必要时重绘一次 → 再验证与审阅 → 准备产物 → 最终回复校验 → 发布`。审阅复用现有 verifier，以 `phase=visual_review` 发起独立调用，和信源核查保持不同的输入与协议。未通过时把明确修改意见交回 visualizer；内容重绘最多一次，不循环调用。最终仍未通过或依赖失败时不发布该图，主 Agent 说明未完成与可继续的学习步骤。各阶段 JSON 格式修正仍遵守 runner 的独立次数上限与整轮调用预算。 notes 与视觉链并发准备期间，每次真实模型调用（包括格式重试）都为最终 respond 预留 2 次调用额度；额度不足时可选能力局部降级。视觉生成、审阅及一次重绘共用独立的 60 秒总超时，超时不发布产物，并把失败状态交回主流程继续作答；整轮仍受 180 秒上限约束。
+
+程序验证负责受支持元素、字段类型和数量、坐标范围、同帧标识唯一性、文字容纳与标签重叠及可执行内容隔离；模型审阅负责判断图示是否回应学习目标、关键关系与分步变化是否连贯、是否遗漏必要标签和说明。**模型审阅不等于真实像素验收，也不保证事实正确。** 实际排版、文字可读性与按钮行为仍需要浏览器验证；专业知识和定量结论仍需要可靠来源及独立验收。
+
+scene 是通用交互逐帧图解，不是任意连续物理仿真引擎。模型提供声明式对象及变化，程序用固定版本 SVG.js 3.2.0 绘制；禁止模型提交 HTML、脚本、任意公式执行或外部资源 URL。库、许可证与校验和保存在 `adapters/vendor/`，固定页面资源随源码一起打包；产物嵌入所需脚本并使用内容哈希 CSP，操作时不依赖 CDN 或生图 API。绘图库：[SVG.js 官方文档](https://svgjs.dev/docs/3.2/)。
+
+输入交接：visualizer 收到最近最多 4 条对话（各 1500 字符）、学习目标、资料和画像。输出交接：主 Agent 收到 `visual_context`，包含图类型、标题、内容、实际可操作项、观察问题和适用边界；不会收到图片编码或网页代码；失败时收到 status=unavailable、失败原因与尝试次数，便于准确说明完成状态。Space 保留上一轮面板；图片编码只进入 UI，模型历史保留文字。一次函数拖动时保持坐标轴固定，需要时由学习者显式适配视窗或重置演示。
 
 ## 6. 本地运行与验证
 
