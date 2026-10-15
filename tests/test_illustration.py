@@ -58,8 +58,9 @@ class IllustrationPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.store.close()
         self.temp.cleanup()
 
-    def pipeline(self, runner):
-        return LearningPipeline(runner, self.research, self.store, self.artifacts, RESPONSE_SCHEMA)
+    def pipeline(self, runner, image_generator=None):
+        return LearningPipeline(runner, self.research, self.store, self.artifacts, RESPONSE_SCHEMA,
+                                image_generator=image_generator)
 
     async def test_illustration_visual_commits_generated_image(self):
         self.store.set_enabled("s", True)
@@ -68,9 +69,15 @@ class IllustrationPipelineTests(unittest.IsolatedAsyncioTestCase):
                   "prompt": "reconstructed view of Old Summer Palace, illustration",
                   "alt": "圆明园复原想象图"}
         runner = FakeRunner([plan(visual_request="配一张圆明园的画面")], visuals=[visual])
-        with patch("learning_coach.illustrate.generate_image", return_value=TINY_PNG) as generate:
-            output, _ = await self.pipeline(runner).run(messages("给我看圆明园的图"), session_id="s", turn_id="1")
-        generate.assert_called_once_with(visual["prompt"])
+        calls = []
+
+        async def generate(prompt):
+            calls.append(prompt)
+            return TINY_PNG
+
+        output, _ = await self.pipeline(runner, image_generator=generate).run(
+            messages("给我看圆明园的图"), session_id="s", turn_id="1")
+        self.assertEqual(calls, [visual["prompt"]])
         validate(output, RESPONSE_SCHEMA)
         self.assertIn("打开互动图", output["message"])
         token = re.search(r"/artifacts/([A-Za-z0-9_-]+)", output["message"]).group(1)
@@ -80,8 +87,23 @@ class IllustrationPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.store.set_enabled("s", True)
         visual = {"kind": "illustration", "title": "t", "prompt": "p", "alt": "a"}
         runner = FakeRunner([plan(visual_request="配一张图")], visuals=[visual])
-        with patch("learning_coach.illustrate.generate_image", side_effect=RuntimeError("backend_down")):
-            output, _ = await self.pipeline(runner).run(messages("给我看一张图"), session_id="s", turn_id="1")
+
+        async def broken(prompt):
+            raise RuntimeError("backend_down")
+
+        output, _ = await self.pipeline(runner, image_generator=broken).run(
+            messages("给我看一张图"), session_id="s", turn_id="1")
+        validate(output, RESPONSE_SCHEMA)
+        self.assertIn("未生成可用的互动图", output["message"])
+        self.assertEqual(self.artifacts.committed, [])
+
+    async def test_illustration_without_generator_falls_back(self):
+        # Dependency inversion: a pipeline with no injected generator must not
+        # reach for a concrete backend; it degrades to the standard fallback.
+        self.store.set_enabled("s", True)
+        visual = {"kind": "illustration", "title": "t", "prompt": "p", "alt": "a"}
+        runner = FakeRunner([plan(visual_request="配一张图")], visuals=[visual])
+        output, _ = await self.pipeline(runner).run(messages("给我看一张图"), session_id="s", turn_id="1")
         validate(output, RESPONSE_SCHEMA)
         self.assertIn("未生成可用的互动图", output["message"])
         self.assertEqual(self.artifacts.committed, [])

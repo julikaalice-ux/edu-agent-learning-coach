@@ -27,10 +27,15 @@ def reply(message, primary="G", step=None):
 
 
 class LearningPipeline:
-    def __init__(self, runner, research, store, artifacts, response_schema):
+    def __init__(self, runner, research, store, artifacts, response_schema, *,
+                 image_generator=None):
         self.runner, self.research = runner, research
         self.store, self.artifacts = store, artifacts
         self.response_schema = response_schema
+        # Dependency inversion: the pipeline depends only on this callable
+        # abstraction, never on a concrete image backend. Composition roots
+        # (main.py / app.py / tests) inject pollinations, FLUX, or a fake.
+        self.image_generator = image_generator
         self.decision_schema = decision_schema(response_schema)
         self._locks = {}
         self._recent = OrderedDict()
@@ -217,9 +222,9 @@ class LearningPipeline:
                     }, VISUAL_SCHEMA)
                     image = None
                     if spec["kind"] == "illustration":
-                        from .illustrate import generate_image
-
-                        image = await generate_image(spec["prompt"])
+                        if self.image_generator is None:
+                            raise ValueError("image_generator_not_configured")
+                        image = await self.image_generator(spec["prompt"])
                     # Only pass image when present so stores with the original
                     # two-argument prepare() signature keep working unchanged.
                     artifact = (self.artifacts.prepare(session_id, spec, image=image) if image is not None

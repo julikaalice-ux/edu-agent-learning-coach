@@ -66,9 +66,12 @@ def build_pipeline() -> LearningPipeline:
     directory.mkdir(parents=True, exist_ok=True)
     runner = StructuredRunner(create_agents(client, ROOT / "instructions.md"), native_json=False)
     artifacts = ArtifactStore(directory / "artifacts", public_base_url="http://localhost:8088")
+    from learning_coach.illustrate import generate_image
+
     return LearningPipeline(
         runner, ResearchService(runner), LearningStore(directory / "memory.sqlite3"), artifacts,
         json.loads((ROOT / "response.schema.json").read_text(encoding="utf-8")),
+        image_generator=generate_image,
     )
 
 
