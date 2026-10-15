@@ -10,7 +10,8 @@ import re
 
 from learning_coach.domain.contracts import QUIZ_SCHEMA, ContractError, decision_schema, grade_choice, public_quiz, validate
 from learning_coach.domain.note_contracts import NOTES_SCHEMA
-from learning_coach.domain.routing import (conservative_participant, empty_results, recover_explicit_visual_route,
+from learning_coach.domain.routing import (conservative_participant, empty_results, execution_order,
+                      recover_explicit_visual_route,
                       recover_practice_route,
                       recover_quiz_route, require_finished, select_tools)
 from learning_coach.service.execution import BUDGET, CALL_RESERVE, CallBudget, StageFailure
@@ -201,22 +202,22 @@ class LearningPipeline:
         primary = plan["intent"]["primary"]
         self._apply_task(state, primary, plan)
 
-        research = None
-        if plan["research_query"] and not plan["end_task"]:
-            try:
-                research = await self.research.run(plan["research_query"])
-            except (StageFailure, OSError, TimeoutError, ValueError):
-                research = {"overall": "unavailable", "sources": [], "claims": [],
-                            "queries": [], "warnings": ["research_failed"]}
-            tool_results["research"] = research["overall"]
+        # Grading is program state and needs no model; do it first so notes get the evidence.
+        quiz_context, quiz_evidence, pending_quiz = self._quiz_grade(plan, text, state)
+        # The coordinator declared content dependencies; the program derives the order.
+        order = execution_order(plan)
+        running = {}
 
-        quiz_context, quiz_evidence = await self._quiz(plan, text, state)
-        if tool_results["quiz"] == "pending":
-            context = quiz_context or {}
-            tool_results["quiz"] = ("finished" if context.get("finished") else
-                                    "question_ready" if "new_question" in context else
-                                    "awaiting_answer" if "awaiting" in context else
-                                    "feedback_ready" if "feedback" in context else "needs_input")
+        async def run_research():
+            if not plan["research_query"]:
+                return None
+            try:
+                found = await self.research.run(plan["research_query"])
+            except (StageFailure, OSError, TimeoutError, ValueError):
+                found = {"overall": "unavailable", "sources": [], "claims": [],
+                         "queries": [], "warnings": ["research_failed"]}
+            tool_results["research"] = found["overall"]
+            return found
 
         async def prepare_notes():
             if tool_results["notes"] != "pending":
@@ -235,9 +236,11 @@ class LearningPipeline:
         async def prepare_visual():
             if tool_results["visual"] != "pending":
                 return None, None
+            # A visual of stable knowledge does not wait for, or receive, this turn's research.
+            found = await running["research"] if order["visual_waits_research"] else None
             result = await VisualGenerationService(self.runner, self.artifacts, self.image_generator).generate(
                 session_id, {
-                    "goal": plan["visual_request"], "research": research,
+                    "goal": plan["visual_request"], "research": found,
                     "learning_goal": (plan["task_summary"] or "")[:400],
                     "recent_messages": [{"role": item["role"], "text": item["text"][:1500]}
                                         for item in messages[-4:]],
@@ -246,13 +249,30 @@ class LearningPipeline:
             tool_results["visual"] = "ready" if result[0] else "unavailable"
             return result
 
-        # Independent preparation runs concurrently; nothing writes memory or
-        # publishes artifacts until the final response has passed validation.
+        async def prepare_quiz():
+            if pending_quiz is None:
+                return quiz_context
+            context = {}
+            if order["quiz_waits_research"]:
+                found = await running["research"]
+                context["research"] = {"overall": found["overall"], "claims": [
+                    claim for claim in found["claims"] if claim["status"] in ("verified", "likely")]}
+            if order["quiz_waits_visual"]:
+                _, visual_context = await running["visual"]
+                if visual_context and visual_context.get("status") == "ready":
+                    context["visual_context"] = visual_context
+            return await self._quiz_question(plan, pending_quiz, context)
+
+        # Independent work runs concurrently; declared dependencies wait inside
+        # their own task. Nothing writes memory or publishes artifacts until the
+        # final response has passed validation.
         reservation = CALL_RESERVE.set(2)  # respond plus its allowed format retry
         try:
             async with asyncio.TaskGroup() as tasks:
+                running["research"] = tasks.create_task(run_research())
                 notes_task = tasks.create_task(prepare_notes())
-                visual_task = tasks.create_task(prepare_visual())
+                running["visual"] = tasks.create_task(prepare_visual())
+                quiz_task = tasks.create_task(prepare_quiz())
         except ExceptionGroup:
             # TaskGroup first cancels/joins siblings. Keep unexpected child
             # failures behind the same fixed turn fallback, without leaking
@@ -260,6 +280,15 @@ class LearningPipeline:
             raise StageFailure("preparation_failed") from None
         finally:
             CALL_RESERVE.reset(reservation)
+        research = running["research"].result()
+        visual_task = running["visual"]
+        quiz_context = quiz_task.result()
+        if tool_results["quiz"] == "pending":
+            context = quiz_context or {}
+            tool_results["quiz"] = ("finished" if context.get("finished") else
+                                    "question_ready" if "new_question" in context else
+                                    "awaiting_answer" if "awaiting" in context else
+                                    "feedback_ready" if "feedback" in context else "needs_input")
         notes = notes_task.result()
         artifact, visual_context = visual_task.result()
         notes_warning = tool_results["notes"] == "failed"
@@ -331,7 +360,7 @@ class LearningPipeline:
                 output["message"] += "\n\n本轮学习笔记未保存。"
                 tool_results["notes"] = "failed"
         require_finished(tool_results)
-        state["last_execution"] = {"mode": "tools", "tools": tool_results}
+        state["last_execution"] = {"mode": "tools", "tools": tool_results, "order": order}
         if repair_kind:
             state["last_execution"]["routing_repaired"] = repair_kind
         return output, state
@@ -368,25 +397,30 @@ class LearningPipeline:
             state["pending_tasks"] = [item for item in state.get("pending_tasks", [])
                                       if item != task["task_summary"]]
 
-    async def _quiz(self, plan, text, state):
+    def _quiz_grade(self, plan, text, state):
+        """Program-owned grading and quiz state; no model call.
+
+        Returns (context, evidence, quiz). quiz is set only when this turn still
+        needs a new question, which _quiz_question generates afterwards.
+        """
         if plan["intent"]["primary"] not in "ABC" or plan["end_task"] or plan["pause_task"]:
-            return None, None
+            return None, None, None
         action = plan["quiz_action"]
         if action not in ("start", "continue"):
-            return None, None
+            return None, None, None
         quiz = state.get("quiz")
         # continue without an active quiz is degraded to start: the learner
         # asked for more practice, so a missing state record must not kill the turn.
         if action in ("start", "continue") and (not quiz or quiz.get("finished")):
             if not plan["quiz_topic"]:
-                return {"needs_topic": True}, None
+                return {"needs_topic": True}, None, None
             quiz = {"topic": plan["quiz_topic"], "total": plan["quiz_total"],
                     "difficulty": plan["difficulty"], "asked": 0, "answered": 0,
                     "correct": 0, "awaiting": None, "finished": False, "question_history": [],
                     "participant": plan["participant"]}
             state["quiz"] = quiz
         if not quiz or quiz.get("finished"):
-            return None, None
+            return None, None, None
         quiz["participant"] = conservative_participant(quiz.get("participant", "unknown"), plan["participant"])
         # Grading evidence, notes, new questions and the final reply must agree
         # on authorship, including on a normal (unrepaired) continuation.
@@ -396,7 +430,7 @@ class LearningPipeline:
             question = quiz["awaiting"]
             correct = grade_choice(text, question)
             if correct is None:
-                return {"awaiting": public_quiz(question), "needs_clear_choice": True}, None
+                return {"awaiting": public_quiz(question), "needs_clear_choice": True}, None, None
             quiz["answered"] += 1
             quiz["correct"] += int(correct)
             quiz["awaiting"] = None
@@ -410,14 +444,20 @@ class LearningPipeline:
             if not correct or quiz["finished"]:
                 return {"feedback": {"correct": correct, "explanation": question["explanation"]},
                         "answered": quiz["answered"], "correct_count": quiz["correct"],
-                        "finished": quiz["finished"], "needs_review": not correct}, evidence
+                        "finished": quiz["finished"], "needs_review": not correct}, evidence, None
+        return None, evidence, quiz
+
+    async def _quiz_question(self, plan, quiz, context=None):
+        """Generate one new question; context carries only declared dependencies."""
         seen = quiz.setdefault("question_history", [])
         for attempt in range(2):
-            question = validate(await self.runner("coordinator", {
+            request = {
                 "phase": "quiz", "topic": quiz["topic"], "difficulty": quiz["difficulty"],
                 "count": 1, "participant": plan["participant"], "previous_questions": seen,
                 "require_new_question": True,
-            }, QUIZ_SCHEMA), QUIZ_SCHEMA)
+            }
+            request.update(context or {})
+            question = validate(await self.runner("coordinator", request, QUIZ_SCHEMA), QUIZ_SCHEMA)
             if question["answer_index"] >= len(question["choices"]):
                 raise ContractError("answer_index_out_of_range")
             if question["question"].strip().casefold() not in {item.strip().casefold() for item in seen}:
@@ -428,4 +468,4 @@ class LearningPipeline:
         seen.append(question["question"])
         quiz["asked"] += 1
         return {"new_question": public_quiz(question), "answered": quiz["answered"],
-                "total": quiz["total"]}, evidence
+                "total": quiz["total"]}

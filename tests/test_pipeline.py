@@ -45,6 +45,7 @@ def plan(primary="A", **updates):
         "task_summary": "学习分数", "pause_task": False, "end_task": False,
         "quiz_action": "none", "quiz_topic": None, "quiz_total": 3,
         "difficulty": "简单", "participant": "learner",
+        "visual_uses_research": None, "quiz_uses_research": None, "quiz_uses_visual": None,
     }
     value.update(updates)
     return value
@@ -480,7 +481,8 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(after["quiz"]["awaiting"], QUIZ)
         self.assertEqual(len(runner.calls_for("coordinator", "quiz")), 3)
         self.assertEqual(len(runner.calls_for("coordinator", "respond")), 1)
-        self.assertEqual(len(runner.calls_for("notes")), 1)
+        # Notes run alongside question generation; the failed turn discards them.
+        self.assertEqual(len(runner.calls_for("notes")), 2)
         self.assertEqual(self.store.snapshot("s")["concepts"], [])
         self.assertTrue(self.store.apply_notes("s", "answer", notes(), "A"))
 
