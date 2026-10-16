@@ -4,9 +4,12 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 
 
+DEFAULT_CALL_BUDGET = 12  # model calls allowed per turn; pipeline.py sets it per request
+
+
 @dataclass
 class CallBudget:
-    remaining: int = 12
+    remaining: int = DEFAULT_CALL_BUDGET
 
 
 BUDGET = ContextVar("learning_coach_budget", default=None)

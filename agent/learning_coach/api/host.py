@@ -7,9 +7,34 @@ never serialized as chat text.
 """
 
 from copy import deepcopy
+import logging
 from uuid import uuid4
 
 from agent_framework import AgentResponse, AgentResponseUpdate, BaseAgent, Content, Message, ResponseStream
+from azure.ai.agentserver.core import get_request_context
+
+LOG = logging.getLogger(__name__)
+MAX_LEARNER_ID_CHARS = 200  # matches pipeline MAX_ID_CHARS
+_platform_id_logged = False
+
+
+def platform_learner_id() -> str | None:
+    """The platform-injected per-user key (x-agent-user-id), when present.
+
+    Local runs (demo, tests, localhost HTTP) have no request context and get
+    None, so memory falls back to session-scoped keys exactly as before.
+    """
+    global _platform_id_logged
+    try:
+        user_id = get_request_context().user_id
+    except Exception:
+        return None
+    if isinstance(user_id, str) and user_id.strip() and len(user_id.strip()) <= MAX_LEARNER_ID_CHARS:
+        if not _platform_id_logged:
+            LOG.info("platform_learner_id present: per-user memory keys enabled")
+            _platform_id_logged = True
+        return user_id.strip()
+    return None
 
 
 def learner_text(output):
@@ -43,6 +68,7 @@ class LearningCoachAgent(BaseAgent):
                 inputs = [{"role": message.role, "text": message.text} for message in (messages or [])]
             output, state = await self.pipeline.run(
                 inputs, session_id=active_session.session_id,
+                learner_id=platform_learner_id(),
                 state=deepcopy(active_session.state.get("learning_coach", {})),
             )
             active_session.state["learning_coach"] = {**state, "last_response": output}

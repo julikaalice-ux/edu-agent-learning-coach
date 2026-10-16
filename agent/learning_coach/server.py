@@ -39,22 +39,47 @@ def role_models_from_env(default: str) -> dict[str, str]:
             for role in ROLES}
 
 
-def _foundry_clients(endpoint: str, models: dict[str, str]) -> dict[str, FoundryChatClient]:
-    """One client per distinct deployment, shared by the roles that use it."""
+def _foundry_clients(endpoint: str, models: dict[str, str]) -> tuple[dict[str, FoundryChatClient], object]:
+    """One client per distinct deployment, shared by the roles that use it.
+
+    Also returns the shared credential so other platform-backed adapters
+    (Foundry Memory) reuse it instead of building their own.
+    """
     credential = DefaultAzureCredential()
     by_model = {model: FoundryChatClient(project_endpoint=endpoint, model=model, credential=credential)
                 for model in set(models.values())}
-    return {role: by_model[model] for role, model in models.items()}
+    return {role: by_model[model] for role, model in models.items()}, credential
+
+
+def _memory_store(directory: Path, credential):
+    """SQLite only, or SQLite plus the Foundry Memory semantic mirror.
+
+    LEARNING_COACH_MEMORY_STORE unset = pure SQLite (current behavior). When
+    set, notes are mirrored into the named store and snapshot() merges
+    semantic recalls; Foundry failures always degrade to SQLite behavior.
+    """
+    inner = LearningStore(directory / "memory.sqlite3")
+    name = os.environ.get("LEARNING_COACH_MEMORY_STORE", "").strip()
+    if not name:
+        return inner
+    from azure.ai.projects import AIProjectClient
+    from learning_coach.adapters.foundry_memory import FoundryMemoryStore
+    timeout = float(os.environ.get("LEARNING_COACH_MEMORY_TIMEOUT", "2"))
+    search_max = int(os.environ.get("LEARNING_COACH_MEMORY_SEARCH_MAX", "6"))
+    client = AIProjectClient(os.environ["FOUNDRY_PROJECT_ENDPOINT"], credential, allow_preview=True,
+                             connection_timeout=timeout, read_timeout=timeout, retry_total=0)
+    return FoundryMemoryStore(inner, client, name, search_max=search_max)
 
 
 def create_pipeline(*, client=None, data_dir=None, public_base_url=None, native_json=None,
                     image_generator=None, search_provider=None):
     """Build dependencies without launching a server or contacting a model."""
     role_clients = None
+    credential = None
     if client is None:
         load_dotenv(SRC_DIR / ".env")
         models = role_models_from_env(os.environ["AZURE_AI_MODEL_DEPLOYMENT_NAME"])
-        role_clients = _foundry_clients(os.environ["FOUNDRY_PROJECT_ENDPOINT"], models)
+        role_clients, credential = _foundry_clients(os.environ["FOUNDRY_PROJECT_ENDPOINT"], models)
         client = role_clients["coordinator"]
     directory = Path(data_dir or os.environ.get("LEARNING_COACH_DATA_DIR", SRC_DIR / ".learning-coach"))
     if not directory.is_absolute():
@@ -69,7 +94,7 @@ def create_pipeline(*, client=None, data_dir=None, public_base_url=None, native_
     encoder()  # load the tokenizer once at startup, not inside the first turn
 
     return LearningPipeline(
-        runner, ResearchService(runner, search_provider if search_provider is not None else default_provider()), LearningStore(directory / "memory.sqlite3"), artifacts,
+        runner, ResearchService(runner, search_provider if search_provider is not None else default_provider()), _memory_store(directory, credential), artifacts,
         json.loads((SRC_DIR / "response.schema.json").read_text(encoding="utf-8")),
         image_generator=image_generator if image_generator is not None else generate_image,
         onboarding=os.environ.get("LEARNING_COACH_ONBOARDING", "1") == "1",

@@ -16,7 +16,8 @@ from learning_coach.domain.context import (Budgets, accept_notes, brief_card, co
                                            number_turns, recent_window, research_digest)
 from learning_coach.domain.note_contracts import ERROR_LABELS, NOTES_SCHEMA, SCHEMA_VERSION as NOTES_VERSION
 from learning_coach.domain.visual_contracts import VISUAL_SCHEMA
-from learning_coach.domain.routing import (conservative_participant, empty_results, execution_order,
+from learning_coach.domain.routing import (EXPLAIN_INTENTS, INTENT_CHAT, INTENT_PRACTICE, INTENT_UNCLEAR,
+                      QUIZ_INTENTS, conservative_participant, empty_results, execution_order,
                       recover_explicit_visual_route,
                       recover_practice_route,
                       recover_quiz_route, require_finished, select_tools)
@@ -31,6 +32,11 @@ LOG = logging.getLogger(__name__)
 RECORD_ON = ("开启记录", "打开记录", "开启学习记录", "保存记录", "保存学习记录")
 RECORD_OFF = ("关闭记录", "关掉记录", "暂停记录", "别记了", "不要记录", "关闭学习记录")
 RECORD_DELETE = ("删除记录", "删掉记录", "删除学习记录", "清除记录", "清空记录")
+# Program command literals; plain-language aliases map onto these.
+CMD_MEMORY_ON = "/memory on"
+CMD_MEMORY_OFF = "/memory off"
+CMD_FORGET = "/forget"
+CONFIRM_DELETE = "确定删除"
 # Notes are compiled after a quiz set, only when the learner agrees, or on request.
 NOTES_OFFER = "要把这次学的整理成笔记吗？\n1. 整理\n2. 不用"
 NOTES_REQUEST = ("整理笔记", "帮我整理笔记", "整理一下笔记", "生成笔记", "做笔记")
@@ -73,12 +79,12 @@ def last_forget(messages):
     users = [(i, item["text"].strip()) for i, item in enumerate(messages) if item["role"] == "user"]
     found = -1
     for position, (index, value) in enumerate(users):
-        if value == "/forget" or (value == "确定删除" and position > 0 and users[position - 1][1] in RECORD_DELETE):
+        if value == CMD_FORGET or (value == CONFIRM_DELETE and position > 0 and users[position - 1][1] in RECORD_DELETE):
             found = index
     return found
 
 
-def reply(message, primary="G", step=None):
+def reply(message, primary=INTENT_UNCLEAR, step=None):
     return {"schema_version": "1.0", "intent": {"primary": primary, "is_implicit": False},
             "message": message, "next_step": step}
 
@@ -190,24 +196,24 @@ class LearningPipeline:
         # Plain-language record controls map onto the same program commands.
         pending_forget = state.pop("pending_forget", False)
         if text in RECORD_ON:
-            text = "/memory on"
+            text = CMD_MEMORY_ON
         elif text in RECORD_OFF:
-            text = "/memory off"
+            text = CMD_MEMORY_OFF
         elif text in RECORD_DELETE:
             state["pending_forget"] = True
-            return reply("要删除全部学习记录吗？删除后找不回来。", "E",
-                         {"kind": "question", "text": "确认删除请回复“确定删除”，不删就继续说别的。"}), state
-        elif text == "确定删除" and pending_forget:
-            text = "/forget"
+            return reply("要删除全部学习记录吗？删除后找不回来。", INTENT_CHAT,
+                         {"kind": "question", "text": f"确认删除请回复“{CONFIRM_DELETE}”，不删就继续说别的。"}), state
+        elif text == CONFIRM_DELETE and pending_forget:
+            text = CMD_FORGET
         record = state.get("onboarding") or {}
-        if (text == "/memory on" and record.get("who") == "self"
+        if (text == CMD_MEMORY_ON and record.get("who") == "self"
                 and record.get("stage") in onboarding.MAYBE_UNDER_14 and record.get("consent_by") != "guardian"):
             # A possibly under-14 learner cannot switch records on alone.
             state["onboarding"] = {**record, "step": "consent_guardian"}
-            return reply("开启学习记录需要家长同意。", "G",
+            return reply("开启学习记录需要家长同意。", INTENT_UNCLEAR,
                          {"kind": "question", "text": onboarding.question_text("consent_guardian")}), state
-        if text in ("/memory on", "/memory off", "/forget"):
-            if text == "/forget":
+        if text in (CMD_MEMORY_ON, CMD_MEMORY_OFF, CMD_FORGET):
+            if text == CMD_FORGET:
                 for key in list(self._accepted):
                     if key[0] == session_id:
                         del self._accepted[key]
@@ -224,16 +230,16 @@ class LearningPipeline:
                 if record:
                     after["onboarding"] = {"step": "done", "records": "off", "stage": record.get("stage"),
                                            "who": record.get("who")}
-                return reply(message, "E"), after
-            enabled = text == "/memory on"
+                return reply(message, INTENT_CHAT), after
+            enabled = text == CMD_MEMORY_ON
             if not enabled:
                 state["memory_blocked"] = True
             try:
                 self.store.set_enabled(memory_key, enabled)
             except StorageError:
                 if enabled:
-                    return reply("未能开启记忆，本轮不会记录笔记。请稍后重试 /memory on。", "E"), state
-                return reply("本会话已暂停读取和记录笔记，但持久开关未能更新。请稍后重试 /memory off。", "E"), state
+                    return reply(f"未能开启记忆，本轮不会记录笔记。请稍后重试 {CMD_MEMORY_ON}。", INTENT_CHAT), state
+                return reply(f"本会话已暂停读取和记录笔记，但持久开关未能更新。请稍后重试 {CMD_MEMORY_OFF}。", INTENT_CHAT), state
             state["memory_blocked"] = not enabled
             return reply("好，从现在开始保存学习进度。想关掉随时说“关闭记录”。" if enabled else
                          "好，不再记录学习进度。已经保存的内容想删掉，可以说“删除记录”。", "E"), state
@@ -259,7 +265,7 @@ class LearningPipeline:
                     else "开始之前，先问两个小问题，好按你的情况来讲。")
             greeting = ("你好！我是你的学习教练，可以给你讲概念、陪你解题、出小题看看是不是真的学会了，"
                         "需要的时候还能画图帮你理解。" + note)
-            return reply(greeting, "G", {"kind": "question", "text": onboarding.question_text("who")}), state
+            return reply(greeting, INTENT_UNCLEAR, {"kind": "question", "text": onboarding.question_text("who")}), state
         prefix = None
         if record is not None and record.get("step") != "done":
             updated = onboarding.advance(record, text)
@@ -271,11 +277,11 @@ class LearningPipeline:
                 else:
                     message = "没认出这个选择，再选一次就好。"
                 state["onboarding"] = updated
-                return reply(message, "G", {"kind": "question",
+                return reply(message, INTENT_UNCLEAR, {"kind": "question",
                                             "text": onboarding.question_text(updated["step"])}), state
             if updated["step"] != "done":
                 state["onboarding"] = updated
-                return reply("好的。", "G", {"kind": "question",
+                return reply("好的。", INTENT_UNCLEAR, {"kind": "question",
                                             "text": onboarding.question_text(updated["step"])}), state
             records_on = updated.get("records") == "on"
             try:
@@ -298,7 +304,7 @@ class LearningPipeline:
             state["onboarding"] = updated
             closing = onboarding.closing_message(updated)
             if not pending:
-                return reply(closing, "G", {"kind": "question", "text": "今天想弄懂点什么？"}), state
+                return reply(closing, INTENT_UNCLEAR, {"kind": "question", "text": "今天想弄懂点什么？"}), state
             # Answer the question the learner arrived with, as if just asked.
             messages, prefix = [{"role": "user", "text": pending}], closing
 
@@ -308,7 +314,7 @@ class LearningPipeline:
         if prefix is None and (text in NOTES_REQUEST or (offered and text in NOTES_YES)):
             return await self._compile_notes(messages, session_id, state, event_id, memory_key)
         if prefix is None and offered and text in NOTES_NO:
-            return reply("好，这次先不整理。之后想整理，随时说“整理笔记”。", "E",
+            return reply("好，这次先不整理。之后想整理，随时说“整理笔记”。", INTENT_CHAT,
                          {"kind": "question", "text": "接下来想学什么？"}), state
         waiting = state.get("quiz") or {}
         if prefix is None and text in SKIP_QUESTION and waiting.get("awaiting") and not waiting.get("finished"):
@@ -396,7 +402,7 @@ class LearningPipeline:
             if stopping:
                 output["next_step"] = None
             picture = None
-            if check and primary in "AB" and not stopping:
+            if check and primary in EXPLAIN_INTENTS and not stopping:
                 # A graded check question on what was just explained replaces the
                 # coordinator's own closing question.
                 picture = await self._add_check_question(
@@ -409,7 +415,7 @@ class LearningPipeline:
             if picture:
                 self.artifacts.commit(session_id, picture)
             state["last_execution"] = {"mode": "answer", "tools": empty_results(), "context": context_report}
-            if (state.get("quiz") or {}).get("kind") == "check" and check and not stopping and primary in "AB":
+            if (state.get("quiz") or {}).get("kind") == "check" and check and not stopping and primary in EXPLAIN_INTENTS:
                 state["last_execution"]["check_question"] = bool((state.get("quiz") or {}).get("awaiting"))
             return output, state
 
@@ -544,7 +550,7 @@ class LearningPipeline:
                     # A practice set is done: ask once whether to compile notes.
                     output["next_step"] = {"kind": "question", "text": NOTES_OFFER}
                     offer_notes = True
-        if (check and not stopping and primary in "AB"
+        if (check and not stopping and primary in EXPLAIN_INTENTS
                 and tool_results["quiz"] in ("not_requested", "skipped_policy")):
             picture = await self._add_check_question(output, check, state, session_id, brief, notes_now, sub_window)
             if picture:
@@ -601,18 +607,18 @@ class LearningPipeline:
 
     async def _compile_notes(self, messages, session_id, state, event_id, memory_key):
         """Turn this conversation's learner messages into learning notes, once agreed."""
-        failed = reply("这次笔记没有整理成功，学习记录没有改动。想再试，可以说“整理笔记”。", "E",
+        failed = reply("这次笔记没有整理成功，学习记录没有改动。想再试，可以说“整理笔记”。", INTENT_CHAT,
                        {"kind": "question", "text": "接下来想学什么？"})
         memory_enabled = not state.get("memory_blocked", False) and self.store.is_enabled(memory_key)
         if not memory_enabled:
-            return reply("现在没有开启学习记录，笔记不会保存。想保存，可以先说“开启记录”。", "E"), state
+            return reply("现在没有开启学习记录，笔记不会保存。想保存，可以先说“开启记录”。", INTENT_CHAT), state
         context = state.setdefault("context", {})
         numbered = number_turns(messages)
         earlier = [item for item in numbered if item["turn"] < numbered[-1]["turn"]]
         shown = learner_messages(earlier, after_turn=context.get("notes_upto_turn", 0),
                                  budget=self.budgets.notes_messages, message_max=self.budgets.message_max)
         if not shown:
-            return reply("这次对话里还没有新的内容可以整理。", "E",
+            return reply("这次对话里还没有新的内容可以整理。", INTENT_CHAT,
                          {"kind": "question", "text": "接下来想学什么？"}), state
         turns = {item["turn"] for item in shown}
         # Evidence must quote what the learner actually said in these turns.
@@ -645,7 +651,7 @@ class LearningPipeline:
             message = f"整理好了，记下了{saved}。下次可以接着复习。"
         else:
             message = "看了一遍，这次没有需要新记下的内容。"
-        return reply(message, "E", {"kind": "question", "text": "接下来想学什么？"}), state
+        return reply(message, INTENT_CHAT, {"kind": "question", "text": "接下来想学什么？"}), state
 
     @staticmethod
     def _track_tasks(state, previous_task, previous_quiz, turn, text):
@@ -664,7 +670,7 @@ class LearningPipeline:
         validate(output, self.response_schema)
         if output["intent"] != intent:
             raise ContractError("intent_changed_after_routing")
-        if not stopping and intent["primary"] == "G" and (not output["next_step"] or output["next_step"]["kind"] != "question"):
+        if not stopping and intent["primary"] == INTENT_UNCLEAR and (not output["next_step"] or output["next_step"]["kind"] != "question"):
             raise ContractError("clarification_requires_question")
         allowed = {source["url"] for source in (research or {}).get("sources", [])}
         for url in re.findall(r"https?://[^\s)<>]+", output["message"] + (output["next_step"] or {}).get("text", ""), re.IGNORECASE):
@@ -678,7 +684,7 @@ class LearningPipeline:
             state["active_task"] = None
             state["pending_tasks"] = []
             state.pop("resume_stage", None)
-        elif primary == "E" or task["pause_task"]:
+        elif primary == INTENT_CHAT or task["pause_task"]:
             if state.get("active_task"):
                 state["resume_stage"] = "paused"
             if task["task_summary"]:
@@ -699,7 +705,7 @@ class LearningPipeline:
         needs a new question, which _quiz_question generates afterwards. A wrong
         answer carries the suspected error type marked on the chosen option.
         """
-        if plan["intent"]["primary"] not in "ABC" or plan["end_task"] or plan["pause_task"]:
+        if plan["intent"]["primary"] not in QUIZ_INTENTS or plan["end_task"] or plan["pause_task"]:
             return None, None, None
         action = plan["quiz_action"]
         if action not in ("start", "continue"):
@@ -874,9 +880,9 @@ class LearningPipeline:
         except (StageFailure, ContractError):
             LOG.warning("replacement_question_unavailable")
             state["quiz"] = before
-            return reply("这次没能换题。可以先试着回答这道，或者说“停止练习”。", "C",
+            return reply("这次没能换题。可以先试着回答这道，或者说“停止练习”。", INTENT_PRACTICE,
                          {"kind": "question", "text": render_question(before["awaiting"])}), state
-        output = reply("好，这题不算分，换一道。", "C",
+        output = reply("好，这题不算分，换一道。", INTENT_PRACTICE,
                        {"kind": "question", "text": render_question(question["new_question"])})
         if picture:
             output["message"] += f"\n\n[{QUIZ_PICTURE_LINK}]({picture['url']})"

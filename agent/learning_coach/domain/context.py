@@ -288,8 +288,9 @@ def _strip(item, *drop):
 
 
 def memory_slice(memory, focus: str, budget: int) -> dict:
-    """Profile, the concepts most related to the focus (then the weakest),
-    the latest errors and review items; evidence quotes are left out."""
+    """Profile, semantic recalls, the concepts most related to the focus (then
+    the weakest), the latest errors and review items; evidence quotes are left
+    out. Semantic items are the first to be dropped when over budget."""
     memory = memory or {}
     profile = {key: _strip(value, "evidence_quote", "turn_id")
                for key, value in memory.get("profile", {}).items()}
@@ -299,14 +300,16 @@ def memory_slice(memory, focus: str, budget: int) -> dict:
     result = {
         "schema_version": memory.get("schema_version", "1.0"),
         "profile": profile,
+        "semantic": [{"id": item.get("id"), "content": (item.get("content") or "")[:300]}
+                     for item in memory.get("semantic", [])[:5]],
         "concepts": [_strip(item, "evidence_quote") for item in concepts[:8]],
         "error_records": [_strip(item, "evidence_quote", "turn_id") for item in memory.get("error_records", [])[-5:]],
         "review_plan": [_strip(item, "evidence_quote", "turn_id") for item in memory.get("review_plan", [])[-5:]],
     }
-    for name in ("review_plan", "error_records", "concepts"):
+    for name in ("semantic", "review_plan", "error_records", "concepts"):
         while count_tokens(result) > budget and result[name]:
             result[name].pop()
-    totals = {name: len(memory.get(name, [])) for name in ("concepts", "error_records", "review_plan")}
+    totals = {name: len(memory.get(name, [])) for name in ("semantic", "concepts", "error_records", "review_plan")}
     result["not_shown"] = {name: totals[name] - len(result[name]) for name in totals}
     return result
 

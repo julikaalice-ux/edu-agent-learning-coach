@@ -69,8 +69,8 @@ class FakePipeline:
         self.calls = []
         self.artifacts = SimpleNamespace(get=lambda token: "<!doctype html><p>教学图</p>" if token == "valid" else None)
 
-    async def run(self, inputs, *, session_id, state):
-        self.calls.append((deepcopy(inputs), session_id, deepcopy(state)))
+    async def run(self, inputs, *, session_id, state, learner_id=None):
+        self.calls.append((deepcopy(inputs), session_id, deepcopy(state), learner_id))
         state.setdefault("seen", []).append(inputs[-1]["text"] if inputs else "")
         # Internal material is state only; it must never become a host update.
         state["internal_note"] = "PRIVATE_SPECIALIST_OUTPUT"
@@ -280,7 +280,7 @@ class LearningCoachHostTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_pipeline_failure_does_not_mutate_session_or_emit_update(self):
         class FailingPipeline:
-            async def run(self, inputs, *, session_id, state):
+            async def run(self, inputs, *, session_id, state, learner_id=None):
                 state["seen"].append("uncommitted")
                 raise RuntimeError("failed before final result")
         agent = LearningCoachAgent(FailingPipeline())
@@ -304,6 +304,25 @@ class LearningCoachHostTests(unittest.IsolatedAsyncioTestCase):
         pipeline = FakePipeline()
         await LearningCoachAgent(pipeline).run(Message("user", ["current"]))
         self.assertEqual(pipeline.calls[0][0], [{"role": "user", "text": "current"}])
+
+    async def test_platform_user_id_becomes_learner_id(self):
+        pipeline = FakePipeline()
+        agent = LearningCoachAgent(pipeline)
+        context = SimpleNamespace(user_id="user-123")
+        with patch("learning_coach.api.host.get_request_context", return_value=context):
+            await agent.run("你好", session=AgentSession())
+        self.assertEqual(pipeline.calls[0][3], "user-123")
+
+    async def test_missing_or_absent_platform_context_passes_no_learner_id(self):
+        pipeline = FakePipeline()
+        agent = LearningCoachAgent(pipeline)
+        with patch("learning_coach.api.host.get_request_context",
+                   return_value=SimpleNamespace(user_id=None)):
+            await agent.run("你好", session=AgentSession())
+        with patch("learning_coach.api.host.get_request_context",
+                   side_effect=RuntimeError("no request context")):
+            await agent.run("你好", session=AgentSession())
+        self.assertEqual([call[3] for call in pipeline.calls], [None, None])
 
 
 @unittest.skipUnless(SDK_AVAILABLE, "Run with the project's locked SDK environment")
