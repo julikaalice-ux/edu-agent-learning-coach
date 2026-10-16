@@ -81,6 +81,17 @@ class SpaceVisualStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.pipeline.options[1]["learner_id"], device["learner_id"])
         self.assertNotEqual(self.pipeline.options[1]["session_id"], self.pipeline.options[0]["session_id"])
 
+    async def test_numbered_choices_become_buttons_including_skip(self):
+        question = {"schema_version": "1.0", "intent": {"primary": "G", "is_implicit": False},
+                    "message": "你好！", "next_step": {"kind": "question", "text":
+                    "这次是谁在学？\n1. 我自己\n2. 我是家长或老师，帮孩子用\n（回复数字或选项文字；也可以回复“跳过”）"}}
+        self.pipeline.responses.extend([question, response("好的。")])
+        await self.send("你好")
+        self.assertEqual(self.session["options"], ["我自己", "我是家长或老师，帮孩子用", "跳过"])
+        await self.send("我自己")
+        self.assertEqual(self.pipeline.calls[-1][-1]["text"], "我自己")
+        self.assertEqual(self.session["options"], [])
+
     async def test_image_is_visible_but_never_forwarded_as_model_text(self):
         token = "b" * 32
         data_url = "data:image/png;base64,aGVsbG8="
