@@ -342,7 +342,7 @@ class FiveRoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_real_sdk_direct_decision_finishes_in_one_model_call(self):
         decision = {"mode": "answer", "response": deepcopy(FINAL),
                     "task": {"task_summary": "理解分数", "pause_task": False, "end_task": False},
-                    "context": None}
+                    "context_notes": None}
         for native in (False, True):
             with self.subTest(native=native), TemporaryDirectory() as directory:
                 client = FakeChatClient({"result": decision} if native else decision)
@@ -407,7 +407,7 @@ class FiveRoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         "notes": {"code": "profile_update", "evidence_quote": quote},
                         "visual": {"code": "explicit_visual", "evidence_quote": quote},
                     }
-                    answer = {"mode": "tools", "plan": answer, "context": None}
+                    answer = {"mode": "tools", "plan": answer, "context_notes": None}
                 elif data.get("phase") == "respond":
                     role = "coordinator"
                     self.response_payload = deepcopy(data)

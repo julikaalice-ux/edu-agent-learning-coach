@@ -1,19 +1,19 @@
 """What each agent sees, within token budgets. Pure functions; no model calls.
 
-The conversation is never simply cut off. Each turn the coordinator sees:
+Each turn the coordinator sees:
 
 * recent turns, newest first until the window budget is used (at least the
   last few turns stay whole; a very long single message keeps its head and
   tail);
-* an index of every earlier turn (turn number plus the start of what the
-  learner said), so it can ask to look back at any of them;
-* earlier turns recalled for this message: found automatically by text
-  overlap, or requested by the coordinator by turn number or by a phrase;
 * conversation notes it maintains itself (what was covered, where the
   learner got stuck, requests and corrections, open questions), checked and
-  capped by the program;
-* a learner card and a slice of the learning records, both built by the
+  capped by the program, so what falls out of the window is summarised
+  rather than lost;
+* a learner card and a slice of the learning notes, both built by the
   program.
+
+The full conversation itself is kept by the client (in the learner's
+browser) for the learner to read back; agents rely on the notes above.
 
 Token counts use tiktoken's o200k_base encoding when it is installed and its
 vocabulary is available; otherwise a conservative estimate (one token per
@@ -23,7 +23,6 @@ model API is logged by the runner, so the estimate can be checked.
 
 from __future__ import annotations
 
-from collections import Counter
 from dataclasses import dataclass, fields
 import json
 import math
@@ -48,8 +47,6 @@ class Budgets:
     sub_window: int = 1000         # recent turns handed to quiz / visual agents
     min_turns: int = 3             # these newest turns always stay, whatever their size
     message_max: int = 1500        # one message longer than this keeps only head and tail
-    recall: int = 2000             # earlier turns recalled into view
-    index_entries: int = 40        # earlier-turn index lines (newest kept)
     memory: int = 1500             # slice of the learning records
     notes: int = 1000              # conversation notes
     notes_messages: int = 3000     # learner messages given to the notes agent
@@ -158,18 +155,6 @@ def recent_window(numbered, budget: int, *, min_turns: int, message_max: int) ->
     return chosen
 
 
-def earlier_index(numbered, window, limit: int) -> dict:
-    """One line per turn that is out of view, so any of them can be looked up."""
-    first_shown = window[0]["turn"] if window else math.inf
-    lines = []
-    for turn, items in sorted(_group(numbered).items()):
-        if turn >= first_shown:
-            break
-        learner = next((m["text"] for m in items if m["role"] == "user"), "")
-        lines.append({"turn": turn, "learner": re.sub(r"\s+", " ", learner).strip()[:40]})
-    return {"count": len(lines), "index": lines[-limit:]}
-
-
 def _bigrams(text: str) -> set[str]:
     text = text.casefold()
     grams = set()
@@ -181,46 +166,6 @@ def _bigrams(text: str) -> set[str]:
 
 def overlap(focus: str, text: str) -> int:
     return len(_bigrams(focus) & _bigrams(text))
-
-
-def related_turns(numbered, focus: str, exclude: set[int], *, limit: int, minimum: float = 1.0) -> list[int]:
-    """Earlier turns that share distinctive wording with focus.
-
-    Each shared word pair counts 1/(number of earlier turns containing it),
-    so a word used once ("披萨") weighs more than one used everywhere
-    ("分数"). The newest turn (the message being answered) is not counted.
-    """
-    groups = _group(numbered)
-    newest = max(groups) if groups else 0
-    wanted = _bigrams(focus)
-    shared = {turn: _bigrams(" ".join(m["text"] for m in items)) & wanted
-              for turn, items in groups.items() if turn != newest}
-    frequency = Counter(gram for grams in shared.values() for gram in grams)
-    scored = []
-    for turn, grams in shared.items():
-        if turn in exclude:
-            continue
-        score = sum(1 / frequency[gram] for gram in grams)
-        if score >= minimum:
-            scored.append((score, turn))
-    scored.sort(key=lambda pair: (-pair[0], -pair[1]))
-    return [turn for _, turn in scored[:limit]]
-
-
-def recall(numbered, turns, budget: int, *, message_max: int) -> list[dict]:
-    """Full messages of the requested turns, in turn order, within the budget."""
-    groups = _group(numbered)
-    chosen, used = [], 0
-    for turn in turns:
-        if turn not in groups:
-            continue
-        shown = _shown(groups[turn], message_max)
-        size = count_tokens(shown)
-        if used + size > budget:
-            continue
-        chosen.append((turn, shown))
-        used += size
-    return [message for _, shown in sorted(chosen) for message in shown]
 
 
 def learner_messages(numbered, *, after_turn: int, budget: int, message_max: int) -> list[dict]:
@@ -254,14 +199,8 @@ _NOTE_ITEMS = {
 CONTEXT_NOTES_SCHEMA = object_schema({
     name: {"type": "array", "items": item, "maxItems": 12} for name, item in _NOTE_ITEMS.items()
 })
-LOOKBACK_SCHEMA = object_schema({
-    "turns": {"type": "array", "items": _TURN, "maxItems": 6},
-    "query": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 200}, {"type": "null"}]},
-})
-CONTEXT_UPDATE_SCHEMA = {"anyOf": [{"type": "null"}, object_schema({
-    "notes": {"anyOf": [{"type": "null"}, CONTEXT_NOTES_SCHEMA]},
-    "lookback": {"anyOf": [{"type": "null"}, LOOKBACK_SCHEMA]},
-})]}
+# What the coordinator returns with each decision: the full updated notes, or null for "no change".
+CONTEXT_UPDATE_SCHEMA = {"anyOf": [{"type": "null"}, CONTEXT_NOTES_SCHEMA]}
 _SHORT = {"point": 80, "quote": 120, "issue": 80, "text": 80}
 
 

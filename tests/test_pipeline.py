@@ -110,8 +110,8 @@ class FakeRunner:
                         "visual": {"code": "comparison", "evidence_quote": current_text} if proposed["visual_request"] else None,
                     }
                     result = {"mode": "tools", "plan": proposed}
-            # Decisions carry the coordinator's context update; null = no change.
-            result = {**result, "context": result.get("context")}
+            # Decisions carry the coordinator's updated conversation notes; null = no change.
+            result = {**result, "context_notes": result.get("context_notes")}
         elif role == "coordinator" and payload["phase"] == "quiz":
             if self.questions:
                 result = self.questions.popleft()
