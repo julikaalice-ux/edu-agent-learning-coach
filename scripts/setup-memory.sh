@@ -25,7 +25,9 @@ EMBEDDING_MODEL="text-embedding-3-small"
 # - the HF Space demo service principal (hf-edu-agent-demo, see fix-permissions.sh)
 PRINCIPALS="<agent-identity-principal-id> <demo-sp-object-id>"
 SCOPE="/subscriptions/$SUBSCRIPTION/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.CognitiveServices/accounts/$ACCOUNT"
-AUDIENCE="https://cognitiveservices.azure.com"
+# The memory API validates the token audience as ai.azure.com (without the
+# /.default suffix: az returns an empty token for that form).
+AUDIENCE="https://ai.azure.com"
 
 az account set --subscription "$SUBSCRIPTION"
 
@@ -47,7 +49,7 @@ fi
 # preview-era and may drift; what gets assigned is echoed so drift is visible.
 # (Chat access itself uses the roles granted by fix-permissions.sh / azd.)
 for PRINCIPAL in $PRINCIPALS; do
-    for ROLE in "Azure AI Foundry User" "Cognitive Services OpenAI User"; do
+    for ROLE in "Foundry User" "Cognitive Services OpenAI User"; do
         if az role assignment list --scope "$SCOPE" \
                 --query "[?principalId=='$PRINCIPAL'&&roleDefinitionName=='$ROLE']" -o tsv | grep -q .; then
             echo "already assigned: $ROLE -> $PRINCIPAL"
