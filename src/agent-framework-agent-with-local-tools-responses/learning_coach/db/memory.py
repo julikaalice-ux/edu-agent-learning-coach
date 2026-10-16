@@ -17,7 +17,8 @@ from typing import Any
 
 
 from learning_coach.domain.mastery import update_mastery
-from learning_coach.domain.note_contracts import NOTES_SCHEMA, SCHEMA_VERSION, ERROR_CATEGORIES, PROFILE_KEYS
+from learning_coach.domain.note_contracts import (NOTES_SCHEMA, SCHEMA_VERSION, ERROR_CATEGORIES,
+                                                 LEGACY_ERROR_CATEGORIES, PROFILE_KEYS)
 from learning_coach.db.storage_errors import storage_boundary
 
 DATABASE_VERSION = "1"
@@ -102,6 +103,10 @@ class LearningStore:
         if version != DATABASE_VERSION:
             self._db.close()
             raise ValueError("Unsupported learning database version")
+        # Error types were renamed to the four of the product design; convert old rows.
+        for legacy, current in LEGACY_ERROR_CATEGORIES.items():
+            self._db.execute("UPDATE error_records SET category = ? WHERE category = ?", (current, legacy))
+            self._db.execute("UPDATE quiz_events SET error_category = ? WHERE error_category = ?", (current, legacy))
 
     @storage_boundary
     def close(self) -> None:

@@ -202,23 +202,24 @@ class StructuredRunnerTests(unittest.IsolatedAsyncioTestCase):
             await self.make_runner(fake)("invented", {}, SCHEMA)
         self.assertEqual(fake.calls, [])
 
-    def test_runner_requires_exactly_five_roles(self):
-        with self.assertRaisesRegex(ValueError, "exactly_five_agent_roles_required"):
+    def test_runner_requires_exactly_the_known_roles(self):
+        with self.assertRaisesRegex(ValueError, "agent_roles_mismatch"):
             StructuredRunner({"coordinator": FakeAgent()})
 
 
 @unittest.skipUnless(SDK_AVAILABLE, "Run with the project's locked SDK environment")
 class AgentFactoryTests(unittest.IsolatedAsyncioTestCase):
-    async def test_five_real_agents_load_prompts_and_accept_fake_client(self):
+    async def test_six_real_agents_load_prompts_and_accept_fake_client(self):
         client = FakeChatClient()
         agents = create_agents(client, SOURCE / "instructions.md")
         prompt_paths = {"coordinator": SOURCE / "instructions.md",
                         "researcher": SOURCE / "agents/material-search.md",
                         "verifier": SOURCE / "agents/source-check.md",
                         "notes": SOURCE / "agents/note-organizer.md",
-                        "visualizer": SOURCE / "agents/visual-designer.md"}
+                        "visualizer": SOURCE / "agents/visual-designer.md",
+                        "quizzer": SOURCE / "agents/quiz-writer.md"}
         self.assertEqual(set(agents), set(ROLES))
-        self.assertEqual(len({id(agent) for agent in agents.values()}), 5)
+        self.assertEqual(len({id(agent) for agent in agents.values()}), 6)
         for role, agent in agents.items():
             with self.subTest(role=role):
                 self.assertIsInstance(agent, Agent)
@@ -228,7 +229,7 @@ class AgentFactoryTests(unittest.IsolatedAsyncioTestCase):
                 options = client.calls[-1][2]
                 self.assertIn(prompt_paths[role].read_text(encoding="utf-8"), options["instructions"])
                 self.assertIs(options["store"], False)
-        self.assertEqual(len(client.calls), 5)
+        self.assertEqual(len(client.calls), 6)
 
     async def test_native_visual_union_is_wrapped_and_returns_original_spec(self):
         visual = {"kind": "flashcards", "title": "分数", "cards": [{"front": "一半", "back": "二分之一"}]}
@@ -342,7 +343,7 @@ class FiveRoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_real_sdk_direct_decision_finishes_in_one_model_call(self):
         decision = {"mode": "answer", "response": deepcopy(FINAL),
                     "task": {"task_summary": "理解分数", "pause_task": False, "end_task": False},
-                    "context_notes": None}
+                    "context_notes": None, "check_question": None}
         for native in (False, True):
             with self.subTest(native=native), TemporaryDirectory() as directory:
                 client = FakeChatClient({"result": decision} if native else decision)
@@ -366,7 +367,7 @@ class FiveRoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 finally:
                     store.close()
 
-    async def test_real_sdk_five_role_pipeline_persists_notes_and_serves_visual(self):
+    async def test_real_sdk_pipeline_persists_notes_and_serves_visual(self):
         class Provider:
             def __init__(self):
                 self.calls = []
@@ -407,7 +408,7 @@ class FiveRoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         "notes": {"code": "profile_update", "evidence_quote": quote},
                         "visual": {"code": "explicit_visual", "evidence_quote": quote},
                     }
-                    answer = {"mode": "tools", "plan": answer, "context_notes": None}
+                    answer = {"mode": "tools", "plan": answer, "context_notes": None, "check_question": None}
                 elif data.get("phase") == "respond":
                     role = "coordinator"
                     self.response_payload = deepcopy(data)
@@ -489,7 +490,7 @@ class FiveRoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 compiled = await host.run([Message("user", [said]), Message("assistant", [final.text]),
                                            Message("user", ["整理笔记"])], session=session)
                 self.assertIn("整理好了", compiled.text)
-                self.assertEqual(set(client.roles), set(ROLES))
+                self.assertEqual(set(client.roles), set(ROLES) - {"quizzer"})  # no question was asked
                 self.assertEqual(client.roles[-1], "notes")
                 stored = store.snapshot(session.session_id)
                 self.assertEqual(stored["profile"]["learning_stage"]["value"], "成人工作后学习")

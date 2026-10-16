@@ -150,7 +150,7 @@ class LearningStoreTests(unittest.TestCase):
         self.enable()
         content = notes()
         content["concepts"] = [{"concept_id": "fractions", "label": "分数", "prerequisites": None, "related": None, "evidence_quote": "分数不会"}]
-        content["error_records"] = [{"concept_id": "fractions", "category": "careless", "cause_confirmed": False, "evidence_quote": "算错了"}]
+        content["error_records"] = [{"concept_id": "fractions", "category": "misreading", "cause_confirmed": False, "evidence_quote": "算错了"}]
         content["review_plan"] = [{"topic": "分数", "deadline": None, "evidence_quote": "我要复习分数"}]
         self.apply("1", content=content, learner_text="分数不会，算错了，我要复习分数")
         snapshot = self.store.snapshot("s")

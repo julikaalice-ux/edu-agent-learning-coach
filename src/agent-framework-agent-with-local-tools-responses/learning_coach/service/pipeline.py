@@ -8,12 +8,14 @@ import json
 import logging
 import re
 
-from learning_coach.domain.contracts import QUIZ_SCHEMA, ContractError, decision_schema, grade_choice, public_quiz, validate
+from learning_coach.domain.contracts import (QUIZ_SCHEMA, ContractError, check_question, decision_schema,
+                                             public_quiz, selected_choice, validate)
 from learning_coach.domain import onboarding
 from learning_coach.domain.context import (Budgets, accept_notes, brief_card, count_tokens, empty_notes,
                                            learner_card, learner_messages, memory_slice, note_slice,
                                            number_turns, recent_window, research_digest)
-from learning_coach.domain.note_contracts import NOTES_SCHEMA, SCHEMA_VERSION as NOTES_VERSION
+from learning_coach.domain.note_contracts import ERROR_LABELS, NOTES_SCHEMA, SCHEMA_VERSION as NOTES_VERSION
+from learning_coach.domain.visual_contracts import VISUAL_SCHEMA
 from learning_coach.domain.routing import (conservative_participant, empty_results, execution_order,
                       recover_explicit_visual_route,
                       recover_practice_route,
@@ -34,10 +36,27 @@ NOTES_OFFER = "要把这次学的整理成笔记吗？\n1. 整理\n2. 不用"
 NOTES_REQUEST = ("整理笔记", "帮我整理笔记", "整理一下笔记", "生成笔记", "做笔记")
 NOTES_YES = ("1", "整理", "整理吧", "整理一下", "好", "好的", "要", "可以")
 NOTES_NO = ("2", "不用", "不用了", "先不用", "不要", "不整理")
+# While a question waits: replace it without grading (e.g. a picture that does not fit).
+SKIP_QUESTION = ("换一题", "换一道", "换一道题", "跳过这题", "这题跳过", "换个题")
+QUIZ_PICTURE_LINK = "看题目配图"
 # Visible history accepted per turn (notes are compiled from the learner's
 # words since the last compile); a safety cap only, not a context budget.
 MAX_HISTORY = 400
 MAX_MESSAGE_CHARS = 20000
+
+
+def render_question(question) -> str:
+    """The program renders exactly one unanswered question, with no answer key."""
+    choices = "\n".join(f"{'ABCD'[i]}. {choice}" for i, choice in enumerate(question["choices"]))
+    return question["question"] + "\n" + choices
+
+
+def default_participant(state) -> str:
+    """Who answers a new question when no plan says so: a companion only when one said so."""
+    quiz = state.get("quiz") or {}
+    if quiz.get("participant") in ("learner", "companion_report", "unknown") and not quiz.get("finished"):
+        return quiz["participant"]
+    return "companion_report" if (state.get("onboarding") or {}).get("who") == "companion" else "learner"
 
 
 def empty_learning_notes():
@@ -286,6 +305,9 @@ class LearningPipeline:
         if prefix is None and offered and text in NOTES_NO:
             return reply("好，这次先不整理。之后想整理，随时说“整理笔记”。", "E",
                          {"kind": "question", "text": "接下来想学什么？"}), state
+        waiting = state.get("quiz") or {}
+        if prefix is None and text in SKIP_QUESTION and waiting.get("awaiting") and not waiting.get("finished"):
+            return await self._replace_question(messages, session_id, state, memory_key)
 
         output, state = await self._teach(messages, session_id, state, event_id, memory_key, returning_visitor)
         if prefix:
@@ -334,6 +356,12 @@ class LearningPipeline:
                             self.decision_schema)
         context["notes"], note_problems = accept_notes(
             decision.get("context_notes"), context.get("notes"), numbered, budgets.notes)
+        # Read before any routing repair: repaired decisions are rebuilt without it.
+        check = decision.get("check_question")
+        notes_now = context.get("notes")
+        sub_window = [{"turn": item["turn"], "role": item["role"], "text": item["text"]}
+                      for item in recent_window(numbered, budgets.sub_window, min_turns=1,
+                                                message_max=budgets.message_max)]
         context_report = {
             "window_turns": [window[0]["turn"], current_turn] if window else [],
             "note_problems": note_problems, "decide_tokens": count_tokens(decide_input),
@@ -358,23 +386,34 @@ class LearningPipeline:
             primary = output["intent"]["primary"]
             self._apply_task(state, primary, task)
             self._track_tasks(state, previous_task, previous_quiz, current_turn, text)
-            self._validate_response(output, output["intent"], None,
-                                    stopping=task["end_task"] or task["pause_task"])
-            if task["end_task"] or task["pause_task"]:
+            stopping = task["end_task"] or task["pause_task"]
+            self._validate_response(output, output["intent"], None, stopping=stopping)
+            if stopping:
                 output["next_step"] = None
+            picture = None
+            if check and primary in "AB" and not stopping:
+                # A graded check question on what was just explained replaces the
+                # coordinator's own closing question.
+                picture = await self._add_check_question(
+                    output, check, state, session_id, brief_card(state, memory, default_participant(state)),
+                    notes_now, sub_window)
+                self._validate_response(output, output["intent"], None)
+            if picture:
+                output["message"] += f"\n\n[{QUIZ_PICTURE_LINK}]({picture['url']})"
             validate(output, self.response_schema)
+            if picture:
+                self.artifacts.commit(session_id, picture)
             state["last_execution"] = {"mode": "answer", "tools": empty_results(), "context": context_report}
+            if (state.get("quiz") or {}).get("kind") == "check" and check and not stopping and primary in "AB":
+                state["last_execution"]["check_question"] = bool((state.get("quiz") or {}).get("awaiting"))
             return output, state
 
         plan, tool_results = select_tools(decision["plan"], messages[-1]["text"], memory_enabled=memory_enabled)
         primary = plan["intent"]["primary"]
         self._apply_task(state, primary, plan)
         self._track_tasks(state, previous_task, previous_quiz, current_turn, text)
-        notes_now = context.get("notes")
         brief = brief_card(state, memory, plan["participant"])
-        sub_window = [{"turn": item["turn"], "role": item["role"], "text": item["text"]}
-                      for item in recent_window(numbered, budgets.sub_window, min_turns=1,
-                                                message_max=budgets.message_max)]
+        pictures = []
         if tool_results["notes"] == "pending":
             # Learning evidence is only marked here; notes are compiled after a
             # quiz set when the learner agrees, from the learner's own words.
@@ -429,7 +468,11 @@ class LearningPipeline:
                 _, visual_context = await running["visual"]
                 if visual_context and visual_context.get("status") == "ready":
                     extra["visual_context"] = visual_context
-            return await self._quiz_question(plan, pending_quiz, extra)
+            question, picture = await self._quiz_question(plan["participant"], pending_quiz, extra,
+                                                          session_id=session_id)
+            if picture:
+                pictures.append(picture)
+            return question
 
         # Independent work runs concurrently; declared dependencies wait inside
         # their own task. Nothing writes memory or publishes artifacts until the
@@ -481,21 +524,26 @@ class LearningPipeline:
         if stopping:
             output["next_step"] = None
         if quiz_context and quiz_context.get("new_question"):
-            q = quiz_context["new_question"]
-            choices = "\n".join(f"{'ABCD'[i]}. {choice}" for i, choice in enumerate(q["choices"]))
-            # The program renders exactly one unanswered question, with no answer key.
-            output["next_step"] = {"kind": "question", "text": q["question"] + "\n" + choices}
+            output["next_step"] = {"kind": "question", "text": render_question(quiz_context["new_question"])}
         offer_notes = False
         if quiz_context and quiz_context.get("finished"):
-            output["next_step"] = None
+            finished = state.get("quiz") or {}
             results = context.get("quiz_results", [])
-            results.append({"topic": (state.get("quiz") or {}).get("topic") or plan["quiz_topic"],
-                            "answered": quiz_context.get("answered"), "correct": quiz_context.get("correct_count")})
+            results.append({"topic": finished.get("topic") or plan["quiz_topic"], "kind": finished.get("kind", "practice"),
+                            "answered": quiz_context.get("answered"), "correct": quiz_context.get("correct_count"),
+                            "suspected_errors": finished.get("errors", [])})
             context["quiz_results"] = results[-5:]
-            if memory_enabled:
-                # A set of questions is done: ask once whether to compile notes.
-                output["next_step"] = {"kind": "question", "text": NOTES_OFFER}
-                offer_notes = True
+            if finished.get("kind") != "check":
+                output["next_step"] = None
+                if memory_enabled:
+                    # A practice set is done: ask once whether to compile notes.
+                    output["next_step"] = {"kind": "question", "text": NOTES_OFFER}
+                    offer_notes = True
+        if (check and not stopping and primary in "AB"
+                and tool_results["quiz"] in ("not_requested", "skipped_policy")):
+            picture = await self._add_check_question(output, check, state, session_id, brief, notes_now, sub_window)
+            if picture:
+                pictures.append(picture)
 
         if tool_results["quiz"] in ("needs_input", "awaiting_answer") and (
                 not output["next_step"] or output["next_step"]["kind"] != "question"):
@@ -518,12 +566,16 @@ class LearningPipeline:
             output["message"] += f"\n\n[打开互动图]({artifact['url']})"
         elif visual_warning:
             output["message"] += "\n\n这次未生成可用的互动图。"
+        for picture in pictures:
+            output["message"] += f"\n\n[{QUIZ_PICTURE_LINK}]({picture['url']})"
         validate(output, self.response_schema)
 
         # Nothing persistent is committed before public output is valid.
         if artifact:
             self.artifacts.commit(session_id, artifact)
             tool_results["visual"] = "published"
+        for picture in pictures:
+            self.artifacts.commit(session_id, picture)
         if quiz_evidence is not None and memory_enabled:
             try:
                 # Records under a learner ID span conversations, so the turn key
@@ -639,7 +691,8 @@ class LearningPipeline:
         """Program-owned grading and quiz state; no model call.
 
         Returns (context, evidence, quiz). quiz is set only when this turn still
-        needs a new question, which _quiz_question generates afterwards.
+        needs a new question, which _quiz_question generates afterwards. A wrong
+        answer carries the suspected error type marked on the chosen option.
         """
         if plan["intent"]["primary"] not in "ABC" or plan["end_task"] or plan["pause_task"]:
             return None, None, None
@@ -647,18 +700,19 @@ class LearningPipeline:
         if action not in ("start", "continue"):
             return None, None, None
         quiz = state.get("quiz")
+        # A check question left unanswered gives way to a practice set the learner asked for.
+        replace_check = action == "start" and quiz and quiz.get("kind") == "check" and not quiz.get("finished")
         # continue without an active quiz is degraded to start: the learner
         # asked for more practice, so a missing state record must not kill the turn.
-        if action in ("start", "continue") and (not quiz or quiz.get("finished")):
+        if not quiz or quiz.get("finished") or replace_check:
             if not plan["quiz_topic"]:
                 return {"needs_topic": True}, None, None
+            seen = (quiz or {}).get("question_history", [])[-20:]
             quiz = {"topic": plan["quiz_topic"], "total": plan["quiz_total"],
                     "difficulty": plan["difficulty"], "asked": 0, "answered": 0,
-                    "correct": 0, "awaiting": None, "finished": False, "question_history": [],
-                    "participant": plan["participant"]}
+                    "correct": 0, "awaiting": None, "finished": False, "question_history": list(seen),
+                    "participant": plan["participant"], "kind": "practice", "errors": []}
             state["quiz"] = quiz
-        if not quiz or quiz.get("finished"):
-            return None, None, None
         quiz["participant"] = conservative_participant(quiz.get("participant", "unknown"), plan["participant"])
         # Grading evidence, notes, new questions and the final reply must agree
         # on authorship, including on a normal (unrepaired) continuation.
@@ -666,9 +720,10 @@ class LearningPipeline:
         evidence = None
         if quiz.get("awaiting"):
             question = quiz["awaiting"]
-            correct = grade_choice(text, question)
-            if correct is None:
+            selected = selected_choice(text, question)
+            if selected is None:
                 return {"awaiting": public_quiz(question), "needs_clear_choice": True}, None, None
+            correct = selected == question["answer_index"]
             quiz["answered"] += 1
             quiz["correct"] += int(correct)
             quiz["awaiting"] = None
@@ -676,34 +731,151 @@ class LearningPipeline:
                         "difficulty": quiz["difficulty"], "independent": plan["participant"] == "learner",
                         "actor": {"learner": "learner", "companion_report": "companion", "unknown": "unknown"}[plan["participant"]],
                         "kind": "quiz"}
+            feedback = {"correct": correct, "explanation": question["explanation"]}
+            diagnosis = None if correct else next(
+                (item for item in question.get("diagnoses", []) if item["choice_index"] == selected), None)
+            if diagnosis:
+                # Suspected, not confirmed: it comes from the option chosen. The
+                # learner's own reasoning is what confirms it later.
+                evidence["error_category"] = diagnosis["error_type"]
+                record = {"concept_id": question["concept_id"], "error_type": diagnosis["error_type"],
+                          "misconception": diagnosis["misconception"]}
+                quiz.setdefault("errors", []).append(record)
+                context = state.setdefault("context", {})
+                history = (context.get("error_history", []) + [record])[-20:]
+                context["error_history"] = history
+                feedback["suspected_error"] = {"type": ERROR_LABELS[diagnosis["error_type"]],
+                                               "code": diagnosis["error_type"],
+                                               "misconception": diagnosis["misconception"],
+                                               "basis": "所选选项对应的常见误解，尚未经学习者确认"}
+                repeats = sum(item["concept_id"] == record["concept_id"] and item["error_type"] == record["error_type"]
+                              for item in history)
+                if repeats >= 2:
+                    feedback["repeated_error"] = True
             if quiz["answered"] >= quiz["total"]:
                 quiz["finished"] = True
             # Feedback occupies this turn; never advance before error diagnosis.
             if not correct or quiz["finished"]:
-                return {"feedback": {"correct": correct, "explanation": question["explanation"]},
-                        "answered": quiz["answered"], "correct_count": quiz["correct"],
-                        "finished": quiz["finished"], "needs_review": not correct}, evidence, None
+                return {"feedback": feedback, "answered": quiz["answered"], "correct_count": quiz["correct"],
+                        "finished": quiz["finished"], "needs_review": not correct,
+                        "kind": quiz.get("kind", "practice")}, evidence, None
+        if quiz.get("finished"):
+            return None, evidence, None
         return None, evidence, quiz
 
-    async def _quiz_question(self, plan, quiz, context=None):
-        """Generate one new question; context carries only declared dependencies."""
+    async def _quiz_question(self, participant, quiz, context=None, *, session_id=None):
+        """Ask the quiz writer for one new question.
+
+        Returns (public question context, picture artifact or None). The program
+        checks what the model cannot be trusted with: one answer in range, every
+        wrong choice diagnosed exactly once, no repeated question. A requested
+        picture is drawn here; if that is not possible the writer is asked once
+        more for a text-only question.
+        """
         seen = quiz.setdefault("question_history", [])
-        for attempt in range(2):
-            request = {
-                "phase": "quiz", "topic": quiz["topic"], "difficulty": quiz["difficulty"],
-                "count": 1, "participant": plan["participant"], "previous_questions": seen,
-                "require_new_question": True,
-            }
-            request.update(context or {})
-            question = validate(await self.runner("coordinator", request, QUIZ_SCHEMA), QUIZ_SCHEMA)
-            if question["answer_index"] >= len(question["choices"]):
-                raise ContractError("answer_index_out_of_range")
-            if question["question"].strip().casefold() not in {item.strip().casefold() for item in seen}:
+        known = {item.strip().casefold() for item in seen}
+        request = {"phase": "quiz", "kind": quiz.get("kind", "practice"), "topic": quiz["topic"],
+                   "difficulty": quiz["difficulty"], "count": 1, "participant": participant,
+                   "previous_questions": list(seen), "require_new_question": True}
+        request.update(context or {})
+        picture, problem, rejected = None, None, 0
+        # Two tries for a sound question; one more only to swap a picture that
+        # could not be drawn for a text-only question.
+        for _ in range(3):
+            if problem:
+                request["correction"] = problem
+            question = validate(await self.runner("quizzer", request, QUIZ_SCHEMA), QUIZ_SCHEMA)
+            problem = check_question(question)
+            if problem is None and question["question"].strip().casefold() in known:
+                problem = "repeated_question"
+            if problem is None and question["image"] is not None:
+                if request.get("image_unavailable"):
+                    problem = "picture_not_available_write_text_only"
+                else:
+                    picture = await self._question_picture(session_id, question)
+                    if picture is None:
+                        request["image_unavailable"] = True
+                        problem = "picture_not_available_write_text_only"
+            if problem is None:
                 break
+            if problem != "picture_not_available_write_text_only":
+                rejected += 1
+                if rejected >= 2:
+                    raise StageFailure("quiz_question_not_accepted")
         else:
-            raise StageFailure("repeated_quiz_question")
+            raise StageFailure("quiz_question_not_accepted")
         quiz["awaiting"] = question
         seen.append(question["question"])
         quiz["asked"] += 1
-        return {"new_question": public_quiz(question), "answered": quiz["answered"],
-                "total": quiz["total"]}
+        public = public_quiz(question)
+        public["has_picture"] = picture is not None
+        return {"new_question": public, "answered": quiz["answered"], "total": quiz["total"]}, picture
+
+    async def _question_picture(self, session_id, question):
+        """Draw the picture a question asks about; None when it cannot be drawn."""
+        if self.image_generator is None or session_id is None:
+            return None
+        spec = {"kind": "illustration", "title": "题目配图",
+                "prompt": question["image"]["prompt"], "alt": question["image"]["alt"]}
+        try:
+            validate(spec, VISUAL_SCHEMA)
+            image = await asyncio.wait_for(self.image_generator(spec["prompt"]), timeout=60)
+            return self.artifacts.prepare(session_id, spec, image=image)
+        except (ContractError, RuntimeError, OSError, TimeoutError, ValueError, StorageError):
+            # Provider details never reach logs or the learner.
+            LOG.warning("quiz_picture_unavailable")
+            return None
+
+    async def _add_check_question(self, output, check, state, session_id, brief, notes_now, sub_window):
+        """One graded question on what the reply just explained. Returns its picture, if any.
+
+        A running practice set is left alone. If no acceptable question comes
+        back, the coordinator's own closing question stays.
+        """
+        running = state.get("quiz") or {}
+        if running and not running.get("finished") and running.get("kind", "practice") != "check":
+            return None
+        quiz = {"topic": check["topic"], "total": 1, "difficulty": check["difficulty"], "asked": 0,
+                "answered": 0, "correct": 0, "awaiting": None, "finished": False,
+                "question_history": list(running.get("question_history", [])[-20:]),
+                "participant": brief.get("participant") or default_participant(state), "kind": "check", "errors": []}
+        extra = {"explanation": output["message"][:3000], "learner": brief,
+                 "context_notes": note_slice(notes_now, "covered", "stuck"), "recent_messages": sub_window}
+        try:
+            question, picture = await self._quiz_question(quiz["participant"], quiz, extra, session_id=session_id)
+        except (StageFailure, ContractError):
+            LOG.warning("check_question_unavailable")
+            return None
+        state["quiz"] = quiz
+        output["next_step"] = {"kind": "question", "text": render_question(question["new_question"])}
+        return picture
+
+    async def _replace_question(self, messages, session_id, state, memory_key):
+        """“换一题”: drop the waiting question without grading and ask a new one."""
+        before = deepcopy(state.get("quiz"))
+        quiz = state["quiz"]
+        quiz["awaiting"] = None
+        quiz["skipped"] = quiz.get("skipped", 0) + 1
+        memory_enabled = not state.get("memory_blocked", False) and self.store.is_enabled(memory_key)
+        memory = self.store.snapshot(memory_key) if memory_enabled else {}
+        numbered = number_turns(messages)
+        extra = {"learner": brief_card(state, memory, quiz.get("participant")),
+                 "context_notes": note_slice((state.get("context") or {}).get("notes"), "covered", "stuck"),
+                 "recent_messages": recent_window(numbered, self.budgets.sub_window, min_turns=1,
+                                                  message_max=self.budgets.message_max)}
+        try:
+            question, picture = await self._quiz_question(quiz.get("participant", "unknown"), quiz, extra,
+                                                          session_id=session_id)
+        except (StageFailure, ContractError):
+            LOG.warning("replacement_question_unavailable")
+            state["quiz"] = before
+            return reply("这次没能换题。可以先试着回答这道，或者说“停止练习”。", "C",
+                         {"kind": "question", "text": render_question(before["awaiting"])}), state
+        output = reply("好，这题不算分，换一道。", "C",
+                       {"kind": "question", "text": render_question(question["new_question"])})
+        if picture:
+            output["message"] += f"\n\n[{QUIZ_PICTURE_LINK}]({picture['url']})"
+        validate(output, self.response_schema)
+        if picture:
+            self.artifacts.commit(session_id, picture)
+        return output, state

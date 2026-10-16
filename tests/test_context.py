@@ -88,7 +88,8 @@ class NotesTests(unittest.TestCase):
         decision = {"mode": "answer", "response": {"schema_version": "1.0",
                     "intent": {"primary": "A", "is_implicit": False}, "message": "好", "next_step": None},
                     "task": {"task_summary": None, "pause_task": False, "end_task": False},
-                    "context_notes": {**ctx.empty_notes(), "covered": [{"point": "披萨例子", "turn": 3}]}}
+                    "context_notes": {**ctx.empty_notes(), "covered": [{"point": "披萨例子", "turn": 3}]},
+                    "check_question": None}
         validate(decision, schema)
         validate({**decision, "context_notes": None}, schema)
 
@@ -195,12 +196,13 @@ class PipelineContextTests(unittest.IsolatedAsyncioTestCase):
     async def test_finished_quiz_offers_notes_and_yes_compiles_them(self):
         runner, pipeline, output, state, history = await self.finish_one_question_quiz("yes", records=True)
         self.assertEqual(output["next_step"]["text"], NOTES_OFFER)
-        self.assertEqual(state["context"]["quiz_results"], [{"topic": "分数", "answered": 1, "correct": 1}])
+        results = [{"topic": "分数", "kind": "practice", "answered": 1, "correct": 1, "suspected_errors": []}]
+        self.assertEqual(state["context"]["quiz_results"], results)
         compiled, state = await pipeline.run(messages("整理", *history), session_id="yes", state=state, turn_id="3")
         request = runner.calls_for("notes")[0]
         self.assertEqual([item["turn"] for item in request["learner_messages"]], [1, 2])
         self.assertEqual(request["evidence_turns"], [1])
-        self.assertEqual(request["quiz_results"], [{"topic": "分数", "answered": 1, "correct": 1}])
+        self.assertEqual(request["quiz_results"], results)
         self.assertNotIn("notes_offer", state)
         self.assertEqual(state["context"]["notes_upto_turn"], 3)  # including the request itself
         # A second request has nothing new to compile.
@@ -236,7 +238,7 @@ class PipelineContextTests(unittest.IsolatedAsyncioTestCase):
         await pipeline.run(messages("我上初中，考考我分数"), session_id="card",
                            state={"onboarding": {"step": "done", "stage": "初中", "who": "self", "records": "off"}})
         self.assertEqual(research.learners[0]["stage"], "初中")
-        quiz = runner.calls_for("coordinator", "quiz")[0]
+        quiz = runner.calls_for("quizzer")[0]
         self.assertEqual(quiz["learner"]["stage"], "初中")
         self.assertEqual(set(quiz["context_notes"]), {"covered", "stuck"})
         self.assertEqual(quiz["recent_messages"][-1]["text"], "我上初中，考考我分数")

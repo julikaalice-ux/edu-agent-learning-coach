@@ -214,7 +214,7 @@ class SavedConversationTests(SpaceTestBase):
                  "review_plan": [{"topic": "分数比较", "deadline": "周五"}]}
         text = self.app.render_notes(notes)
         for expected in ("学段：初中", "分数的意义：掌握得不错（做过 4 题，对 3 题）", "小数：还没做过题",
-                         "分数的意义：概念没弄清", "分数比较（周五）"):
+                         "分数的意义：概念性误解", "分数比较（周五）"):
             self.assertIn(expected, text)
         self.assertEqual(self.app.render_notes({}), self.app.NO_NOTES)
 

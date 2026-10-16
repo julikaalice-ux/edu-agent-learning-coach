@@ -26,6 +26,9 @@ QUIZ = {
     "concept_id": "fractions", "question": "四块饼分出一块，分出了整体的多少？",
     "choices": ["四分之一", "四分之三"], "answer_index": 0,
     "explanation": "ANSWER_KEY_PRIVATE: 一块占四块中的一块。",
+    "diagnoses": [{"choice_index": 1, "error_type": "misreading",
+                   "misconception": "PRIVATE_DIAGNOSIS: 把“分出的”看成了“剩下的”"}],
+    "image": None,
 }
 QUIZ_VARIANTS = (
     QUIZ["question"],
@@ -111,12 +114,13 @@ class FakeRunner:
                     }
                     result = {"mode": "tools", "plan": proposed}
             # Decisions carry the coordinator's updated conversation notes; null = no change.
-            result = {**result, "context_notes": result.get("context_notes")}
-        elif role == "coordinator" and payload["phase"] == "quiz":
+            result = {**result, "context_notes": result.get("context_notes"),
+                      "check_question": result.get("check_question")}
+        elif role == "quizzer":
             if self.questions:
                 result = self.questions.popleft()
             else:
-                number = len(self.calls_for("coordinator", "quiz")) - 1
+                number = len(self.calls_for("quizzer")) - 1
                 result = {**QUIZ, "question": QUIZ_VARIANTS[number] if number < len(QUIZ_VARIANTS) else f"练习 {number + 1}：{QUIZ['question']}"}
         elif role == "coordinator" and payload["phase"] == "respond":
             result = self.replies.popleft() if self.replies else self.default_reply(payload["plan"]["intent"])
@@ -164,7 +168,7 @@ class FakeArtifacts:
     def __init__(self):
         self.prepared, self.committed, self.deleted = [], [], []
 
-    def prepare(self, session_id, spec):
+    def prepare(self, session_id, spec, image=None):
         validate(spec, VISUAL_SCHEMA)
         self.prepared.append((session_id, deepcopy(spec)))
         return {"url": "/learning-artifacts/fake-local-token", "spec": deepcopy(spec)}
@@ -263,7 +267,7 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
                 self.assert_protocol(output)
                 self.assertEqual(output["intent"]["primary"], primary)
                 self.assertEqual([call["role"] for call in runner.calls], ["coordinator"])
-                self.assertEqual(runner.calls_for("coordinator", "quiz"), [])
+                self.assertEqual(runner.calls_for("quizzer"), [])
         self.assertEqual(self.research.calls, [])
         self.assertEqual(self.artifacts.prepared, [])
 
@@ -378,7 +382,7 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         replay, replay_state = await pipeline.run(request, session_id="s", turn_id="same")
         self.assertEqual(first, replay)
         self.assertEqual(state, replay_state)
-        self.assertEqual(len(runner.calls_for("coordinator", "quiz")), 1)
+        self.assertEqual(len(runner.calls_for("quizzer")), 1)
         self.assertEqual(runner.calls_for("notes"), [])
         self.assertEqual(state["context"]["evidence_turns"], [1])
 
@@ -412,9 +416,9 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         pipeline = self.pipeline(runner)
         output, state = await pipeline.run(messages("考考我"), session_id="s", turn_id="start")
         self.assertEqual(output["next_step"]["text"].count(QUIZ["question"]), 1)
-        self.assertEqual(runner.calls_for("coordinator", "quiz")[0]["count"], 1)
+        self.assertEqual(runner.calls_for("quizzer")[0]["count"], 1)
         _, state = await pipeline.run(messages("我需要一点时间"), session_id="s", state=state, turn_id="wait")
-        self.assertEqual(len(runner.calls_for("coordinator", "quiz")), 1)
+        self.assertEqual(len(runner.calls_for("quizzer")), 1)
         self.assertEqual(state["quiz"]["asked"], 1)
         self.assertEqual(state["quiz"]["answered"], 0)
         self.assertEqual(state["quiz"]["awaiting"]["answer_index"], 0)
@@ -435,7 +439,7 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         _, state = await pipeline.run(messages("考考我"), session_id="s", turn_id="start")
         output, state = await pipeline.run(messages("B"), session_id="s", state=state, turn_id="wrong")
         self.assert_protocol(output)
-        self.assertEqual(len(runner.calls_for("coordinator", "quiz")), 1)
+        self.assertEqual(len(runner.calls_for("quizzer")), 1)
         self.assertEqual(state["quiz"]["answered"], 1)
         self.assertEqual(state["quiz"]["correct"], 0)
         self.assertIsNone(state["quiz"]["awaiting"])
@@ -455,13 +459,13 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         for number in range(1, 4):
             output, state = await pipeline.run(messages("A"), session_id="s", state=state, turn_id=f"answer-{number}")
             self.assertEqual(state["quiz"]["answered"], number)
-            self.assertEqual(len(runner.calls_for("coordinator", "quiz")), min(number + 1, 3))
-        self.assertEqual([call["count"] for call in runner.calls_for("coordinator", "quiz")], [1, 1, 1])
+            self.assertEqual(len(runner.calls_for("quizzer")), min(number + 1, 3))
+        self.assertEqual([call["count"] for call in runner.calls_for("quizzer")], [1, 1, 1])
         self.assertEqual(state["quiz"]["correct"], 3)
         self.assertTrue(state["quiz"]["finished"])
         self.assertIsNone(output["next_step"])
         self.assertEqual(state["quiz"]["question_history"], list(QUIZ_VARIANTS))
-        self.assertEqual([call["previous_questions"] for call in runner.calls_for("coordinator", "quiz")], [[], list(QUIZ_VARIANTS[:1]), list(QUIZ_VARIANTS[:2])])
+        self.assertEqual([call["previous_questions"] for call in runner.calls_for("quizzer")], [[], list(QUIZ_VARIANTS[:1]), list(QUIZ_VARIANTS[:2])])
 
     async def test_repeated_question_retries_once_and_presents_only_the_new_question(self):
         original = {**QUIZ, "question": "What fraction is one of four equal parts?"}
@@ -480,7 +484,7 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state["quiz"]["question_history"], [original["question"], replacement["question"]])
         self.assertIn(replacement["question"], output["next_step"]["text"])
         self.assertNotIn(duplicate["question"].strip(), json.dumps(output))
-        generation = runner.calls_for("coordinator", "quiz")
+        generation = runner.calls_for("quizzer")
         self.assertEqual(len(generation), 3)
         self.assertTrue(all(call["count"] == 1 and call["require_new_question"] for call in generation))
         self.assertEqual(generation[1]["previous_questions"], [original["question"]])
@@ -504,7 +508,7 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(after["quiz"]["answered"], 0)
         self.assertEqual(after["quiz"]["asked"], 1)
         self.assertEqual(after["quiz"]["awaiting"], QUIZ)
-        self.assertEqual(len(runner.calls_for("coordinator", "quiz")), 3)
+        self.assertEqual(len(runner.calls_for("quizzer")), 3)
         self.assertEqual(len(runner.calls_for("coordinator", "respond")), 1)
         # Notes are not compiled during a turn; the failed turn wrote nothing.
         self.assertEqual(runner.calls_for("notes"), [])
@@ -543,7 +547,7 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("quiz", state)
         self.assertIsNone(state["active_task"])
         self.assertEqual(state["pending_tasks"], [])
-        self.assertEqual(len(runner.calls_for("coordinator", "quiz")), 1)
+        self.assertEqual(len(runner.calls_for("quizzer")), 1)
 
     async def test_failed_turn_preserves_newer_committed_progress_over_stale_caller_state(self):
         runner = FakeRunner([
