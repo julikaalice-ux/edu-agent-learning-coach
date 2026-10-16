@@ -89,12 +89,21 @@ class FoundryMemoryStore:
             return accepted
         # Mirror only after a successful inner write; idempotent replays (inner
         # returns False for an already-applied turn) never mirror again.
-        for fact in facts_from_notes(notes):
+        facts = facts_from_notes(notes)
+        mirrored = 0
+        for fact in facts:
             try:
                 self._client.create_memory(self._store, scope=session_id,
                                            content=fact, kind=MEMORY_KIND_USER_PROFILE)
-            except Exception:
-                LOG.warning("foundry_memory_mirror_failed")  # never log fact content
+                mirrored += 1
+            except Exception as error:
+                # Never log fact content; the exception type tells ops which
+                # layer failed (e.g. HttpResponseError = rejected by the service).
+                LOG.warning("foundry_memory_mirror_failed error=%s", type(error).__name__)
+        if mirrored:
+            # The scope key is the platform-assigned memory key; logged for
+            # operations (project-private logs), never the fact content.
+            LOG.info("foundry_memory_mirrored scope=%s facts=%d", session_id, mirrored)
         return accepted
 
     def snapshot(self, session_id: str) -> dict:
