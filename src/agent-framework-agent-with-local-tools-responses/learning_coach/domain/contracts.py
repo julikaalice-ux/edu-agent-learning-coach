@@ -67,20 +67,20 @@ PLAN_SCHEMA = object_schema({
 def decision_schema(response_schema):
     """Choose one complete public answer or one bounded internal tool plan.
 
-    Either way the coordinator may also update its conversation notes and ask
-    to look back at earlier turns ("context"; null = no change, no lookback).
+    Either way the coordinator also returns its updated conversation notes
+    ("context_notes"; null = no change).
     """
     return {"anyOf": [
         object_schema({
             "mode": {"type": "string", "const": "answer"},
             "response": response_schema,
             "task": TASK_SCHEMA,
-            "context": CONTEXT_UPDATE_SCHEMA,
+            "context_notes": CONTEXT_UPDATE_SCHEMA,
         }),
         object_schema({
             "mode": {"type": "string", "const": "tools"},
             "plan": PLAN_SCHEMA,
-            "context": CONTEXT_UPDATE_SCHEMA,
+            "context_notes": CONTEXT_UPDATE_SCHEMA,
         }),
     ]}
 

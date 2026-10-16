@@ -3,6 +3,9 @@
 from collections import deque
 from datetime import date
 import importlib.util
+import json
+import os
+import tempfile
 from pathlib import Path
 import sys
 from types import ModuleType, SimpleNamespace
@@ -159,6 +162,85 @@ class SpaceAccessTests(SpaceTestBase):
         self.app.IMAGE_LIMIT.take()
         with self.assertRaisesRegex(RuntimeError, "image_daily_limit"):
             await self.app.limited_image("叶片")
+
+
+
+class SavedConversationTests(SpaceTestBase):
+    """Conversations are kept in the visitor's browser; notes can be read back."""
+
+    async def test_turn_is_saved_without_picture_bytes_and_replaces_its_own_entry(self):
+        self.pipeline.responses.extend([response("第一句回答"), response("第二句回答")])
+        await self.send("讲讲   分数")
+        saved = self.app.remember(self.session, [])
+        await self.send("继续")
+        self.session["chat"].append({"role": "assistant", "content": "看图 ![配图](data:image/png;base64,aGVsbG8=)"})
+        saved = self.app.remember(self.session, saved)
+        self.assertEqual(len(saved), 1)
+        entry = saved[0]
+        self.assertEqual((entry["id"], entry["title"]), (self.session["session_id"], "讲讲 分数"))
+        self.assertEqual(entry["messages"][-1]["content"], "看图 （配图）")
+        self.assertNotIn("base64", str(saved))
+        self.assertEqual(self.app.show_saved(entry["id"], saved), entry["messages"])
+        self.assertEqual(self.app.show_saved("missing", saved), [])
+
+    async def test_only_the_newest_conversations_are_kept(self):
+        saved = []
+        for number in range(25):
+            session = self.app.new_session()[0]
+            session["chat"] = [{"role": "user", "content": f"问题{number}"}]
+            saved = self.app.remember(session, saved)
+        self.assertEqual(len(saved), self.app.MAX_SAVED_CONVERSATIONS)
+        self.assertEqual(saved[-1]["title"], "问题24")
+        choices = self.app.history_choices(saved)["choices"]
+        self.assertTrue(choices[0][0].endswith("问题24"))
+        self.assertEqual(self.app.remember(self.app.new_session()[0], saved), saved)  # nothing said yet
+        self.assertEqual(self.app.forget_saved()[0], [])
+
+    async def test_saved_conversations_fit_in_browser_storage(self):
+        saved = []
+        for number in range(6):
+            session = self.app.new_session()[0]
+            session["chat"] = [{"role": "user", "content": f"问题{number}" + "长" * 19000}] * 20
+            saved = self.app.remember(session, saved)
+        self.assertLessEqual(len(json.dumps(saved, ensure_ascii=False)), self.app.MAX_SAVED_CHARS)
+        self.assertTrue(saved[-1]["title"].startswith("问题5"))
+
+    async def test_notes_are_shown_in_plain_words_and_only_with_access(self):
+        notes = {"profile": {"learning_stage": {"value": "初中", "origin": "self_report"}},
+                 "concepts": [{"concept_id": "fraction", "label": "分数的意义", "mastery_level": 0.75,
+                               "attempts": 4, "correct_count": 3},
+                              {"concept_id": "decimal", "label": "小数", "mastery_level": None, "attempts": 0}],
+                 "error_records": [{"concept_id": "fraction", "category": "conceptual"}],
+                 "review_plan": [{"topic": "分数比较", "deadline": "周五"}]}
+        text = self.app.render_notes(notes)
+        for expected in ("学段：初中", "分数的意义：掌握得不错（做过 4 题，对 3 题）", "小数：还没做过题",
+                         "分数的意义：概念没弄清", "分数比较（周五）"):
+            self.assertIn(expected, text)
+        self.assertEqual(self.app.render_notes({}), self.app.NO_NOTES)
+
+        class Store:
+            enabled = False
+
+            def is_enabled(self, learner):
+                return self.enabled
+
+            def snapshot(self, learner):
+                return notes
+
+        self.pipeline.store = Store()
+        device = {"learner_id": "abc", "seen": True}
+        self.assertEqual(self.app.notes_markdown(device, False), self.app.LOCKED_TEXT)
+        self.assertIn("还没有开启学习记录", self.app.notes_markdown(device, True))
+        self.pipeline.store.enabled = True
+        self.assertIn("分数的意义", self.app.notes_markdown(device, True))
+
+    async def test_browser_key_is_stable_across_restarts(self):
+        with tempfile.TemporaryDirectory() as folder, patch.dict("os.environ", {}, clear=False):
+            os.environ.pop("LEARNING_COACH_BROWSER_SECRET", None)
+            first = self.app.browser_secret(Path(folder))
+            self.assertEqual(self.app.browser_secret(Path(folder)), first)
+            os.environ["LEARNING_COACH_BROWSER_SECRET"] = "configured"
+            self.assertEqual(self.app.browser_secret(Path(folder)), "configured")
 
 
 if __name__ == "__main__":

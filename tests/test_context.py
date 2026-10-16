@@ -51,22 +51,6 @@ class TokenAndWindowTests(unittest.TestCase):
         tiny = ctx.recent_window(numbered, 1, min_turns=3, message_max=1500)
         self.assertEqual(sorted({item["turn"] for item in tiny}), [19, 20, 21])
 
-    def test_every_turn_out_of_view_is_indexed_for_look_back(self):
-        numbered = ctx.number_turns(messages("现在的问题", *conversation(20)))
-        window = ctx.recent_window(numbered, 1000, min_turns=3, message_max=1500)
-        earlier = ctx.earlier_index(numbered, window, limit=40)
-        self.assertEqual(earlier["count"], window[0]["turn"] - 1)
-        self.assertEqual(earlier["index"][0], {"turn": 1, "learner": "第1个问题：分数怎么理解"})
-
-    def test_related_earlier_turn_is_found_by_wording_and_recalled_whole(self):
-        numbered = ctx.number_turns(messages("用刚才那个披萨的例子再讲一遍", *conversation(20)))
-        window = ctx.recent_window(numbered, 1000, min_turns=3, message_max=1500)
-        found = ctx.related_turns(numbered, "用刚才那个披萨的例子再讲一遍", {m["turn"] for m in window}, limit=2)
-        self.assertEqual(found[0], 3)
-        recalled = ctx.recall(numbered, found, 2000, message_max=1500)
-        self.assertIn(PIZZA, [item["text"] for item in recalled])
-        self.assertEqual(ctx.recall(numbered, [3], 5, message_max=1500), [])
-
 
 class NotesTests(unittest.TestCase):
     def setUp(self):
@@ -99,14 +83,14 @@ class NotesTests(unittest.TestCase):
         self.assertLessEqual(ctx.count_tokens(accepted), 120)
         self.assertEqual(len(accepted["stuck"]), 1)  # learner difficulties go last
 
-    def test_decision_schema_accepts_context_updates(self):
+    def test_decision_schema_accepts_notes_or_no_change(self):
         schema = decision_schema(RESPONSE_SCHEMA)
         decision = {"mode": "answer", "response": {"schema_version": "1.0",
                     "intent": {"primary": "A", "is_implicit": False}, "message": "好", "next_step": None},
                     "task": {"task_summary": None, "pause_task": False, "end_task": False},
-                    "context": {"notes": None, "lookback": {"turns": [2], "query": "披萨"}}}
+                    "context_notes": {**ctx.empty_notes(), "covered": [{"point": "披萨例子", "turn": 3}]}}
         validate(decision, schema)
-        validate({**decision, "context": None}, schema)
+        validate({**decision, "context_notes": None}, schema)
 
 
 class LearnerCardAndRecordsTests(unittest.TestCase):
@@ -163,39 +147,27 @@ class PipelineContextTests(unittest.IsolatedAsyncioTestCase):
     def pipeline(self, runner):
         return LearningPipeline(runner, FakeResearch(), self.store, FakeArtifacts(), RESPONSE_SCHEMA)
 
-    async def test_twentieth_turn_can_reuse_the_example_from_turn_three(self):
+    async def test_example_from_turn_three_reaches_turn_twenty_one_through_the_notes(self):
+        """Turn 3 leaves the window, but the note written then still reaches the coordinator."""
+        pizza = {**ctx.empty_notes(), "covered": [{"point": "分数的意义，用了披萨切四块的例子", "turn": 3}]}
+        state = {"context": {"notes": pizza}}
         runner = FakeRunner([plan()])
-        history = conversation(20)
-        await self.pipeline(runner).run(messages("用刚才那个披萨的例子再讲一遍", *history), session_id="long")
+        await self.pipeline(runner).run(messages("用刚才那个披萨的例子再讲一遍", *conversation(20)),
+                                        session_id="long", state=state)
         decide = runner.calls_for("coordinator", "decide")[0]
         shown = {item["turn"] for item in decide["messages"]}
         self.assertNotIn(3, shown)
         self.assertIn(21, shown)
-        self.assertIn(PIZZA, [item["text"] for item in decide["recalled"]])
-        self.assertEqual(decide["earlier"]["count"], min(shown) - 1)
-        self.assertLessEqual(ctx.count_tokens(decide["messages"]), ctx.Budgets().decide_window + 2000)
-        # Nothing is lost: the client history is no longer cut to 24 messages.
-        self.assertEqual(decide["earlier"]["index"][0]["turn"], 1)
-
-    async def test_coordinator_can_look_back_at_a_turn_by_number(self):
-        looking = {"mode": "answer", "response": {
-            "schema_version": "1.0", "intent": {"primary": "A", "is_implicit": False},
-            "message": "先回看一下。", "next_step": {"kind": "question", "text": "继续吗？"}},
-            "task": {"task_summary": "学习分数", "pause_task": False, "end_task": False},
-            "context": {"notes": None, "lookback": {"turns": [2], "query": None}}}
-        runner = FakeRunner([looking, plan()])
-        _, state = await self.pipeline(runner).run(messages("回到最开始那个问题", *conversation(20)), session_id="lb")
-        first, second = runner.calls_for("coordinator", "decide")
-        self.assertNotIn(2, {item["turn"] for item in first["messages"]})
-        self.assertIn(2, {item["turn"] for item in second["recalled"]})
-        self.assertTrue(second["lookback_done"])
-        self.assertEqual(state["last_execution"]["context"]["looked_back"], [2])
+        self.assertEqual(decide["context_notes"]["covered"], pizza["covered"])
+        self.assertLessEqual(ctx.count_tokens(decide["messages"]), ctx.Budgets().decide_window)
+        self.assertNotIn("recalled", decide)
+        self.assertNotIn("earlier", decide)
+        self.assertEqual(len(runner.calls_for("coordinator", "decide")), 1)
 
     async def test_notes_from_the_coordinator_survive_into_later_turns(self):
-        noting = {"notes": {"covered": [{"point": "分数的意义，用了披萨例子", "turn": 1}], "stuck": [],
-                            "requests": [{"text": "讲慢一点", "turn": 1}], "open_questions": []},
-                  "lookback": None}
-        runner = FakeRunner([{**self.direct(), "context": noting}, self.direct()])
+        noting = {"covered": [{"point": "分数的意义，用了披萨例子", "turn": 1}], "stuck": [],
+                  "requests": [{"text": "讲慢一点", "turn": 1}], "open_questions": []}
+        runner = FakeRunner([{**self.direct(), "context_notes": noting}, self.direct()])
         pipeline = self.pipeline(runner)
         _, state = await pipeline.run(messages("讲慢一点，分数是什么"), session_id="n", turn_id="1")
         await pipeline.run(messages("继续", *exchange("讲慢一点，分数是什么")), session_id="n", state=state, turn_id="2")

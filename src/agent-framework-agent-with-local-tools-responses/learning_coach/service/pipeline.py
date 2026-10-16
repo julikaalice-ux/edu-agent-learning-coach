@@ -10,10 +10,9 @@ import re
 
 from learning_coach.domain.contracts import QUIZ_SCHEMA, ContractError, decision_schema, grade_choice, public_quiz, validate
 from learning_coach.domain import onboarding
-from learning_coach.domain.context import (Budgets, accept_notes, brief_card, count_tokens, earlier_index,
-                                           empty_notes, learner_card, learner_messages, memory_slice,
-                                           note_slice, number_turns, recall, recent_window, related_turns,
-                                           research_digest)
+from learning_coach.domain.context import (Budgets, accept_notes, brief_card, count_tokens, empty_notes,
+                                           learner_card, learner_messages, memory_slice, note_slice,
+                                           number_turns, recent_window, research_digest)
 from learning_coach.domain.note_contracts import NOTES_SCHEMA, SCHEMA_VERSION as NOTES_VERSION
 from learning_coach.domain.routing import (conservative_participant, empty_results, execution_order,
                       recover_explicit_visual_route,
@@ -35,7 +34,8 @@ NOTES_OFFER = "要把这次学的整理成笔记吗？\n1. 整理\n2. 不用"
 NOTES_REQUEST = ("整理笔记", "帮我整理笔记", "整理一下笔记", "生成笔记", "做笔记")
 NOTES_YES = ("1", "整理", "整理吧", "整理一下", "好", "好的", "要", "可以")
 NOTES_NO = ("2", "不用", "不用了", "先不用", "不要", "不整理")
-# Full visible history kept for look-back; a safety cap only, not a context budget.
+# Visible history accepted per turn (notes are compiled from the learner's
+# words since the last compile); a safety cap only, not a context budget.
 MAX_HISTORY = 400
 MAX_MESSAGE_CHARS = 20000
 
@@ -103,8 +103,8 @@ class LearningPipeline:
                                        or len(learner_id) > 200):
             raise ValueError("invalid_learner_id")
         memory_key = learner_id or session_id
-        # Keep the whole visible history so earlier turns can be looked back at;
-        # what each agent actually sees is cut to token budgets later.
+        # Keep the visible history (notes are compiled from it); what each agent
+        # actually sees is cut to token budgets later.
         clean = [{"role": m["role"], "text": m["text"][:MAX_MESSAGE_CHARS]} for m in messages[-MAX_HISTORY:]
                  if m.get("role") in ("user", "assistant") and isinstance(m.get("text"), str)]
         if not clean or clean[-1]["role"] != "user" or not clean[-1]["text"].strip():
@@ -319,46 +319,24 @@ class LearningPipeline:
         focus = " ".join(filter(None, (state.get("active_task"), (state.get("quiz") or {}).get("topic"), text)))
         memory_view = memory_slice(memory, focus, budgets.memory)
 
-        # Recent turns within the budget, an index of everything earlier, and
-        # earlier turns that share wording with this message.
+        # Recent turns within the budget; what falls out of it lives on in the
+        # conversation notes the coordinator keeps.
         window = recent_window(numbered, budgets.decide_window, min_turns=budgets.min_turns,
                                message_max=budgets.message_max)
-        in_view = {item["turn"] for item in window}
-        auto_turns = related_turns(numbered, text, in_view, limit=2)
-        recalled = recall(numbered, auto_turns, budgets.recall, message_max=budgets.message_max)
         decide_input = {
             "phase": "decide", "messages": window,
-            "earlier": earlier_index(numbered, window, budgets.index_entries),
-            "recalled": recalled, "context_notes": context.get("notes") or empty_notes(),
+            "context_notes": context.get("notes") or empty_notes(),
             "learner": learner_card(state, memory, memory_enabled=memory_enabled),
             "state": visible_state, "memory": memory_view,
             "memory_enabled": memory_enabled, "first_meeting": first_meeting,
         }
         decision = validate(await self.runner("coordinator", decide_input, self.decision_schema),
                             self.decision_schema)
-        # Look back once if the coordinator asked for earlier turns it cannot see.
-        looked_back = []
-        lookback = (decision.get("context") or {}).get("lookback")
-        if lookback:
-            wanted = [turn for turn in lookback.get("turns", []) if turn not in in_view]
-            if lookback.get("query"):
-                wanted += related_turns(numbered, lookback["query"], in_view | set(wanted), limit=3, minimum=0.3)
-            looked_back = [turn for turn in dict.fromkeys(wanted) if turn not in auto_turns]
-            extra = recall(numbered, auto_turns + looked_back, budgets.recall, message_max=budgets.message_max)
-            if extra != recalled:
-                recalled = extra
-                decide_input.update(recalled=recalled, lookback_done=True)
-                decision = validate(await self.runner("coordinator", decide_input, self.decision_schema),
-                                    self.decision_schema)
-            else:
-                looked_back = []
         context["notes"], note_problems = accept_notes(
-            (decision.get("context") or {}).get("notes"), context.get("notes"), numbered, budgets.notes)
+            decision.get("context_notes"), context.get("notes"), numbered, budgets.notes)
         context_report = {
             "window_turns": [window[0]["turn"], current_turn] if window else [],
-            "recalled_turns": sorted({item["turn"] for item in recalled}),
-            "looked_back": looked_back, "note_problems": note_problems,
-            "decide_tokens": count_tokens(decide_input),
+            "note_problems": note_problems, "decide_tokens": count_tokens(decide_input),
         }
 
         decision, routing_repaired = recover_quiz_route(
@@ -485,7 +463,7 @@ class LearningPipeline:
         respond_window = recent_window(numbered, budgets.respond_window, min_turns=min(2, budgets.min_turns),
                                        message_max=budgets.message_max)
         response_input = {
-            "phase": "respond", "messages": respond_window, "recalled": recalled,
+            "phase": "respond", "messages": respond_window,
             "context_notes": notes_now or empty_notes(),
             "learner": learner_card(state, memory, memory_enabled=memory_enabled),
             "plan": plan, "memory": memory_view,

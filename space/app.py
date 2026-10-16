@@ -10,6 +10,12 @@ the key is checked on page load and again in every turn. Daily caps
 (DEMO_MAX_TURNS_PER_DAY, DEMO_MAX_IMAGES_PER_DAY; 0 = no cap) protect the
 model budget behind the public URL.
 
+Each conversation is also kept in the visitor's own browser (never on the
+server) so it can be read back later under "历史对话"; "我的笔记" shows the
+learning notes the coach has compiled. Browser storage is encrypted with a
+stable key (LEARNING_COACH_BROWSER_SECRET, or one saved in the data folder)
+so it survives restarts.
+
 Interactive visuals and generated illustrations render inline (iframe /
 markdown image) from the artifact store, so they work on the public URL —
 unlike the Foundry-hosted deployment whose gateway does not forward custom
@@ -23,6 +29,7 @@ import hmac
 import json
 import os
 import re
+import secrets
 import sys
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -109,9 +116,33 @@ async def limited_image(prompt: str, **options) -> bytes:
     return await generate_image(prompt, **options)
 
 
+DATA_DIR = Path(os.environ.get("LEARNING_COACH_DATA_DIR", "/tmp/learning-coach")).resolve()
+
+
+def browser_secret(data_dir: Path = DATA_DIR):
+    """A stable key for browser storage, so saved conversations survive restarts.
+
+    Without it Gradio picks a new random key on every start and visitors'
+    saved conversations and anonymous ID can no longer be read.
+    """
+    configured = os.environ.get("LEARNING_COACH_BROWSER_SECRET", "").strip()
+    if configured:
+        return configured
+    path = data_dir / "browser_secret"
+    try:
+        if path.is_file():
+            return path.read_text(encoding="utf-8").strip()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        value = secrets.token_urlsafe(24)
+        path.write_text(value, encoding="utf-8")
+        return value
+    except OSError:
+        return None  # Gradio then uses a random key for this run only
+
+
 def build_pipeline() -> LearningPipeline:
     return create_pipeline(
-        data_dir=Path(os.environ.get("LEARNING_COACH_DATA_DIR", "/tmp/learning-coach")).resolve(),
+        data_dir=DATA_DIR,
         public_base_url="http://localhost:8088", native_json=False,
         image_generator=limited_image,
     )
@@ -244,13 +275,132 @@ def clear_demo(session, device):
         except Exception:
             pass
     fresh = new_session()
-    return (*fresh, {"learner_id": uuid.uuid4().hex, "seen": False})
+    # The saved conversations in this browser go too.
+    return (*fresh, {"learner_id": uuid.uuid4().hex, "seen": False}, [])
 
 
 def new_session():
     session = {"session_id": uuid.uuid4().hex, "state": None, "history": [],
-               "chat": [], "panel": "", "locked": False}
+               "chat": [], "panel": "", "locked": False,
+               "started": datetime.now(CHINA_TIME).strftime("%m-%d %H:%M")}
     return session, [], "", ""
+
+
+# ---------------------------------------------------------------- saved conversations (browser only)
+
+MAX_SAVED_CONVERSATIONS = 20
+MAX_SAVED_MESSAGES = 300
+MAX_SAVED_CHARS = 1_500_000
+IMAGE_MARKDOWN = re.compile(r"!\[[^\]]*\]\(data:image/[^)]+\)")
+
+
+def saved_copy(chat) -> list[dict]:
+    """Text of the conversation; picture bytes are replaced by a short marker."""
+    kept = []
+    for item in (chat or [])[-MAX_SAVED_MESSAGES:]:
+        content = item.get("content") if isinstance(item, dict) else None
+        if item.get("role") in ("user", "assistant") and isinstance(content, str):
+            kept.append({"role": item["role"], "content": IMAGE_MARKDOWN.sub("（配图）", content)[:20000]})
+    return kept
+
+
+def remember(session, saved):
+    """After each turn, keep this conversation in the visitor's browser."""
+    saved = [item for item in (saved if isinstance(saved, list) else [])
+             if isinstance(item, dict) and isinstance(item.get("id"), str)]
+    messages = saved_copy(session.get("chat"))
+    if not messages:
+        return saved
+    first = next((m["content"] for m in messages if m["role"] == "user"), "")
+    entry = {"id": session["session_id"], "started": session.get("started", ""),
+             "title": re.sub(r"\s+", " ", first).strip()[:30], "messages": messages}
+    saved = ([item for item in saved if item["id"] != entry["id"]] + [entry])[-MAX_SAVED_CONVERSATIONS:]
+    # Browser storage holds a few MB: drop the oldest conversations, then the
+    # oldest messages of the current one, until it fits.
+    while len(json.dumps(saved, ensure_ascii=False)) > MAX_SAVED_CHARS:
+        if len(saved) > 1:
+            saved.pop(0)
+        elif len(entry["messages"]) > 2:
+            entry["messages"] = entry["messages"][2:]
+        else:
+            break
+    return saved
+
+
+def history_choices(saved):
+    choices = [(f"{item.get('started', '')}  {item.get('title', '')}".strip(), item["id"])
+               for item in reversed(saved if isinstance(saved, list) else [])
+               if isinstance(item, dict) and isinstance(item.get("id"), str)]
+    return gr.update(choices=choices, value=None)
+
+
+def show_saved(chosen, saved):
+    for item in saved if isinstance(saved, list) else []:
+        if isinstance(item, dict) and item.get("id") == chosen:
+            return saved_copy(item.get("messages"))
+    return []
+
+
+def forget_saved():
+    return [], gr.update(choices=[], value=None), []
+
+
+# ---------------------------------------------------------------- learning notes view
+
+PROFILE_NAMES = {"learning_stage": "学段", "age_band": "年龄段", "learning_goal": "学习目标",
+                 "prior_knowledge": "已有基础", "preferred_language": "语言", "available_time": "可用时间",
+                 "accessibility_needs": "需要的帮助", "companion_role": "陪伴者", "preferred_method": "喜欢的讲法",
+                 "learning_context": "学习场景"}
+ERROR_NAMES = {"conceptual": "概念没弄清", "procedural": "步骤方法出错", "careless": "粗心",
+               "negative_transfer": "被旧知识带偏", "unclassified": "原因还没确认"}
+NO_NOTES = "还没有整理过笔记。做完一组题后选“整理”，或者随时在对话里说“整理笔记”。"
+
+
+def mastery_words(item) -> str:
+    level, attempts = item.get("mastery_level"), item.get("attempts") or 0
+    if level is None or not attempts:
+        return "还没做过题"
+    status = "还不熟" if level < 0.3 else "正在巩固" if level < 0.7 else "掌握得不错"
+    return f"{status}（做过 {attempts} 题，对 {item.get('correct_count') or 0} 题）"
+
+
+def render_notes(notes) -> str:
+    profile = notes.get("profile") or {}
+    concepts = notes.get("concepts") or []
+    errors = notes.get("error_records") or []
+    review = notes.get("review_plan") or []
+    if not (profile or concepts or errors or review):
+        return NO_NOTES
+    labels = {item.get("concept_id"): item.get("label") or item.get("concept_id") for item in concepts}
+    lines = []
+    if profile:
+        lines += ["**关于我**"] + [f"- {PROFILE_NAMES.get(key, key)}：{value.get('value', '')}"
+                                   for key, value in profile.items() if isinstance(value, dict)]
+    if concepts:
+        ordered = sorted(concepts, key=lambda item: (item.get("mastery_level") is None, item.get("mastery_level") or 0))
+        lines += ["", "**学过的知识点**"] + [f"- {labels[item.get('concept_id')]}：{mastery_words(item)}"
+                                         for item in ordered]
+    if errors:
+        lines += ["", "**容易错的地方**"] + [
+            f"- {labels.get(item.get('concept_id'), item.get('concept_id'))}：{ERROR_NAMES.get(item.get('category'), '原因还没确认')}"
+            for item in errors[-10:]]
+    if review:
+        lines += ["", "**复习安排**"] + [f"- {item.get('topic')}" + (f"（{item['deadline']}）" if item.get("deadline") else "")
+                                     for item in review]
+    return "\n".join(lines).strip()
+
+
+def notes_markdown(device, allowed=False) -> str:
+    """The learning notes kept for this browser's anonymous learner ID."""
+    if not allowed:
+        return LOCKED_TEXT
+    device = ensure_device(device)
+    try:
+        if not PIPELINE.store.is_enabled(device["learner_id"]):
+            return "还没有开启学习记录，所以没有笔记。想保存，可以在对话里说“开启记录”。"
+        return render_notes(PIPELINE.store.snapshot(device["learner_id"]))
+    except Exception:
+        return "笔记暂时读取不了，请稍后再试。"
 
 
 def check_access(request: gr.Request):
@@ -288,10 +438,20 @@ def build_app() -> gr.Blocks:
                     gr.Markdown(f"**演示模式**：跳过了年龄和学习记录的询问，预设学段“{DEMO_STAGE}”，学习记录已开启。")
                 else:
                     gr.Markdown("第一次使用时会问学段和是否保存学习记录；之后随时可以说“开启记录”“关闭记录”“删除记录”。"
-                                "记录只和这台设备上的浏览器关联。")
+                                "学习记录只和这台设备上的浏览器关联。")
+            with gr.Accordion("我的笔记", open=False):
+                show_notes = gr.Button("查看最新笔记", size="sm")
+                notes_view = gr.Markdown("")
+            with gr.Accordion("历史对话", open=False):
+                gr.Markdown("对话记录只保存在这台设备的浏览器里，不会上传。")
+                past = gr.Dropdown(label="选一次对话查看", choices=[], interactive=True)
+                past_chat = gr.Chatbot(label="对话记录", height=360)
+                forget_history = gr.Button("删除这台设备上的对话记录", size="sm")
         session = gr.State(new_session()[0])
         # Lives in this visitor's browser storage, so it survives "新会话" and reloads.
-        device = gr.BrowserState({"learner_id": "", "seen": False}, storage_key="edu-agent-device")
+        key = browser_secret()
+        device = gr.BrowserState({"learner_id": "", "seen": False}, storage_key="edu-agent-device", secret=key)
+        saved = gr.BrowserState([], storage_key="edu-agent-conversations", secret=key)
         # Server-side per-visitor flag; set from the link on page load.
         allowed = gr.State(not ACCESS_KEY)
 
@@ -302,20 +462,27 @@ def build_app() -> gr.Blocks:
                 yield result
 
         outputs = [session, chatbot, panel, input_box, device]
-        send.click(on_send, [input_box, session, device, allowed], outputs).then(
-            option_updates, [session], option_buttons)
-        input_box.submit(on_send, [input_box, session, device, allowed], outputs).then(
-            option_updates, [session], option_buttons)
+
+        def after_turn(event):
+            # Show the answer's choices, then keep the conversation in the browser.
+            event.then(option_updates, [session], option_buttons).then(
+                remember, [session, saved], [saved]).then(history_choices, [saved], [past])
+
+        after_turn(send.click(on_send, [input_box, session, device, allowed], outputs))
+        after_turn(input_box.submit(on_send, [input_box, session, device, allowed], outputs))
         for button in option_buttons:
             # A button passes its own label, so clicking it sends the chosen option.
-            button.click(on_send, [button, session, device, allowed], outputs).then(
-                option_updates, [session], option_buttons)
+            after_turn(button.click(on_send, [button, session, device, allowed], outputs))
         reset.click(new_session, None, [session, chatbot, panel, input_box]).then(
             option_updates, [session], option_buttons)
         if DEMO_STAGE:
-            clear.click(clear_demo, [session, device], [session, chatbot, panel, input_box, device]).then(
-                option_updates, [session], option_buttons)
+            clear.click(clear_demo, [session, device], [session, chatbot, panel, input_box, device, saved]).then(
+                option_updates, [session], option_buttons).then(history_choices, [saved], [past])
+        show_notes.click(notes_markdown, [device, allowed], [notes_view])
+        past.change(show_saved, [past, saved], [past_chat])
+        forget_history.click(forget_saved, None, [saved, past, past_chat])
         demo.load(check_access, None, [allowed, main, locked_note])
+        demo.load(history_choices, [saved], [past])
     return demo
 
 
