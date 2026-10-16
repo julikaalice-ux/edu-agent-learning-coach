@@ -16,7 +16,9 @@ ACCOUNT="cog-c5e2qyhj2tb7g"
 PROJECT="edu-agent"
 PROJECT_ENDPOINT="https://${ACCOUNT}.services.ai.azure.com/api/projects/${PROJECT}"
 API_VERSION="2025-11-15-preview"
-STORE_NAME="${1:-edu-agent-learning-coach}"
+# Avoid names ending in s/x/ch: the preview search endpoint pluralizes the
+# name naively and 404s ("coach" -> "coachs").
+STORE_NAME="${1:-edu-agent-learning-memory}"
 CHAT_MODEL="gpt-5.4-mini"
 EMBEDDING_MODEL="text-embedding-3-small"
 # Runtime identities that need the memory API roles:
