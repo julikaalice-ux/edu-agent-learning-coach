@@ -50,6 +50,19 @@ class DirectRoutingTests(unittest.IsolatedAsyncioTestCase):
         validate(output, RESPONSE_SCHEMA)
         self.assertEqual(set(output), {"schema_version", "intent", "message", "next_step"})
 
+    def spy_evidence(self):
+        """Quiz evidence the program writes each turn (notes themselves are deferred)."""
+        captured, original = [], self.store.apply_notes
+
+        def record(*args, **kwargs):
+            captured.append(kwargs.get("quiz_evidence"))
+            return original(*args, **kwargs)
+        return patch.object(self.store, "apply_notes", side_effect=record), captured
+
+    @staticmethod
+    def execution(state):
+        return {key: state["last_execution"][key] for key in ("mode", "tools")}
+
     async def test_ordinary_learning_and_emotion_can_finish_in_one_coordinator_call(self):
         for primary in "ABDEFG":
             with self.subTest(primary=primary):
@@ -58,7 +71,7 @@ class DirectRoutingTests(unittest.IsolatedAsyncioTestCase):
                 self.assert_wire(output)
                 self.assertEqual(output["intent"]["primary"], primary)
                 self.assertEqual([(call["role"], call["payload"]["phase"]) for call in runner.calls], [("coordinator", "decide")])
-                self.assertEqual(state["last_execution"], {"mode": "answer", "tools": dict.fromkeys(TOOLS, "not_requested")})
+                self.assertEqual(self.execution(state), {"mode": "answer", "tools": dict.fromkeys(TOOLS, "not_requested")})
         self.assertEqual(self.research.calls, [])
         self.assertEqual(self.artifacts.prepared, [])
 
@@ -102,16 +115,18 @@ class DirectRoutingTests(unittest.IsolatedAsyncioTestCase):
                 self.assert_wire(output)
                 self.assertEqual(len(research.calls), int(selected == "research"))
                 self.assertEqual(len(runner.calls_for("coordinator", "quiz")), int(selected == "quiz"))
-                self.assertEqual(len(runner.calls_for("notes")), int(selected == "notes"))
+                # Learning evidence is marked for the notes compiled after a quiz set.
+                self.assertEqual(runner.calls_for("notes"), [])
                 self.assertEqual(len(runner.calls_for("visualizer")), int(selected == "visual"))
                 self.assertEqual(len(runner.calls_for("coordinator", "respond")), 1)
                 statuses = state["last_execution"]["tools"]
                 self.assertEqual(state["last_execution"]["mode"], "tools")
-                self.assertEqual(statuses[selected], {"research": "verified", "quiz": "question_ready", "notes": "saved", "visual": "published"}[selected])
+                self.assertEqual(statuses[selected], {"research": "verified", "quiz": "question_ready", "notes": "deferred", "visual": "published"}[selected])
+                self.assertEqual(state["context"].get("evidence_turns", []), [1] if selected == "notes" else [])
                 for other in set(TOOLS) - {selected}:
                     self.assertEqual(statuses[other], "not_requested")
                 before_commit = runner.calls_for("coordinator", "respond")[0]["tool_results"]
-                self.assertEqual(before_commit[selected], {"notes": "prepared", "visual": "ready"}.get(selected, statuses[selected]))
+                self.assertEqual(before_commit[selected], {"visual": "ready"}.get(selected, statuses[selected]))
 
     async def test_missing_fabricated_or_mismatched_reasons_fail_before_side_effects(self):
         text = "查一下分数的定义"
@@ -186,22 +201,20 @@ class DirectRoutingTests(unittest.IsolatedAsyncioTestCase):
     async def test_tool_failure_returns_status_and_finishes_without_restarting_roles(self):
         self.store.set_enabled("s", True)
         text = "我在工作，查一下并画图记录一下"
-        runner = FakeRunner([tool_decision(text, research_query="分数", visual_request="对照分数", observe_learning=True)],
-                            note_results=[StageFailure("PRIVATE_NOTES_FAILURE")])
+        runner = FakeRunner([tool_decision(text, research_query="分数", visual_request="对照分数", observe_learning=True)])
         research = FakeResearch(StageFailure("PRIVATE_SEARCH_FAILURE"))
         output, state = await self.pipeline(runner, research).run(messages(text), session_id="s")
         self.assert_wire(output)
         self.assertNotIn("PRIVATE", output["message"])
         self.assertIn("未完成检索验证", output["message"])
-        self.assertIn("本轮学习笔记未保存", output["message"])
         self.assertEqual(len(runner.calls_for("coordinator", "decide")), 1)
         self.assertEqual(len(runner.calls_for("coordinator", "respond")), 1)
-        self.assertEqual(len(runner.calls_for("notes")), 1)
+        self.assertEqual(runner.calls_for("notes"), [])
         self.assertEqual(runner.calls_for("visualizer"), [])
         self.assertEqual(len(research.calls), 1)
         statuses = state["last_execution"]["tools"]
         self.assertEqual(statuses["research"], "unavailable")
-        self.assertEqual(statuses["notes"], "failed")
+        self.assertEqual(statuses["notes"], "deferred")
         self.assertEqual(statuses["visual"], "unavailable")
 
     async def test_limited_sources_are_disclosed_without_visual_fanout(self):
@@ -293,7 +306,9 @@ class DirectRoutingTests(unittest.IsolatedAsyncioTestCase):
                 pipeline = self.pipeline(runner)
                 _, before = await pipeline.run(messages("考考我"), session_id=session, turn_id="start")
                 self.assertEqual(before["quiz"]["participant"], "learner")
-                output, after = await pipeline.run(messages(answer), session_id=session, state=before, turn_id="answer")
+                spy, written = self.spy_evidence()
+                with spy:
+                    output, after = await pipeline.run(messages(answer), session_id=session, state=before, turn_id="answer")
                 self.assert_wire(output)
                 self.assertEqual(after["quiz"]["answered"], 1)
                 self.assertEqual(after["quiz"]["correct"], correct)
@@ -301,10 +316,13 @@ class DirectRoutingTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(after["quiz"]["finished"], total == 1)
                 self.assertEqual(len(runner.calls_for("coordinator", "quiz")), 1)
                 if total == 1:
-                    self.assertIsNone(output["next_step"])
+                    # The set is done and records are on: offer to compile notes.
+                    self.assertIn("整理成笔记", output["next_step"]["text"])
+                    self.assertTrue(after["notes_offer"])
                 feedback = runner.calls_for("coordinator", "respond")[-1]["quiz"]
                 self.assertEqual(feedback["feedback"]["correct"], bool(correct))
-                evidence = runner.calls_for("notes")[0]["quiz_evidence"]
+                self.assertEqual(runner.calls_for("notes"), [])
+                evidence = written[0]
                 self.assertEqual(evidence["actor"], "learner")
                 self.assertIs(evidence["independent"], True)
                 stored = self.store.snapshot(session)["concepts"][0]
@@ -330,10 +348,12 @@ class DirectRoutingTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(before["quiz"]["participant"], participant)
                 # A fresh pipeline represents importing persisted legacy state,
                 # rather than letting its newer in-process cache hide the fixture.
-                output, after = await self.pipeline(runner).run(messages("A"), session_id=session, state=before, turn_id="answer")
+                spy, written = self.spy_evidence()
+                with spy:
+                    output, after = await self.pipeline(runner).run(messages("A"), session_id=session, state=before, turn_id="answer")
                 self.assert_wire(output)
                 self.assertEqual(after["quiz"]["answered"], 1)
-                evidence = runner.calls_for("notes")[0]["quiz_evidence"]
+                evidence = written[0]
                 self.assertIs(evidence["independent"], False)
                 self.assertEqual(evidence["actor"], "companion" if participant else "unknown")
                 self.assertEqual(self.store.snapshot(session)["concepts"], [])
@@ -348,14 +368,15 @@ class DirectRoutingTests(unittest.IsolatedAsyncioTestCase):
                 runner = FakeRunner([plan("C", quiz_action="start", quiz_topic="分数", participant=stored), continuation])
                 pipeline = self.pipeline(runner)
                 _, before = await pipeline.run(messages("考考我"), session_id=session, turn_id="start")
-                output, after = await pipeline.run(messages("A"), session_id=session, state=before, turn_id="answer")
+                spy, written = self.spy_evidence()
+                with spy:
+                    output, after = await pipeline.run(messages("A"), session_id=session, state=before, turn_id="answer")
                 self.assert_wire(output)
                 self.assertNotIn("routing_repaired", after["last_execution"])
                 self.assertEqual(after["quiz"]["participant"], stored)
-                note_payload = runner.calls_for("notes")[0]
-                self.assertEqual(note_payload["participant"], stored)
-                self.assertIs(note_payload["quiz_evidence"]["independent"], False)
-                self.assertEqual(note_payload["quiz_evidence"]["actor"], "companion" if stored == "companion_report" else "unknown")
+                self.assertEqual(after["last_execution"]["tools"]["notes"], "deferred")
+                self.assertIs(written[0]["independent"], False)
+                self.assertEqual(written[0]["actor"], "companion" if stored == "companion_report" else "unknown")
                 self.assertEqual(runner.calls_for("coordinator", "respond")[-1]["plan"]["participant"], stored)
                 self.assertEqual(self.store.snapshot(session)["concepts"], [])
 
@@ -369,14 +390,14 @@ class DirectRoutingTests(unittest.IsolatedAsyncioTestCase):
                 pipeline = self.pipeline(runner)
                 _, before = await pipeline.run(messages("考考我"), session_id=session, turn_id="start")
                 self.assertEqual(before["quiz"]["participant"], "learner")
-                output, after = await pipeline.run(messages("A"), session_id=session, state=before, turn_id="answer")
+                spy, written = self.spy_evidence()
+                with spy:
+                    output, after = await pipeline.run(messages("A"), session_id=session, state=before, turn_id="answer")
                 self.assert_wire(output)
                 self.assertEqual(after["last_execution"]["routing_repaired"], "pending_quiz_answer")
                 self.assertEqual(after["quiz"]["participant"], observed)
-                note_payload = runner.calls_for("notes")[0]
-                self.assertEqual(note_payload["participant"], observed)
-                self.assertIs(note_payload["quiz_evidence"]["independent"], False)
-                self.assertEqual(note_payload["quiz_evidence"]["actor"], "companion" if observed == "companion_report" else "unknown")
+                self.assertIs(written[0]["independent"], False)
+                self.assertEqual(written[0]["actor"], "companion" if observed == "companion_report" else "unknown")
                 self.assertEqual(runner.calls_for("coordinator", "respond")[-1]["plan"]["participant"], observed)
                 self.assertEqual(self.store.snapshot(session)["concepts"], [])
 
@@ -477,18 +498,19 @@ class DirectRoutingTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(state, {})
                     self.assertEqual(research.calls, [])
 
-    async def test_notes_noop_is_not_reported_as_saved(self):
+    async def test_learning_evidence_is_marked_not_compiled_during_the_turn(self):
         self.store.set_enabled("s", True)
         text = "我在工作"
-        self.assertTrue(self.store.apply_notes("s", "already-applied", notes(True), text))
         previous = self.store.snapshot("s")
-        runner = FakeRunner([tool_decision(text, observe_learning=True)], note_results=[notes(True)])
-        output, state = await self.pipeline(runner).run(messages(text), session_id="s", turn_id="already-applied")
+        runner = FakeRunner([tool_decision(text, observe_learning=True)])
+        output, state = await self.pipeline(runner).run(messages(text), session_id="s")
         self.assert_wire(output)
-        self.assertEqual(state["last_execution"]["tools"]["notes"], "not_written")
-        self.assertIn("本轮未新增学习笔记", output["message"])
+        self.assertEqual(state["last_execution"]["tools"]["notes"], "deferred")
+        self.assertEqual(state["context"]["evidence_turns"], [1])
+        self.assertEqual(runner.calls_for("notes"), [])
+        self.assertNotIn("笔记", output["message"])
         self.assertEqual(self.store.snapshot("s"), previous)
-        self.assertEqual(runner.calls_for("coordinator", "respond")[0]["tool_results"]["notes"], "prepared")
+        self.assertEqual(runner.calls_for("coordinator", "respond")[0]["tool_results"]["notes"], "deferred")
 
     async def test_direct_practice_intent_enters_the_quiz_state_machine(self):
         text = "考考我分数的知识"
@@ -523,7 +545,7 @@ class DirectRoutingTests(unittest.IsolatedAsyncioTestCase):
             runner = FakeRunner([direct_decision("C", end=end, pause=pause)])
             output, state = await self.pipeline(runner).run(messages("考考我"), session_id=f"ctl-{end}-{pause}")
             self.assert_wire(output)
-            self.assertEqual(state["last_execution"],
+            self.assertEqual(self.execution(state),
                              {"mode": "answer", "tools": dict.fromkeys(TOOLS, "not_requested")})
             self.assertIsNone(output["next_step"])
 
@@ -581,14 +603,16 @@ class DirectRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.store.set_enabled("s", True)
         visual_started, hold = asyncio.Event(), asyncio.Event()
         child_tasks, cancelled = [], []
-        text = "我在工作，记录情况并画图"
+        text = "查一下资料并画图"
 
-        class UnexpectedFailureRunner(FakeRunner):
+        class FailingResearch(FakeResearch):
+            async def run(self, query, learner=None):
+                child_tasks.append(asyncio.current_task())
+                await visual_started.wait()
+                raise LookupError("PRIVATE_UNEXPECTED_CHILD_FAILURE")
+
+        class HoldingRunner(FakeRunner):
             async def __call__(self, role, payload, schema):
-                if role == "notes":
-                    child_tasks.append(asyncio.current_task())
-                    await visual_started.wait()
-                    raise LookupError("PRIVATE_UNEXPECTED_CHILD_FAILURE")
                 if role == "visualizer":
                     child_tasks.append(asyncio.current_task())
                     visual_started.set()
@@ -599,10 +623,12 @@ class DirectRoutingTests(unittest.IsolatedAsyncioTestCase):
                         raise
                 return await super().__call__(role, payload, schema)
 
-        runner = UnexpectedFailureRunner([tool_decision(text, observe_learning=True, visual_request="分数对比")])
+        runner = HoldingRunner([tool_decision(text, research_query="分数", visual_request="分数对比",
+                                              visual_uses_research=False)])
         before = {"active_task": "之前的任务", "revision": 3}
         with self.assertLogs("learning_coach.service.pipeline", level="WARNING") as logs:
-            output, after = await asyncio.wait_for(self.pipeline(runner).run(messages(text), session_id="s", state=before), timeout=5)
+            output, after = await asyncio.wait_for(
+                self.pipeline(runner, FailingResearch()).run(messages(text), session_id="s", state=before), timeout=5)
         self.assert_wire(output)
         self.assertEqual(output["intent"]["primary"], "G")
         self.assertEqual(after, before)
@@ -614,23 +640,20 @@ class DirectRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.artifacts.committed, [])
         self.assertEqual(self.store.snapshot("s")["profile"], {})
 
-    async def test_notes_run_at_once_and_research_dependents_wait(self):
+    async def test_research_dependents_wait_and_evidence_is_only_marked(self):
         self.store.set_enabled("s", True)
-        research_finished, notes_started, quiz_started, visual_started = (asyncio.Event() for _ in range(4))
+        research_finished, quiz_started, visual_started = (asyncio.Event() for _ in range(3))
         text = "我在工作，请查资料、出一道题并画图解释，再记录学习情况"
 
         class SlowResearch(FakeResearch):
-            async def run(self, query):
-                # Research only finishes once notes have started: notes must not wait for it.
-                await notes_started.wait()
-                result = await super().run(query)
+            async def run(self, query, learner=None):
+                await asyncio.sleep(0)
+                result = await super().run(query, learner)
                 research_finished.set()
                 return result
 
         class OrderRunner(FakeRunner):
             async def __call__(self, role, payload, schema):
-                if role == "notes":
-                    notes_started.set()
                 if role == "visualizer" or (role == "coordinator" and payload.get("phase") == "quiz"):
                     if not research_finished.is_set():
                         raise AssertionError("unstated research dependency must wait for research")
@@ -644,22 +667,28 @@ class DirectRoutingTests(unittest.IsolatedAsyncioTestCase):
                 return await super().__call__(role, payload, schema)
 
         runner = OrderRunner([tool_decision(text, research_query="分数", visual_request="分数对照", observe_learning=True,
-                                            quiz_action="start", quiz_topic="分数")], note_results=[notes(True)])
-        output, state = await asyncio.wait_for(self.pipeline(runner, SlowResearch()).run(messages(text), session_id="s"), timeout=5)
+                                            quiz_action="start", quiz_topic="分数")])
+        research = SlowResearch()
+        output, state = await asyncio.wait_for(self.pipeline(runner, research).run(messages(text), session_id="s"), timeout=5)
         self.assert_wire(output)
         self.assertEqual(state["last_execution"]["order"], {
             "visual_waits_research": True, "quiz_waits_research": True, "quiz_waits_visual": False})
-        self.assertEqual(state["last_execution"]["tools"]["notes"], "saved")
+        self.assertEqual(state["last_execution"]["tools"]["notes"], "deferred")
         self.assertEqual(state["last_execution"]["tools"]["visual"], "published")
         self.assertEqual(state["last_execution"]["tools"]["quiz"], "question_ready")
         self.assertIn("research", runner.calls_for("coordinator", "quiz")[0])
+        self.assertEqual(runner.calls_for("notes"), [])
+        # Every sub-agent gets the same brief learner card.
+        self.assertEqual(research.learners[0]["participant"], "learner")
+        self.assertIn("learner", runner.calls_for("visualizer")[0])
+        self.assertIn("learner", runner.calls_for("coordinator", "quiz")[0])
 
     async def test_visual_unrelated_to_research_does_not_wait_or_receive_it(self):
         text = "查一下最新的火星探测进展，顺便画一下太阳系结构"
         visual_started = asyncio.Event()
 
         class GatedResearch(FakeResearch):
-            async def run(self, query):
+            async def run(self, query, learner=None):
                 await visual_started.wait()
                 return await super().run(query)
 
@@ -687,26 +716,34 @@ class DirectRoutingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cancellation_stops_both_parallel_children_without_commit(self):
         self.store.set_enabled("s", True)
-        started = {name: asyncio.Event() for name in ("notes", "visualizer")}
+        started = {name: asyncio.Event() for name in ("research", "visualizer")}
         cancelled, worker_tasks = set(), []
         hold = asyncio.Event()
-        text = "我在工作，请记录学习情况并画图解释"
+        text = "我在工作，请查资料并画图解释"
+
+        async def block(name):
+            worker_tasks.append(asyncio.current_task())
+            started[name].set()
+            try:
+                await hold.wait()
+            except asyncio.CancelledError:
+                cancelled.add(name)
+                raise
+
+        class BlockingResearch(FakeResearch):
+            async def run(self, query, learner=None):
+                await block("research")
 
         class BlockingRunner(FakeRunner):
             async def __call__(self, role, payload, schema):
-                if role in started:
-                    worker_tasks.append(asyncio.current_task())
-                    started[role].set()
-                    try:
-                        await hold.wait()
-                    except asyncio.CancelledError:
-                        cancelled.add(role)
-                        raise
+                if role == "visualizer":
+                    await block("visualizer")
                 return await super().__call__(role, payload, schema)
 
-        runner = BlockingRunner([tool_decision(text, observe_learning=True, visual_request="分数对照")])
+        runner = BlockingRunner([tool_decision(text, research_query="分数", visual_request="分数对照",
+                                               visual_uses_research=False)])
         baseline = {"active_task": "之前的学习任务", "revision": 2}
-        pipeline = self.pipeline(runner)
+        pipeline = self.pipeline(runner, BlockingResearch())
         work = asyncio.create_task(pipeline.run(messages(text), session_id="s", state=baseline, turn_id="cancelled"))
         try:
             await asyncio.wait_for(asyncio.gather(*(event.wait() for event in started.values())), timeout=5)
@@ -720,7 +757,7 @@ class DirectRoutingTests(unittest.IsolatedAsyncioTestCase):
                     await work
                 except asyncio.CancelledError:
                     pass
-        self.assertEqual(cancelled, {"notes", "visualizer"})
+        self.assertEqual(cancelled, {"research", "visualizer"})
         self.assertEqual(len(worker_tasks), 2)
         self.assertTrue(all(task.done() and task.cancelled() for task in worker_tasks))
         self.assertEqual(runner.calls_for("coordinator", "respond"), [])

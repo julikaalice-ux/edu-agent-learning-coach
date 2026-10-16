@@ -9,7 +9,9 @@ TOOLS = ("research", "quiz", "notes", "visual")
 TERMINAL_STATUS = {
     "research": {"not_requested", "skipped_policy", "verified", "likely", "disputed", "unavailable"},
     "quiz": {"not_requested", "skipped_policy", "question_ready", "awaiting_answer", "feedback_ready", "finished", "needs_input"},
-    "notes": {"not_requested", "skipped_policy", "prepared", "saved", "not_written", "failed"},
+    # Notes are compiled after a quiz set with the learner's consent; a turn
+    # with learning evidence is only marked ("deferred") for that later run.
+    "notes": {"not_requested", "skipped_policy", "deferred", "prepared", "saved", "not_written", "failed"},
     "visual": {"not_requested", "skipped_policy", "ready", "published", "unavailable"},
 }
 

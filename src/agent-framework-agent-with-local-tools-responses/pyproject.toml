@@ -8,6 +8,7 @@ dependencies = [
     "agent-framework-foundry-hosting>=1.0.0b260813",
     "debugpy",
     "jsonschema==4.26.0",
+    "tiktoken>=0.9,<1",
 ]
 
 [dependency-groups]

@@ -7,6 +7,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from learning_coach.domain.context import Budgets, count_tokens
 from test_pipeline import (FakeArtifacts, FakeResearch, FakeRunner, LearningPipeline,
                            LearningStore, RESPONSE_SCHEMA, VISUAL, messages, plan)
 from test_direct_routing import direct_decision
@@ -219,9 +220,15 @@ class TeachingVisualPipelineTests(unittest.IsolatedAsyncioTestCase):
         await self.pipeline(runner).run(messages("画一张比较图", *history), session_id="s")
         design = runner.calls_for("visualizer")[0]
         checking = runner.calls_for("verifier", "visual_review")[0]
+        budgets = Budgets()
         self.assertEqual(design["learning_goal"], "理解分子与分母")
-        self.assertEqual(len(design["recent_messages"]), 4)
-        self.assertTrue(all(len(item["text"]) <= 1500 for item in design["recent_messages"]))
+        # Recent turns are cut to the sub-agent token budget; the newest turn always stays.
+        window = design["recent_messages"]
+        self.assertEqual(window[-1]["text"], "画一张比较图")
+        self.assertTrue(len(window) == 1 or count_tokens(window) <= budgets.sub_window)
+        self.assertTrue(all(count_tokens(item["text"]) <= budgets.message_max + 30 for item in window))
+        self.assertIn("learner", design)
+        self.assertEqual(set(design["context_notes"]), {"covered", "requests"})
         self.assertEqual(checking["recent_messages"], design["recent_messages"])
         self.assertEqual(checking["spec"], VISUAL)
         self.assertEqual(checking["render_check"], "passed")

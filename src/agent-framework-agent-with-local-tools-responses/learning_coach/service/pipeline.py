@@ -10,7 +10,11 @@ import re
 
 from learning_coach.domain.contracts import QUIZ_SCHEMA, ContractError, decision_schema, grade_choice, public_quiz, validate
 from learning_coach.domain import onboarding
-from learning_coach.domain.note_contracts import NOTES_SCHEMA
+from learning_coach.domain.context import (Budgets, accept_notes, brief_card, count_tokens, earlier_index,
+                                           empty_notes, learner_card, learner_messages, memory_slice,
+                                           note_slice, number_turns, recall, recent_window, related_turns,
+                                           research_digest)
+from learning_coach.domain.note_contracts import NOTES_SCHEMA, SCHEMA_VERSION as NOTES_VERSION
 from learning_coach.domain.routing import (conservative_participant, empty_results, execution_order,
                       recover_explicit_visual_route,
                       recover_practice_route,
@@ -26,6 +30,18 @@ LOG = logging.getLogger(__name__)
 RECORD_ON = ("开启记录", "打开记录", "开启学习记录", "保存记录", "保存学习记录")
 RECORD_OFF = ("关闭记录", "关掉记录", "暂停记录", "别记了", "不要记录", "关闭学习记录")
 RECORD_DELETE = ("删除记录", "删掉记录", "删除学习记录", "清除记录", "清空记录")
+# Notes are compiled after a quiz set, only when the learner agrees, or on request.
+NOTES_OFFER = "要把这次学的整理成笔记吗？\n1. 整理\n2. 不用"
+NOTES_REQUEST = ("整理笔记", "帮我整理笔记", "整理一下笔记", "生成笔记", "做笔记")
+NOTES_YES = ("1", "整理", "整理吧", "整理一下", "好", "好的", "要", "可以")
+NOTES_NO = ("2", "不用", "不用了", "先不用", "不要", "不整理")
+# Full visible history kept for look-back; a safety cap only, not a context budget.
+MAX_HISTORY = 400
+MAX_MESSAGE_CHARS = 20000
+
+
+def empty_learning_notes():
+    return {"schema_version": NOTES_VERSION, "profile": [], "concepts": [], "error_records": [], "review_plan": []}
 
 
 def last_forget(messages):
@@ -47,8 +63,11 @@ class LearningPipeline:
     def __init__(self, runner: AgentRunner, research: ResearchPort, store: LearningMemory,
                  artifacts: Artifacts, response_schema: dict, *,
                  image_generator: ImageGenerator | None = None,
-                 onboarding: bool = False, demo_stage: str | None = None):
+                 onboarding: bool = False, demo_stage: str | None = None,
+                 budgets: Budgets | None = None):
         self.runner, self.research = runner, research
+        # Token budgets for what each agent sees (domain/context.py).
+        self.budgets = budgets or Budgets()
         self.store, self.artifacts = store, artifacts
         self.response_schema = response_schema
         # Dependency inversion: the pipeline depends only on this callable
@@ -84,7 +103,9 @@ class LearningPipeline:
                                        or len(learner_id) > 200):
             raise ValueError("invalid_learner_id")
         memory_key = learner_id or session_id
-        clean = [{"role": m["role"], "text": m["text"][:12000]} for m in messages[-24:]
+        # Keep the whole visible history so earlier turns can be looked back at;
+        # what each agent actually sees is cut to token budgets later.
+        clean = [{"role": m["role"], "text": m["text"][:MAX_MESSAGE_CHARS]} for m in messages[-MAX_HISTORY:]
                  if m.get("role") in ("user", "assistant") and isinstance(m.get("text"), str)]
         if not clean or clean[-1]["role"] != "user" or not clean[-1]["text"].strip():
             return reply("请告诉我你现在想学什么。", step={"kind": "question", "text": "你想从哪个问题开始？"}), deepcopy(state or {})
@@ -257,6 +278,15 @@ class LearningPipeline:
             # Answer the question the learner arrived with, as if just asked.
             messages, prefix = [{"role": "user", "text": pending}], closing
 
+        # An offer to compile notes lasts one turn: yes compiles, no declines,
+        # anything else simply continues the lesson.
+        offered = state.pop("notes_offer", False)
+        if prefix is None and (text in NOTES_REQUEST or (offered and text in NOTES_YES)):
+            return await self._compile_notes(messages, session_id, state, event_id, memory_key)
+        if prefix is None and offered and text in NOTES_NO:
+            return reply("好，这次先不整理。之后想整理，随时说“整理笔记”。", "E",
+                         {"kind": "question", "text": "接下来想学什么？"}), state
+
         output, state = await self._teach(messages, session_id, state, event_id, memory_key, returning_visitor)
         if prefix:
             output["message"] = prefix + "\n\n" + output["message"]
@@ -265,9 +295,14 @@ class LearningPipeline:
 
     async def _teach(self, messages, session_id, state, event_id, memory_key, returning_visitor):
         text = messages[-1]["text"].strip()
+        budgets = self.budgets
+        numbered = number_turns(messages)
+        current_turn = numbered[-1]["turn"]
+        context = state.setdefault("context", {})
 
         visible_state = deepcopy({key: value for key, value in state.items()
-                                  if key not in ("last_event", "last_input", "last_response", "last_execution")})
+                                  if key not in ("last_event", "last_input", "last_response", "last_execution",
+                                                 "context")})
         # Answer keys are private program state, never routing or public-response context.
         quiz = visible_state.get("quiz")
         if quiz and quiz.get("awaiting"):
@@ -281,10 +316,51 @@ class LearningPipeline:
         first_meeting = (not returning_visitor and "onboarding" not in state
                          and not any(item["role"] == "assistant" for item in messages)
                          and not (memory.get("profile") or memory.get("concepts")))
-        decision = validate(await self.runner("coordinator", {
-            "phase": "decide", "messages": messages, "state": visible_state, "memory": memory,
+        focus = " ".join(filter(None, (state.get("active_task"), (state.get("quiz") or {}).get("topic"), text)))
+        memory_view = memory_slice(memory, focus, budgets.memory)
+
+        # Recent turns within the budget, an index of everything earlier, and
+        # earlier turns that share wording with this message.
+        window = recent_window(numbered, budgets.decide_window, min_turns=budgets.min_turns,
+                               message_max=budgets.message_max)
+        in_view = {item["turn"] for item in window}
+        auto_turns = related_turns(numbered, text, in_view, limit=2)
+        recalled = recall(numbered, auto_turns, budgets.recall, message_max=budgets.message_max)
+        decide_input = {
+            "phase": "decide", "messages": window,
+            "earlier": earlier_index(numbered, window, budgets.index_entries),
+            "recalled": recalled, "context_notes": context.get("notes") or empty_notes(),
+            "learner": learner_card(state, memory, memory_enabled=memory_enabled),
+            "state": visible_state, "memory": memory_view,
             "memory_enabled": memory_enabled, "first_meeting": first_meeting,
-        }, self.decision_schema), self.decision_schema)
+        }
+        decision = validate(await self.runner("coordinator", decide_input, self.decision_schema),
+                            self.decision_schema)
+        # Look back once if the coordinator asked for earlier turns it cannot see.
+        looked_back = []
+        lookback = (decision.get("context") or {}).get("lookback")
+        if lookback:
+            wanted = [turn for turn in lookback.get("turns", []) if turn not in in_view]
+            if lookback.get("query"):
+                wanted += related_turns(numbered, lookback["query"], in_view | set(wanted), limit=3, minimum=0.3)
+            looked_back = [turn for turn in dict.fromkeys(wanted) if turn not in auto_turns]
+            extra = recall(numbered, auto_turns + looked_back, budgets.recall, message_max=budgets.message_max)
+            if extra != recalled:
+                recalled = extra
+                decide_input.update(recalled=recalled, lookback_done=True)
+                decision = validate(await self.runner("coordinator", decide_input, self.decision_schema),
+                                    self.decision_schema)
+            else:
+                looked_back = []
+        context["notes"], note_problems = accept_notes(
+            (decision.get("context") or {}).get("notes"), context.get("notes"), numbered, budgets.notes)
+        context_report = {
+            "window_turns": [window[0]["turn"], current_turn] if window else [],
+            "recalled_turns": sorted({item["turn"] for item in recalled}),
+            "looked_back": looked_back, "note_problems": note_problems,
+            "decide_tokens": count_tokens(decide_input),
+        }
+
         decision, routing_repaired = recover_quiz_route(
             decision, state, messages[-1]["text"], memory_enabled=memory_enabled,
         )
@@ -297,24 +373,38 @@ class LearningPipeline:
             decision, visual_repaired = recover_explicit_visual_route(decision, messages[-1]["text"])
             if visual_repaired:
                 repair_kind = "explicit_visual_without_tools"
+        previous_task, previous_quiz = state.get("active_task"), deepcopy(state.get("quiz"))
         if decision["mode"] == "answer":
             output = decision["response"]
             task = decision["task"]
             primary = output["intent"]["primary"]
             self._apply_task(state, primary, task)
+            self._track_tasks(state, previous_task, previous_quiz, current_turn, text)
             self._validate_response(output, output["intent"], None,
                                     stopping=task["end_task"] or task["pause_task"])
             if task["end_task"] or task["pause_task"]:
                 output["next_step"] = None
             validate(output, self.response_schema)
-            state["last_execution"] = {"mode": "answer", "tools": empty_results()}
+            state["last_execution"] = {"mode": "answer", "tools": empty_results(), "context": context_report}
             return output, state
 
         plan, tool_results = select_tools(decision["plan"], messages[-1]["text"], memory_enabled=memory_enabled)
         primary = plan["intent"]["primary"]
         self._apply_task(state, primary, plan)
+        self._track_tasks(state, previous_task, previous_quiz, current_turn, text)
+        notes_now = context.get("notes")
+        brief = brief_card(state, memory, plan["participant"])
+        sub_window = [{"turn": item["turn"], "role": item["role"], "text": item["text"]}
+                      for item in recent_window(numbered, budgets.sub_window, min_turns=1,
+                                                message_max=budgets.message_max)]
+        if tool_results["notes"] == "pending":
+            # Learning evidence is only marked here; notes are compiled after a
+            # quiz set when the learner agrees, from the learner's own words.
+            tool_results["notes"] = "deferred"
+            marks = [turn for turn in context.get("evidence_turns", []) if turn != current_turn]
+            context["evidence_turns"] = (marks + [current_turn])[-20:]
 
-        # Grading is program state and needs no model; do it first so notes get the evidence.
+        # Grading is program state and needs no model; do it first so the evidence is ready.
         quiz_context, quiz_evidence, pending_quiz = self._quiz_grade(plan, text, state)
         # The coordinator declared content dependencies; the program derives the order.
         order = execution_order(plan)
@@ -324,26 +414,12 @@ class LearningPipeline:
             if not plan["research_query"]:
                 return None
             try:
-                found = await self.research.run(plan["research_query"])
+                found = await self.research.run(plan["research_query"], learner=brief)
             except (StageFailure, OSError, TimeoutError, ValueError):
                 found = {"overall": "unavailable", "sources": [], "claims": [],
                          "queries": [], "warnings": ["research_failed"]}
             tool_results["research"] = found["overall"]
             return found
-
-        async def prepare_notes():
-            if tool_results["notes"] != "pending":
-                return None
-            try:
-                result = validate(await self.runner("notes", {
-                    "learner_text": text, "memory": memory, "quiz_evidence": quiz_evidence,
-                    "participant": plan["participant"],
-                }, NOTES_SCHEMA), NOTES_SCHEMA)
-                tool_results["notes"] = "prepared"
-                return result
-            except (StageFailure, ContractError):
-                tool_results["notes"] = "failed"
-                return None
 
         async def prepare_visual():
             if tool_results["visual"] != "pending":
@@ -354,9 +430,10 @@ class LearningPipeline:
                 session_id, {
                     "goal": plan["visual_request"], "research": found,
                     "learning_goal": (plan["task_summary"] or "")[:400],
-                    "recent_messages": [{"role": item["role"], "text": item["text"][:1500]}
-                                        for item in messages[-4:]],
-                    "profile": memory.get("profile", {}),
+                    "recent_messages": sub_window,
+                    "profile": memory_view.get("profile", {}),
+                    "learner": brief,
+                    "context_notes": note_slice(notes_now, "covered", "requests"),
                 }, learner_text=text)
             tool_results["visual"] = "ready" if result[0] else "unavailable"
             return result
@@ -364,16 +441,17 @@ class LearningPipeline:
         async def prepare_quiz():
             if pending_quiz is None:
                 return quiz_context
-            context = {}
+            extra = {"learner": brief, "context_notes": note_slice(notes_now, "covered", "stuck"),
+                     "recent_messages": sub_window}
             if order["quiz_waits_research"]:
-                found = await running["research"]
-                context["research"] = {"overall": found["overall"], "claims": [
+                found = research_digest(await running["research"])
+                extra["research"] = {"overall": found["overall"], "claims": [
                     claim for claim in found["claims"] if claim["status"] in ("verified", "likely")]}
             if order["quiz_waits_visual"]:
                 _, visual_context = await running["visual"]
                 if visual_context and visual_context.get("status") == "ready":
-                    context["visual_context"] = visual_context
-            return await self._quiz_question(plan, pending_quiz, context)
+                    extra["visual_context"] = visual_context
+            return await self._quiz_question(plan, pending_quiz, extra)
 
         # Independent work runs concurrently; declared dependencies wait inside
         # their own task. Nothing writes memory or publishes artifacts until the
@@ -382,7 +460,6 @@ class LearningPipeline:
         try:
             async with asyncio.TaskGroup() as tasks:
                 running["research"] = tasks.create_task(run_research())
-                notes_task = tasks.create_task(prepare_notes())
                 running["visual"] = tasks.create_task(prepare_visual())
                 quiz_task = tasks.create_task(prepare_quiz())
         except ExceptionGroup:
@@ -396,26 +473,30 @@ class LearningPipeline:
         visual_task = running["visual"]
         quiz_context = quiz_task.result()
         if tool_results["quiz"] == "pending":
-            context = quiz_context or {}
-            tool_results["quiz"] = ("finished" if context.get("finished") else
-                                    "question_ready" if "new_question" in context else
-                                    "awaiting_answer" if "awaiting" in context else
-                                    "feedback_ready" if "feedback" in context else "needs_input")
-        notes = notes_task.result()
+            outcome = quiz_context or {}
+            tool_results["quiz"] = ("finished" if outcome.get("finished") else
+                                    "question_ready" if "new_question" in outcome else
+                                    "awaiting_answer" if "awaiting" in outcome else
+                                    "feedback_ready" if "feedback" in outcome else "needs_input")
         artifact, visual_context = visual_task.result()
-        notes_warning = tool_results["notes"] == "failed"
         visual_warning = tool_results["visual"] == "unavailable"
         require_finished(tool_results)
 
+        respond_window = recent_window(numbered, budgets.respond_window, min_turns=min(2, budgets.min_turns),
+                                       message_max=budgets.message_max)
         response_input = {
-            "phase": "respond", "messages": messages, "plan": plan,
-            "memory": memory, "state": {key: state.get(key) for key in ("active_task", "pending_tasks", "resume_stage")},
-            "research": research, "quiz": quiz_context,
+            "phase": "respond", "messages": respond_window, "recalled": recalled,
+            "context_notes": notes_now or empty_notes(),
+            "learner": learner_card(state, memory, memory_enabled=memory_enabled),
+            "plan": plan, "memory": memory_view,
+            "state": {key: state.get(key) for key in ("active_task", "pending_tasks", "resume_stage")},
+            "research": research_digest(research), "quiz": quiz_context,
             "visual_status": "ready" if artifact else "unavailable" if visual_warning else "not_requested",
             "visual_context": visual_context,
             "memory_enabled": memory_enabled, "first_meeting": first_meeting,
             "tool_results": deepcopy(tool_results),
         }
+        context_report["respond_tokens"] = count_tokens(response_input)
         output = await self.runner("coordinator", response_input, self.response_schema)
         stopping = plan["end_task"] or plan["pause_task"] or plan["quiz_action"] == "stop"
         self._validate_response(output, plan["intent"], research, stopping=stopping)
@@ -426,8 +507,17 @@ class LearningPipeline:
             choices = "\n".join(f"{'ABCD'[i]}. {choice}" for i, choice in enumerate(q["choices"]))
             # The program renders exactly one unanswered question, with no answer key.
             output["next_step"] = {"kind": "question", "text": q["question"] + "\n" + choices}
+        offer_notes = False
         if quiz_context and quiz_context.get("finished"):
             output["next_step"] = None
+            results = context.get("quiz_results", [])
+            results.append({"topic": (state.get("quiz") or {}).get("topic") or plan["quiz_topic"],
+                            "answered": quiz_context.get("answered"), "correct": quiz_context.get("correct_count")})
+            context["quiz_results"] = results[-5:]
+            if memory_enabled:
+                # A set of questions is done: ask once whether to compile notes.
+                output["next_step"] = {"kind": "question", "text": NOTES_OFFER}
+                offer_notes = True
 
         if tool_results["quiz"] in ("needs_input", "awaiting_answer") and (
                 not output["next_step"] or output["next_step"]["kind"] != "question"):
@@ -450,32 +540,90 @@ class LearningPipeline:
             output["message"] += f"\n\n[打开互动图]({artifact['url']})"
         elif visual_warning:
             output["message"] += "\n\n这次未生成可用的互动图。"
-        if notes_warning:
-            output["message"] += "\n\n本轮学习笔记未保存。"
         validate(output, self.response_schema)
 
         # Nothing persistent is committed before public output is valid.
         if artifact:
             self.artifacts.commit(session_id, artifact)
             tool_results["visual"] = "published"
-        if notes is not None:
+        if quiz_evidence is not None and memory_enabled:
             try:
                 # Records under a learner ID span conversations, so the turn key
                 # then includes the conversation to keep turns distinct.
                 turn_key = event_id if memory_key == session_id else f"{session_id}:{event_id}"
-                written = self.store.apply_notes(memory_key, turn_key, notes, text,
-                                                 quiz_evidence=quiz_evidence)
-                tool_results["notes"] = "saved" if written else "not_written"
-                if not written:
-                    output["message"] += "\n\n本轮未新增学习笔记。"
+                self.store.apply_notes(memory_key, turn_key, empty_learning_notes(), text,
+                                       quiz_evidence=quiz_evidence)
             except (ValueError, OSError, StorageError):
-                output["message"] += "\n\n本轮学习笔记未保存。"
-                tool_results["notes"] = "failed"
+                output["message"] += "\n\n本轮做题记录未保存。"
+        if offer_notes:
+            state["notes_offer"] = True
         require_finished(tool_results)
-        state["last_execution"] = {"mode": "tools", "tools": tool_results, "order": order}
+        state["last_execution"] = {"mode": "tools", "tools": tool_results, "order": order,
+                                   "context": context_report}
         if repair_kind:
             state["last_execution"]["routing_repaired"] = repair_kind
         return output, state
+
+    async def _compile_notes(self, messages, session_id, state, event_id, memory_key):
+        """Turn this conversation's learner messages into learning notes, once agreed."""
+        failed = reply("这次笔记没有整理成功，学习记录没有改动。想再试，可以说“整理笔记”。", "E",
+                       {"kind": "question", "text": "接下来想学什么？"})
+        memory_enabled = not state.get("memory_blocked", False) and self.store.is_enabled(memory_key)
+        if not memory_enabled:
+            return reply("现在没有开启学习记录，笔记不会保存。想保存，可以先说“开启记录”。", "E"), state
+        context = state.setdefault("context", {})
+        numbered = number_turns(messages)
+        earlier = [item for item in numbered if item["turn"] < numbered[-1]["turn"]]
+        shown = learner_messages(earlier, after_turn=context.get("notes_upto_turn", 0),
+                                 budget=self.budgets.notes_messages, message_max=self.budgets.message_max)
+        if not shown:
+            return reply("这次对话里还没有新的内容可以整理。", "E",
+                         {"kind": "question", "text": "接下来想学什么？"}), state
+        turns = {item["turn"] for item in shown}
+        # Evidence must quote what the learner actually said in these turns.
+        said = "\n".join(item["text"] for item in earlier if item["role"] == "user" and item["turn"] in turns)
+        memory = self.store.snapshot(memory_key)
+        payload = {
+            "learner_messages": shown,
+            "evidence_turns": [turn for turn in context.get("evidence_turns", []) if turn in turns],
+            "context_notes": note_slice(context.get("notes"), "covered", "stuck"),
+            "quiz_results": context.get("quiz_results", []),
+            "learner": brief_card(state, memory),
+            "memory": memory_slice(memory, " ".join(item["text"] for item in shown)[-2000:], self.budgets.memory),
+        }
+        try:
+            notes = validate(await self.runner("notes", payload, NOTES_SCHEMA), NOTES_SCHEMA)
+            key = f"notes:{event_id}" if memory_key == session_id else f"{session_id}:notes:{event_id}"
+            written = self.store.apply_notes(memory_key, key, notes, said)
+        except (StageFailure, ContractError, ValueError, OSError, StorageError):
+            LOG.warning("notes_compile_failed")
+            return failed, state
+        # Up to and including this request, so the request itself is never compiled later.
+        context["notes_upto_turn"] = numbered[-1]["turn"]
+        context["evidence_turns"] = []
+        counts = [(len(notes["concepts"]), "个知识点"), (len(notes["error_records"]), "个易错点"),
+                  (len(notes["review_plan"]), "项复习安排"), (len(notes["profile"]), "条学习情况")]
+        saved = "、".join(f"{number} {label}" for number, label in counts if number)
+        if not written:
+            message = "这部分内容之前已经整理过了。"
+        elif saved:
+            message = f"整理好了，记下了{saved}。下次可以接着复习。"
+        else:
+            message = "看了一遍，这次没有需要新记下的内容。"
+        return reply(message, "E", {"kind": "question", "text": "接下来想学什么？"}), state
+
+    @staticmethod
+    def _track_tasks(state, previous_task, previous_quiz, turn, text):
+        """Program-kept task cards and the learner's goal in their own words."""
+        context = state.setdefault("context", {})
+        active = state.get("active_task")
+        if active and active != previous_task:
+            context["goal"] = {"turn": turn, "text": text[:300]}
+        if previous_task and not active and not state.get("pending_tasks", []).count(previous_task):
+            card = {"task": previous_task, "status": "已结束"}
+            if previous_quiz and previous_quiz.get("answered"):
+                card["quiz"] = f"{previous_quiz['answered']} 题对 {previous_quiz['correct']} 题"
+            context["finished"] = (context.get("finished", []) + [card])[-5:]
 
     def _validate_response(self, output, intent, research, *, stopping=False):
         validate(output, self.response_schema)
