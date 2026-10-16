@@ -5,6 +5,11 @@ The pipeline runs in-process; the Space's secret environment variables
 FOUNDRY_PROJECT_ENDPOINT / AZURE_AI_MODEL_DEPLOYMENT_NAME) authenticate to
 Azure AI Foundry. Visitors need no account and no credential.
 
+When DEMO_ACCESS_KEY is set, only links carrying ?key=<that value> can chat;
+the key is checked on page load and again in every turn. Daily caps
+(DEMO_MAX_TURNS_PER_DAY, DEMO_MAX_IMAGES_PER_DAY; 0 = no cap) protect the
+model budget behind the public URL.
+
 Interactive visuals and generated illustrations render inline (iframe /
 markdown image) from the artifact store, so they work on the public URL —
 unlike the Foundry-hosted deployment whose gateway does not forward custom
@@ -14,11 +19,13 @@ artifact routes.
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import os
 import re
 import sys
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 def _find_root() -> Path:
@@ -49,12 +56,64 @@ from learning_coach.server import create_pipeline
 
 ARTIFACT_LINK = re.compile(r"\n?\[打开互动图\]\(http://localhost:8088/artifacts/([A-Za-z0-9_-]+)\)")
 DATA_IMAGE = re.compile(r'data:image/[a-z]+;base64,[A-Za-z0-9+/=]+')
+CHINA_TIME = timezone(timedelta(hours=8))
+
+
+def env_int(name: str, default: int) -> int:
+    try:
+        return max(0, int(os.environ.get(name, default)))
+    except ValueError:
+        return default
+
+
+class DailyLimit:
+    """Count uses per calendar day (UTC+8); a limit of 0 means no cap.
+
+    Kept in memory: a restart starts the count again, which is acceptable for
+    a demo guard (the Azure budget alert is the hard backstop).
+    """
+
+    def __init__(self, limit: int):
+        self.limit, self.day, self.used = limit, None, 0
+
+    def take(self) -> bool:
+        today = datetime.now(CHINA_TIME).date()
+        if today != self.day:
+            self.day, self.used = today, 0
+        if self.limit and self.used >= self.limit:
+            return False
+        self.used += 1
+        return True
+
+
+ACCESS_KEY = os.environ.get("DEMO_ACCESS_KEY", "").strip()
+TURN_LIMIT = DailyLimit(env_int("DEMO_MAX_TURNS_PER_DAY", 150))
+IMAGE_LIMIT = DailyLimit(env_int("DEMO_MAX_IMAGES_PER_DAY", 20))
+LOCKED_TEXT = "这是私人演示，请用收到的邀请链接打开。"
+LIMIT_TEXT = "今天的演示次数用完了，明天再来试试吧。"
+
+
+def key_matches(given) -> bool:
+    if not ACCESS_KEY:
+        return True
+    return isinstance(given, str) and hmac.compare_digest(given.encode(), ACCESS_KEY.encode())
+
+
+async def limited_image(prompt: str, **options) -> bytes:
+    """Image generation costs the most per call, so it has its own daily cap."""
+    if not IMAGE_LIMIT.take():
+        # RuntimeError is reported to the learner as "image service unavailable".
+        raise RuntimeError("image_daily_limit")
+    from learning_coach.adapters.illustrate import generate_image
+
+    return await generate_image(prompt, **options)
 
 
 def build_pipeline() -> LearningPipeline:
     return create_pipeline(
         data_dir=Path(os.environ.get("LEARNING_COACH_DATA_DIR", "/tmp/learning-coach")).resolve(),
         public_base_url="http://localhost:8088", native_json=False,
+        image_generator=limited_image,
     )
 
 
@@ -83,13 +142,21 @@ def ensure_device(device):
     return {"learner_id": device["learner_id"][:200], "seen": device.get("seen") is True}
 
 
-async def respond(user_text, session, device=None):
+async def respond(user_text, session, device=None, allowed=False):
     device = ensure_device(device)
     user_text = (user_text or "").strip()
     if not user_text:
         yield session, session["chat"], session["panel"], "", device
         return
     if session.get("locked"):
+        yield session, session["chat"], session["panel"], "", device
+        return
+    # Checked here, not only by hiding the page, so direct API calls are refused too.
+    if not allowed or not TURN_LIMIT.take():
+        session["chat"] = session["chat"] + [
+            {"role": "user", "content": user_text},
+            {"role": "assistant", "content": LIMIT_TEXT if allowed else LOCKED_TEXT},
+        ]
         yield session, session["chat"], session["panel"], "", device
         return
     session["locked"] = True
@@ -186,15 +253,14 @@ def new_session():
     return session, [], "", ""
 
 
-def verify_password(password):
-    expected = os.environ.get("DEMO_PASSWORD")
-    if expected and password != expected:
-        return (
-            gr.update(visible=True),
-            gr.update(visible=False),
-            "口令不对，请重试。",
-        )
-    return gr.update(visible=False), gr.update(visible=True), ""
+def check_access(request: gr.Request):
+    """On page load: the invite key travels in the link as ?key=..."""
+    try:
+        given = request.query_params.get("key")
+    except AttributeError:
+        given = None
+    allowed = key_matches(given)
+    return allowed, gr.update(visible=allowed), gr.update(visible=not allowed)
 
 
 def build_app() -> gr.Blocks:
@@ -204,12 +270,8 @@ def build_app() -> gr.Blocks:
             "多 agent 学习教练：意图编排 · 检索查证 · 出题判分 · 学习记忆 · 互动图与配图。\n\n"
             "*Azure AI Foundry 驱动，无需登录即可体验。*"
         )
-        if os.environ.get("DEMO_PASSWORD"):
-            with gr.Group() as gate:
-                pwd = gr.Textbox(label="演示口令", type="password")
-                enter = gr.Button("进入")
-                gate_msg = gr.Markdown("")
-        with gr.Column(visible=not os.environ.get("DEMO_PASSWORD")) as main:
+        locked_note = gr.Markdown(f"**{LOCKED_TEXT}**", visible=False)
+        with gr.Column(visible=not ACCESS_KEY) as main:
             chatbot = gr.Chatbot(label="对话", height=480)
             panel = gr.HTML("")
             with gr.Row():
@@ -230,29 +292,30 @@ def build_app() -> gr.Blocks:
         session = gr.State(new_session()[0])
         # Lives in this visitor's browser storage, so it survives "新会话" and reloads.
         device = gr.BrowserState({"learner_id": "", "seen": False}, storage_key="edu-agent-device")
+        # Server-side per-visitor flag; set from the link on page load.
+        allowed = gr.State(not ACCESS_KEY)
 
-        async def on_send(text, sess, dev):
+        async def on_send(text, sess, dev, ok):
             # respond is an async generator: first yields the "我先想想…"
             # placeholder, then the completed turn.
-            async for result in respond(text, sess, dev):
+            async for result in respond(text, sess, dev, ok):
                 yield result
 
         outputs = [session, chatbot, panel, input_box, device]
-        send.click(on_send, [input_box, session, device], outputs).then(
+        send.click(on_send, [input_box, session, device, allowed], outputs).then(
             option_updates, [session], option_buttons)
-        input_box.submit(on_send, [input_box, session, device], outputs).then(
+        input_box.submit(on_send, [input_box, session, device, allowed], outputs).then(
             option_updates, [session], option_buttons)
         for button in option_buttons:
             # A button passes its own label, so clicking it sends the chosen option.
-            button.click(on_send, [button, session, device], outputs).then(
+            button.click(on_send, [button, session, device, allowed], outputs).then(
                 option_updates, [session], option_buttons)
         reset.click(new_session, None, [session, chatbot, panel, input_box]).then(
             option_updates, [session], option_buttons)
         if DEMO_STAGE:
             clear.click(clear_demo, [session, device], [session, chatbot, panel, input_box, device]).then(
                 option_updates, [session], option_buttons)
-        if os.environ.get("DEMO_PASSWORD"):
-            enter.click(verify_password, pwd, [gate, main, gate_msg])
+        demo.load(check_access, None, [allowed, main, locked_note])
     return demo
 
 
