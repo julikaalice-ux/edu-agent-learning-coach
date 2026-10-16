@@ -125,6 +125,7 @@ async def respond(user_text, session, device=None):
                     # Interactive visual: embedded sandboxed frame below chat.
                     panel = iframe_for(document)
         session["history"].append({"role": "assistant", "text": history_text})
+        session["options"] = options_from(output)
         session["panel"] = panel
         session["chat"] = session["chat"] + [
             {"role": "user", "content": user_text},
@@ -139,6 +140,44 @@ async def respond(user_text, session, device=None):
         yield session, session["chat"], session["panel"], "", device
     finally:
         session["locked"] = False
+
+
+OPTION_LINE = re.compile(r"^\s*\d+\.\s*(.+?)\s*$", re.MULTILINE)
+MAX_OPTIONS = 8
+DEMO_STAGE = os.environ.get("LEARNING_COACH_DEMO_STAGE", "高中") \
+    if os.environ.get("LEARNING_COACH_DEMO_MODE", "0") == "1" else None
+
+
+def options_from(output) -> list[str]:
+    """Numbered choices in the agent's question become clickable buttons."""
+    step = (output or {}).get("next_step") or {}
+    if step.get("kind") != "question":
+        return []
+    found = OPTION_LINE.findall(step.get("text", ""))
+    if not found:
+        return []
+    if "跳过" in step.get("text", "") and "跳过" not in found:
+        found.append("跳过")
+    return found[:MAX_OPTIONS]
+
+
+def option_updates(session):
+    labels = session.get("options", [])
+    return [gr.update(value=labels[i], visible=True) if i < len(labels) else gr.update(visible=False)
+            for i in range(MAX_OPTIONS)]
+
+
+def clear_demo(session, device):
+    """Start the demo from a clean slate: drop this browser's records and identity."""
+    device = ensure_device(device)
+    for remove, key in ((PIPELINE.store.clear, device["learner_id"]),
+                        (PIPELINE.artifacts.delete_session, session.get("session_id", ""))):
+        try:
+            remove(key)
+        except Exception:
+            pass
+    fresh = new_session()
+    return (*fresh, {"learner_id": uuid.uuid4().hex, "seen": False})
 
 
 def new_session():
@@ -174,14 +213,20 @@ def build_app() -> gr.Blocks:
             chatbot = gr.Chatbot(label="对话", height=480)
             panel = gr.HTML("")
             with gr.Row():
+                option_buttons = [gr.Button(visible=False, size="sm") for _ in range(MAX_OPTIONS)]
+            with gr.Row():
                 input_box = gr.Textbox(
                     placeholder="问点什么，比如：帮我生成一个对比 1/2 和 1/4 的互动图",
                     scale=9, label="")
                 send = gr.Button("发送", scale=1, variant="primary")
             with gr.Row():
                 reset = gr.Button("新会话")
-                gr.Markdown("学习记录默认不保存；输入 /memory on 开启，/memory off 暂停，/forget 删除。"
-                            "记录只和这台设备上的浏览器关联。")
+                if DEMO_STAGE:
+                    clear = gr.Button("清空演示数据")
+                    gr.Markdown(f"**演示模式**：跳过了年龄和学习记录的询问，预设学段“{DEMO_STAGE}”，学习记录已开启。")
+                else:
+                    gr.Markdown("第一次使用时会问学段和是否保存学习记录；之后随时可以说“开启记录”“关闭记录”“删除记录”。"
+                                "记录只和这台设备上的浏览器关联。")
         session = gr.State(new_session()[0])
         # Lives in this visitor's browser storage, so it survives "新会话" and reloads.
         device = gr.BrowserState({"learner_id": "", "seen": False}, storage_key="edu-agent-device")
@@ -193,9 +238,19 @@ def build_app() -> gr.Blocks:
                 yield result
 
         outputs = [session, chatbot, panel, input_box, device]
-        send.click(on_send, [input_box, session, device], outputs)
-        input_box.submit(on_send, [input_box, session, device], outputs)
-        reset.click(new_session, None, [session, chatbot, panel, input_box])
+        send.click(on_send, [input_box, session, device], outputs).then(
+            option_updates, [session], option_buttons)
+        input_box.submit(on_send, [input_box, session, device], outputs).then(
+            option_updates, [session], option_buttons)
+        for button in option_buttons:
+            # A button passes its own label, so clicking it sends the chosen option.
+            button.click(on_send, [button, session, device], outputs).then(
+                option_updates, [session], option_buttons)
+        reset.click(new_session, None, [session, chatbot, panel, input_box]).then(
+            option_updates, [session], option_buttons)
+        if DEMO_STAGE:
+            clear.click(clear_demo, [session, device], [session, chatbot, panel, input_box, device]).then(
+                option_updates, [session], option_buttons)
         if os.environ.get("DEMO_PASSWORD"):
             enter.click(verify_password, pwd, [gate, main, gate_msg])
     return demo

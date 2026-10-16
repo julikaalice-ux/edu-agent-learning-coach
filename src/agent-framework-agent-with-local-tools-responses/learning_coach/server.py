@@ -24,6 +24,13 @@ SRC_DIR = Path(__file__).resolve().parent.parent
 INSTRUCTIONS_PATH = SRC_DIR / "instructions.md"
 
 
+def demo_stage_from_env():
+    """LEARNING_COACH_DEMO_MODE=1 skips the first-meeting questions (demonstrations only)."""
+    if os.environ.get("LEARNING_COACH_DEMO_MODE", "0") != "1":
+        return None
+    return os.environ.get("LEARNING_COACH_DEMO_STAGE", "高中")
+
+
 def create_pipeline(*, client=None, data_dir=None, public_base_url=None, native_json=None,
                     image_generator=None, search_provider=None):
     """Build dependencies without launching a server or contacting a model."""
@@ -48,6 +55,8 @@ def create_pipeline(*, client=None, data_dir=None, public_base_url=None, native_
         runner, ResearchService(runner, search_provider if search_provider is not None else default_provider()), LearningStore(directory / "memory.sqlite3"), artifacts,
         json.loads((SRC_DIR / "response.schema.json").read_text(encoding="utf-8")),
         image_generator=image_generator if image_generator is not None else generate_image,
+        onboarding=os.environ.get("LEARNING_COACH_ONBOARDING", "1") == "1",
+        demo_stage=demo_stage_from_env(),
     )
 
 

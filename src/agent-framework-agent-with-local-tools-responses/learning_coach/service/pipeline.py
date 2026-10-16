@@ -9,6 +9,7 @@ import logging
 import re
 
 from learning_coach.domain.contracts import QUIZ_SCHEMA, ContractError, decision_schema, grade_choice, public_quiz, validate
+from learning_coach.domain import onboarding
 from learning_coach.domain.note_contracts import NOTES_SCHEMA
 from learning_coach.domain.routing import (conservative_participant, empty_results, execution_order,
                       recover_explicit_visual_route,
@@ -22,6 +23,21 @@ from learning_coach.service.ports import AgentRunner, ResearchPort, LearningMemo
 LOG = logging.getLogger(__name__)
 
 
+RECORD_ON = ("开启记录", "打开记录", "开启学习记录", "保存记录", "保存学习记录")
+RECORD_OFF = ("关闭记录", "关掉记录", "暂停记录", "别记了", "不要记录", "关闭学习记录")
+RECORD_DELETE = ("删除记录", "删掉记录", "删除学习记录", "清除记录", "清空记录")
+
+
+def last_forget(messages):
+    """Index of the latest confirmed deletion ("/forget", or "确定删除" right after a delete request)."""
+    users = [(i, item["text"].strip()) for i, item in enumerate(messages) if item["role"] == "user"]
+    found = -1
+    for position, (index, value) in enumerate(users):
+        if value == "/forget" or (value == "确定删除" and position > 0 and users[position - 1][1] in RECORD_DELETE):
+            found = index
+    return found
+
+
 def reply(message, primary="G", step=None):
     return {"schema_version": "1.0", "intent": {"primary": primary, "is_implicit": False},
             "message": message, "next_step": step}
@@ -30,7 +46,8 @@ def reply(message, primary="G", step=None):
 class LearningPipeline:
     def __init__(self, runner: AgentRunner, research: ResearchPort, store: LearningMemory,
                  artifacts: Artifacts, response_schema: dict, *,
-                 image_generator: ImageGenerator | None = None):
+                 image_generator: ImageGenerator | None = None,
+                 onboarding: bool = False, demo_stage: str | None = None):
         self.runner, self.research = runner, research
         self.store, self.artifacts = store, artifacts
         self.response_schema = response_schema
@@ -39,6 +56,11 @@ class LearningPipeline:
         # (server.py / tests) inject pollinations, FLUX, or a fake.
         self.image_generator = image_generator
         self.decision_schema = decision_schema(response_schema)
+        # onboarding: ask who is learning, their stage and record consent before
+        # the first lesson. demo_stage: skip those questions with a preset stage
+        # and records on, for demonstrations only.
+        self.onboarding = onboarding
+        self.demo_stage = demo_stage
         self._locks = {}
         self._recent = OrderedDict()
         self._accepted = OrderedDict()
@@ -120,6 +142,25 @@ class LearningPipeline:
 
     async def _execute(self, messages, session_id, state, event_id, memory_key, returning_visitor):
         text = messages[-1]["text"].strip()
+        # Plain-language record controls map onto the same program commands.
+        pending_forget = state.pop("pending_forget", False)
+        if text in RECORD_ON:
+            text = "/memory on"
+        elif text in RECORD_OFF:
+            text = "/memory off"
+        elif text in RECORD_DELETE:
+            state["pending_forget"] = True
+            return reply("要删除全部学习记录吗？删除后找不回来。", "E",
+                         {"kind": "question", "text": "确认删除请回复“确定删除”，不删就继续说别的。"}), state
+        elif text == "确定删除" and pending_forget:
+            text = "/forget"
+        record = state.get("onboarding") or {}
+        if (text == "/memory on" and record.get("who") == "self"
+                and record.get("stage") in onboarding.MAYBE_UNDER_14 and record.get("consent_by") != "guardian"):
+            # A possibly under-14 learner cannot switch records on alone.
+            state["onboarding"] = {**record, "step": "consent_guardian"}
+            return reply("开启学习记录需要家长同意。", "G",
+                         {"kind": "question", "text": onboarding.question_text("consent_guardian")}), state
         if text in ("/memory on", "/memory off", "/forget"):
             if text == "/forget":
                 for key in list(self._accepted):
@@ -134,7 +175,11 @@ class LearningPipeline:
                         LOG.warning("forget_cleanup_incomplete")
                 message = ("已删除本会话保存的学习笔记和可视化文件，并关闭记忆。客户端的聊天记录需在客户端删除。" if complete else
                            "已清空当前学习任务并停止读取和记录笔记，但部分已存内容未能删除。请稍后重试 /forget。")
-                return reply(message, "E"), {"memory_blocked": True}
+                after = {"memory_blocked": True}
+                if record:
+                    after["onboarding"] = {"step": "done", "records": "off", "stage": record.get("stage"),
+                                           "who": record.get("who")}
+                return reply(message, "E"), after
             enabled = text == "/memory on"
             if not enabled:
                 state["memory_blocked"] = True
@@ -145,14 +190,81 @@ class LearningPipeline:
                     return reply("未能开启记忆，本轮不会记录笔记。请稍后重试 /memory on。", "E"), state
                 return reply("本会话已暂停读取和记录笔记，但持久开关未能更新。请稍后重试 /memory off。", "E"), state
             state["memory_blocked"] = not enabled
-            return reply("已开启本会话的学习笔记记录；可用 /memory off 暂停，/forget 删除。" if enabled else
-                         "已停止记录和读取学习笔记；已有笔记可用 /forget 删除。", "E"), state
+            return reply("好，从现在开始保存学习进度。想关掉随时说“关闭记录”。" if enabled else
+                         "好，不再记录学习进度。已经保存的内容想删掉，可以说“删除记录”。", "E"), state
 
         # Discard the visible history preceding the most recent explicit forget.
-        forgotten_at = max((i for i, item in enumerate(messages)
-                            if item["role"] == "user" and item["text"].strip() == "/forget"), default=-1)
-        if forgotten_at >= 0:
-            messages = messages[forgotten_at + 1:]
+        forgotten = last_forget(messages)
+        if forgotten >= 0:
+            messages = messages[forgotten + 1:]
+
+        record = state.get("onboarding")
+        if self.demo_stage and record is None:
+            record = state["onboarding"] = {"step": "done", "stage": self.demo_stage, "records": "on",
+                                            "who": "self", "demo": True}
+            try:
+                self.store.set_enabled(memory_key, True)
+                state["memory_blocked"] = False
+            except StorageError:
+                LOG.warning("demo_records_unavailable")
+        elif (self.onboarding and record is None and not returning_visitor
+              and not self.store.is_enabled(memory_key)):
+            state["onboarding"] = onboarding.start(text)
+            note = ("你的问题我先记下了，回答两个小问题后马上讲。" if state["onboarding"]["pending_question"]
+                    else "开始之前，先问两个小问题，好按你的情况来讲。")
+            greeting = ("你好！我是你的学习教练，可以给你讲概念、陪你解题、出小题看看是不是真的学会了，"
+                        "需要的时候还能画图帮你理解。" + note)
+            return reply(greeting, "G", {"kind": "question", "text": onboarding.question_text("who")}), state
+        prefix = None
+        if record is not None and record.get("step") != "done":
+            updated = onboarding.advance(record, text)
+            if updated.get("retry"):
+                updated.pop("retry")
+                if not updated.get("pending_question") and len(text) > 6:
+                    updated["pending_question"] = text[:4000]
+                    message = "这个问题我先记下了，选完这一项马上讲。"
+                else:
+                    message = "没认出这个选择，再选一次就好。"
+                state["onboarding"] = updated
+                return reply(message, "G", {"kind": "question",
+                                            "text": onboarding.question_text(updated["step"])}), state
+            if updated["step"] != "done":
+                state["onboarding"] = updated
+                return reply("好的。", "G", {"kind": "question",
+                                            "text": onboarding.question_text(updated["step"])}), state
+            records_on = updated.get("records") == "on"
+            try:
+                self.store.set_enabled(memory_key, records_on)
+                if records_on and updated.get("stage") not in (None, "不想说") and updated.get("stage_answer"):
+                    answer = updated["stage_answer"]
+                    self.store.apply_notes(memory_key, f"{session_id}:{event_id}:stage", {
+                        "schema_version": "1.0", "concepts": [], "error_records": [], "review_plan": [],
+                        "profile": [{"key": "learning_stage", "value": updated["stage"],
+                                     "origin": "companion_report" if updated.get("who") == "companion" else "self_report",
+                                     "evidence_quote": answer}],
+                    }, answer)
+            except (StorageError, ValueError, OSError):
+                LOG.warning("onboarding_record_setting_failed")
+                records_on = False
+                updated["records"] = "off"
+            state["memory_blocked"] = not records_on
+            pending = updated.pop("pending_question", None)
+            updated.pop("stage_answer", None)
+            state["onboarding"] = updated
+            closing = onboarding.closing_message(updated)
+            if not pending:
+                return reply(closing, "G", {"kind": "question", "text": "今天想弄懂点什么？"}), state
+            # Answer the question the learner arrived with, as if just asked.
+            messages, prefix = [{"role": "user", "text": pending}], closing
+
+        output, state = await self._teach(messages, session_id, state, event_id, memory_key, returning_visitor)
+        if prefix:
+            output["message"] = prefix + "\n\n" + output["message"]
+            validate(output, self.response_schema)
+        return output, state
+
+    async def _teach(self, messages, session_id, state, event_id, memory_key, returning_visitor):
+        text = messages[-1]["text"].strip()
 
         visible_state = deepcopy({key: value for key, value in state.items()
                                   if key not in ("last_event", "last_input", "last_response", "last_execution")})
@@ -166,7 +278,7 @@ class LearningPipeline:
         }
         # First meeting: the client has not seen this learner before, there is no
         # reply yet in this conversation and nothing remembered.
-        first_meeting = (not returning_visitor
+        first_meeting = (not returning_visitor and "onboarding" not in state
                          and not any(item["role"] == "assistant" for item in messages)
                          and not (memory.get("profile") or memory.get("concepts")))
         decision = validate(await self.runner("coordinator", {
