@@ -64,11 +64,13 @@ def _memory_store(directory: Path, credential):
         return inner
     from azure.ai.projects import AIProjectClient
     from learning_coach.adapters.foundry_memory import FoundryMemoryStore
-    timeout = float(os.environ.get("LEARNING_COACH_MEMORY_TIMEOUT", "2"))
+    timeout = float(os.environ.get("LEARNING_COACH_MEMORY_TIMEOUT", "5"))
     search_max = int(os.environ.get("LEARNING_COACH_MEMORY_SEARCH_MAX", "6"))
     client = AIProjectClient(os.environ["FOUNDRY_PROJECT_ENDPOINT"], credential, allow_preview=True,
                              connection_timeout=timeout, read_timeout=timeout, retry_total=0)
-    return FoundryMemoryStore(inner, client, name, search_max=search_max)
+    # The adapter's client seam is the memory-store operations surface, not the
+    # whole project client (create_memory lives under beta.memory_stores).
+    return FoundryMemoryStore(inner, client.beta.memory_stores, name, search_max=search_max)
 
 
 def create_pipeline(*, client=None, data_dir=None, public_base_url=None, native_json=None,

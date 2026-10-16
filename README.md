@@ -47,7 +47,7 @@ cp agent/.env.example agent/.env   # 填 FOUNDRY_PROJECT_ENDPOINT 和 AZURE_AI_M
 | `LEARNING_COACH_DATA_DIR` | | 学习记录和互动图的存放目录 |
 | `LEARNING_COACH_MEMORY_STORE` | | Foundry Memory 语义层；不设 = 纯 SQLite。store 需先用 [`scripts/setup-memory.sh`](scripts/setup-memory.sh) 创建，失败自动降级 |
 | `LEARNING_COACH_MEMORY_SEARCH_MAX` | | 语义检索条数，默认 6 |
-| `LEARNING_COACH_MEMORY_TIMEOUT` | | 语义层调用超时秒数，默认 2 |
+| `LEARNING_COACH_MEMORY_TIMEOUT` | | 语义层调用超时秒数，默认 5 |
 | `LEARNING_COACH_DEMO_MODE` | | 设为 `1` 时跳过首次问答，学段取 `LEARNING_COACH_DEMO_STAGE` |
 | `DEMO_ACCESS_KEY` | | 演示页邀请码，访问链接需带 `?key=` |
 | `DEMO_MAX_TURNS_PER_DAY` / `DEMO_MAX_IMAGES_PER_DAY` | | 演示页每日上限，默认 150 / 20 |

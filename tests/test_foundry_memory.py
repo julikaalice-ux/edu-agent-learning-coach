@@ -191,10 +191,11 @@ class ServerWiringTests(unittest.TestCase):
     def test_set_env_wraps_with_the_foundry_client(self):
         from learning_coach import server
         fake = FakeFoundryClient()
+        project_client = SimpleNamespace(beta=SimpleNamespace(memory_stores=fake))
         with tempfile.TemporaryDirectory() as temp, \
                 mock.patch.dict(os.environ, {"LEARNING_COACH_MEMORY_STORE": "m",
                                              "FOUNDRY_PROJECT_ENDPOINT": "https://example.test"}, clear=False), \
-                mock.patch("azure.ai.projects.AIProjectClient", return_value=fake):
+                mock.patch("azure.ai.projects.AIProjectClient", return_value=project_client):
             store = server._memory_store(Path(temp), object())
         self.assertIsInstance(store, FoundryMemoryStore)
         self.assertIs(store._client, fake)

@@ -57,7 +57,7 @@ services:
       # Foundry Memory semantic layer (unset = disabled, pure SQLite).
       LEARNING_COACH_MEMORY_STORE: edu-agent-learning-coach
       LEARNING_COACH_MEMORY_SEARCH_MAX: '6'
-      LEARNING_COACH_MEMORY_TIMEOUT: '2'
+      LEARNING_COACH_MEMORY_TIMEOUT: '5'
     container:
       resources:
         cpu: '0.5'
