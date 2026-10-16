@@ -11,7 +11,11 @@ import logging
 from uuid import uuid4
 
 from agent_framework import AgentResponse, AgentResponseUpdate, BaseAgent, Content, Message, ResponseStream
-from azure.ai.agentserver.core import get_request_context
+
+try:
+    from azure.ai.agentserver.core import get_request_context
+except ImportError:  # hosted-agent dependency only; Space and local demos don't carry it
+    get_request_context = None
 
 LOG = logging.getLogger(__name__)
 MAX_LEARNER_ID_CHARS = 200  # matches pipeline MAX_ID_CHARS
@@ -21,10 +25,13 @@ _platform_id_logged = False
 def platform_learner_id() -> str | None:
     """The platform-injected per-user key (x-agent-user-id), when present.
 
-    Local runs (demo, tests, localhost HTTP) have no request context and get
-    None, so memory falls back to session-scoped keys exactly as before.
+    Non-hosted runs (Space, local demos) have no agentserver package and no
+    request context, and get None, so memory falls back to the browser
+    learner_id or session-scoped keys exactly as before.
     """
     global _platform_id_logged
+    if get_request_context is None:
+        return None
     try:
         user_id = get_request_context().user_id
     except Exception:
