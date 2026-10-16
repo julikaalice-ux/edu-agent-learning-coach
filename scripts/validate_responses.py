@@ -16,7 +16,7 @@ from jsonschema.exceptions import SchemaError
 
 DEFAULT_SCHEMA = (
     Path(__file__).resolve().parents[1]
-    / "src/agent-framework-agent-with-local-tools-responses/response.schema.json"
+    / "agent/response.schema.json"
 )
 
 

@@ -9,7 +9,7 @@ sys.path.insert(
     0,
     str(
         Path(__file__).resolve().parents[1]
-        / "src/agent-framework-agent-with-local-tools-responses"
+        / "agent"
     ),
 )
 from learning_coach.domain.routing import recover_explicit_visual_route, select_tools

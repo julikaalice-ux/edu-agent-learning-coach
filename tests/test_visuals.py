@@ -1,7 +1,6 @@
 """Bounded specs, markup isolation, and the artifact acceptance boundary."""
 
 import base64
-import copy
 import hashlib
 from html.parser import HTMLParser
 import json
@@ -14,7 +13,7 @@ from jsonschema import Draft202012Validator
 
 
 import sys
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/agent-framework-agent-with-local-tools-responses"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "agent"))
 from learning_coach.adapters import visuals
 from learning_coach.db import artifacts
 

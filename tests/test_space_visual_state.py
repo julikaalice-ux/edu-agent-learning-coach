@@ -13,7 +13,7 @@ import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src/agent-framework-agent-with-local-tools-responses"))
+sys.path.insert(0, str(ROOT / "agent"))
 
 
 class PipelineStub:

@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 
 
-SOURCE = Path(__file__).resolve().parents[1] / "src/agent-framework-agent-with-local-tools-responses"
+SOURCE = Path(__file__).resolve().parents[1] / "agent"
 sys.path.insert(0, str(SOURCE))
 
 from learning_coach.domain.contracts import validate

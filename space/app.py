@@ -36,9 +36,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 def _find_root() -> Path:
-    """Local dev runs from space/ next to src/; deployed builds are flat."""
+    """Local dev runs from space/ next to agent/; deployed builds are flat."""
     here = Path(__file__).resolve().parent
-    nested = here.parents[0] / "src/agent-framework-agent-with-local-tools-responses"
+    nested = here.parents[0] / "agent"
     if nested.is_dir():
         return nested
     return here
@@ -60,6 +60,7 @@ except ImportError:
 from learning_coach.api.host import learner_text
 from learning_coach.service.pipeline import LearningPipeline
 from learning_coach.server import create_pipeline
+from learning_coach.domain.mastery import LEARNING, SOLID
 
 # Interactive visuals and question pictures both arrive as artifact links.
 ARTIFACT_LINK = re.compile(r"\n?\[(?:打开互动图|看题目配图)\]\(http://localhost:8088/artifacts/([A-Za-z0-9_-]+)\)")
@@ -360,7 +361,7 @@ def mastery_words(item) -> str:
     level, attempts = item.get("mastery_level"), item.get("attempts") or 0
     if level is None or not attempts:
         return "还没做过题"
-    status = "还不熟" if level < 0.3 else "正在巩固" if level < 0.7 else "掌握得不错"
+    status = "还不熟" if level < LEARNING else "正在巩固" if level < SOLID else "掌握得不错"
     return f"{status}（做过 {attempts} 题，对 {item.get('correct_count') or 0} 题）"
 
 

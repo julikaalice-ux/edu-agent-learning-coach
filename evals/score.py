@@ -22,7 +22,7 @@ Checks named in a case's expect.auto list:
   same_as_first              identical to the first collected response of the case
 
 Usage (from repository root, project env per docs/acceptance-v1.5.md):
-  uv run --project src/agent-framework-agent-with-local-tools-responses \
+  uv run --project agent \
       --locked --group dev python evals/score.py \
       --responses runs/v1.jsonl [--failures failures.jsonl]
 """
@@ -40,7 +40,7 @@ from jsonschema import Draft202012Validator
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CASES = Path(__file__).with_name("cases.jsonl")
-DEFAULT_SCHEMA = ROOT / "src/agent-framework-agent-with-local-tools-responses/response.schema.json"
+DEFAULT_SCHEMA = ROOT / "agent/response.schema.json"
 
 OPTION_LINE = re.compile(r"^[A-D][.、．]\s", re.MULTILINE)
 URL = re.compile(r"https?://[^\s)<>]+")

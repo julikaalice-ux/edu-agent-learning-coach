@@ -5,7 +5,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Built by scripts/build_space.py: app.py plus learning_coach/, agents/ and prompts.
+# Built by scripts/build_space.py: app.py plus learning_coach/, prompts/ and the response schema.
 COPY . .
 
 # Hugging Face routes the Space to app_port 7860 (see README.md front matter).

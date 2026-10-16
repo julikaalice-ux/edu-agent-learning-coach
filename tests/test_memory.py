@@ -10,7 +10,7 @@ import unittest
 
 
 import sys
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/agent-framework-agent-with-local-tools-responses"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "agent"))
 from learning_coach.db import memory
 
 

@@ -5,9 +5,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
-SOURCE = Path(__file__).resolve().parents[1] / "src/agent-framework-agent-with-local-tools-responses"
+SOURCE = Path(__file__).resolve().parents[1] / "agent"
 sys.path.insert(0, str(SOURCE))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 

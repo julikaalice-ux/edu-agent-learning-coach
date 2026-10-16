@@ -26,7 +26,7 @@ services:
         - Azure AI AgentServer
         - Responses Protocol
         - Streaming
-    project: src/agent-framework-agent-with-local-tools-responses
+    project: agent
     language: python
     codeConfiguration:
       runtime: python_3_13
@@ -41,6 +41,8 @@ services:
         version: 2.0.0
     env:
       AZURE_AI_MODEL_DEPLOYMENT_NAME: ${AZURE_AI_MODEL_DEPLOYMENT_NAME}
+      # The researcher searches with a stronger model; other roles use the default.
+      LEARNING_COACH_MODEL_RESEARCHER: gpt-6-luna
       # The hosted container's app directory is read-only; keep session data
       # (learning notes, visual artifacts, artifact index) on the writable tmpfs.
       LEARNING_COACH_DATA_DIR: /tmp/.learning-coach

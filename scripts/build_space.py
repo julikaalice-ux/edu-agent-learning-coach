@@ -4,7 +4,7 @@ The Space runs space/app.py next to the learning_coach package, flat:
 
     build/space/
         app.py  Dockerfile  requirements.txt  README.md
-        learning_coach/  agents/  instructions.md  response.schema.json
+        learning_coach/  prompts/  response.schema.json
 
 Usage:  python scripts/build_space.py [output-folder]
 Then upload the folder to the Space (see space/README.md). Nothing secret is
@@ -16,10 +16,10 @@ import shutil
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src/agent-framework-agent-with-local-tools-responses"
+SRC = ROOT / "agent"
 SPACE_FILES = ("app.py", "Dockerfile", "requirements.txt", "README.md")
-RUNTIME_FILES = ("instructions.md", "response.schema.json")
-RUNTIME_DIRS = ("learning_coach", "agents")
+RUNTIME_FILES = ("response.schema.json",)
+RUNTIME_DIRS = ("learning_coach", "prompts")
 SKIP = shutil.ignore_patterns("__pycache__", "*.pyc", ".env", "*.env", ".learning-coach", ".DS_Store")
 
 
