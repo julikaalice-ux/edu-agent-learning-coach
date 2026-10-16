@@ -97,9 +97,10 @@ class FoundryMemoryStore:
                                            content=fact, kind=MEMORY_KIND_USER_PROFILE)
                 mirrored += 1
             except Exception as error:
-                # Never log fact content; the exception type tells ops which
-                # layer failed (e.g. HttpResponseError = rejected by the service).
-                LOG.warning("foundry_memory_mirror_failed error=%s", type(error).__name__)
+                # Never log fact content; type + status tell ops which layer
+                # failed (e.g. HttpResponseError 403 = rejected by the service).
+                LOG.warning("foundry_memory_mirror_failed error=%s status=%s",
+                            type(error).__name__, getattr(error, "status_code", ""))
         if mirrored:
             # The scope key is the platform-assigned memory key; logged for
             # operations (project-private logs), never the fact content.
@@ -117,13 +118,29 @@ class FoundryMemoryStore:
             result = self._client.search_memories(
                 self._store, scope=session_id, items=None,
                 options=MemorySearchOptions(max_memories=self._search_max))
-            memory["semantic"] = [
+            items = [
                 {"id": item.memory_item.memory_id,
                  "content": (item.memory_item.content or "")[:SEMANTIC_CONTENT_MAX]}
                 for item in getattr(result, "memories", []) or []
             ]
-        except Exception:
-            LOG.warning("foundry_memory_search_unavailable")
+        except Exception as error:
+            LOG.warning("foundry_memory_search_unavailable error=%s status=%s",
+                        type(error).__name__, getattr(error, "status_code", ""))
+            items = []
+        if not items:
+            # Preview quirk: items written by app identities may lack
+            # embeddings and never come back from semantic search. Fall back
+            # to the plain item list so cross-session recall still works.
+            try:
+                items = [
+                    {"id": item.memory_id, "content": (item.content or "")[:SEMANTIC_CONTENT_MAX]}
+                    for item in self._client.list_memories(self._store, scope=session_id,
+                                                           limit=self._search_max)
+                ]
+            except Exception as error:
+                LOG.warning("foundry_memory_list_unavailable error=%s status=%s",
+                            type(error).__name__, getattr(error, "status_code", ""))
+        memory["semantic"] = items
         return memory
 
     def clear(self, session_id: str) -> None:

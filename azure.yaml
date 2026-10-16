@@ -55,7 +55,7 @@ services:
       # (learning notes, visual artifacts, artifact index) on the writable tmpfs.
       LEARNING_COACH_DATA_DIR: /tmp/.learning-coach
       # Foundry Memory semantic layer (unset = disabled, pure SQLite).
-      LEARNING_COACH_MEMORY_STORE: edu-agent-learning-coach
+      LEARNING_COACH_MEMORY_STORE: edu-agent-learning-memory
       LEARNING_COACH_MEMORY_SEARCH_MAX: '6'
       LEARNING_COACH_MEMORY_TIMEOUT: '5'
     container:

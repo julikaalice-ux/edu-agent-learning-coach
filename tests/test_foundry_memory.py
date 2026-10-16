@@ -27,12 +27,14 @@ def profile_notes():
 class FakeFoundryClient:
     """Records calls and returns canned search results. No network."""
 
-    def __init__(self, memories=()):
+    def __init__(self, memories=(), listed=()):
         self.created = []      # (store, scope, content, kind)
         self.searched = []     # (store, scope, options)
+        self.listed = []       # (store, scope, limit)
         self.deleted = []      # (store, scope)
         self.closed = False
-        self.memories = list(memories)  # (memory_id, content)
+        self.memories = list(memories)  # (memory_id, content) for search
+        self.items = list(listed)       # (memory_id, content) for list fallback
 
     def create_memory(self, name, *, scope, content, kind):
         self.created.append((name, scope, content, kind))
@@ -42,6 +44,11 @@ class FakeFoundryClient:
         return SimpleNamespace(memories=[
             SimpleNamespace(memory_item=SimpleNamespace(memory_id=item_id, content=content))
             for item_id, content in self.memories])
+
+    def list_memories(self, name, *, scope, limit=None, **kwargs):
+        self.listed.append((name, scope, limit))
+        return [SimpleNamespace(memory_id=item_id, content=content)
+                for item_id, content in self.items]
 
     def delete_scope(self, name, scope):
         self.deleted.append((name, scope))
@@ -148,6 +155,21 @@ class FoundryMemoryStoreTests(unittest.TestCase):
         snapshot = store.snapshot("s")
         self.assertEqual(snapshot["semantic"], [])
         self.assertIn("schema_version", snapshot)
+
+    def test_snapshot_falls_back_to_listing_when_search_is_empty(self):
+        self.enable()
+        self.client.items = [("id1", "档案: 学习阶段=高中")]
+        snapshot = self.store.snapshot("s")
+        self.assertEqual(snapshot["semantic"], [{"id": "id1", "content": "档案: 学习阶段=高中"}])
+        self.assertEqual(self.client.listed, [("m", "s", 6)])
+
+    def test_snapshot_prefers_search_results_over_listing(self):
+        self.enable()
+        self.client.memories = [("sid", "档案: 语义命中")]
+        self.client.items = [("lid", "档案: 列表兜底")]
+        snapshot = self.store.snapshot("s")
+        self.assertEqual(snapshot["semantic"], [{"id": "sid", "content": "档案: 语义命中"}])
+        self.assertEqual(self.client.listed, [])
 
     def test_semantic_content_is_capped(self):
         self.enable()

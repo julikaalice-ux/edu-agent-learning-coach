@@ -99,8 +99,9 @@ def advance(record: dict, answer: str) -> dict:
 
 
 def closing_message(record: dict) -> str:
+    # Onboarding always ends with an explicit invitation to start asking.
     if record.get("records") == "on":
-        return "好，学习进度会保存下来，下次可以接着学。想关掉随时说“关闭记录”。"
+        return "好，学习进度会保存下来，下次可以接着学。想关掉随时说“关闭记录”。现在可以问问题了。"
     if record.get("guardian_absent"):
-        return "好，这次先不保存学习记录，照常学习。以后家长在身边时，可以说“开启记录”。"
-    return "好，这次不保存学习记录。想保存时随时说“开启记录”。"
+        return "好，这次先不保存学习记录，照常学习。以后家长在身边时，可以说“开启记录”。现在可以问问题了。"
+    return "好，这次不保存学习记录。想保存时随时说“开启记录”。现在可以问问题了。"

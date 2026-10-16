@@ -72,6 +72,7 @@ class OnboardingPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("哪个阶段", outputs[1]["next_step"]["text"])
         self.assertIn("要保存你的学习进度吗", outputs[2]["next_step"]["text"])
         self.assertIn("今天想弄懂点什么", outputs[3]["next_step"]["text"])
+        self.assertIn("现在可以问问题了", outputs[3]["message"])
         self.assertEqual(runner.calls, [])
         self.assertTrue(self.store.is_enabled("s"))
         self.assertEqual(self.store.snapshot("s")["profile"]["learning_stage"]["value"], "高中")
@@ -88,6 +89,7 @@ class OnboardingPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(decide[0]["first_meeting"], False)
         self.assertEqual(decide[0]["state"]["onboarding"]["stage"], "大学")
         self.assertTrue(outputs[3]["message"].startswith("好，这次不保存学习记录"))
+        self.assertIn("现在可以问问题了", outputs[3]["message"])
         self.assertFalse(self.store.is_enabled("s"))
 
     async def test_child_alone_cannot_turn_records_on_until_a_guardian_confirms(self):
