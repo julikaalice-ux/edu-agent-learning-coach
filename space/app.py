@@ -61,7 +61,8 @@ from learning_coach.api.host import learner_text
 from learning_coach.service.pipeline import LearningPipeline
 from learning_coach.server import create_pipeline
 
-ARTIFACT_LINK = re.compile(r"\n?\[打开互动图\]\(http://localhost:8088/artifacts/([A-Za-z0-9_-]+)\)")
+# Interactive visuals and question pictures both arrive as artifact links.
+ARTIFACT_LINK = re.compile(r"\n?\[(?:打开互动图|看题目配图)\]\(http://localhost:8088/artifacts/([A-Za-z0-9_-]+)\)")
 DATA_IMAGE = re.compile(r'data:image/[a-z]+;base64,[A-Za-z0-9+/=]+')
 CHINA_TIME = timezone(timedelta(hours=8))
 
@@ -209,19 +210,19 @@ async def respond(user_text, session, device=None, allowed=False):
         # Keep model context separate from presentation-only markup and image bytes.
         history_text = ARTIFACT_LINK.sub("", text).rstrip()
         panel = session["panel"]
-        match = ARTIFACT_LINK.search(text)
-        if match:
-            token = match.group(1)
+        tokens = ARTIFACT_LINK.findall(text)
+        text = ARTIFACT_LINK.sub("", text).rstrip()
+        for token in tokens:
             document = PIPELINE.artifacts.get(token)
-            text = ARTIFACT_LINK.sub("", text).rstrip()
-            if document:
-                image = DATA_IMAGE.search(document)
-                if image:
-                    # Generated illustration: show the picture inline in chat.
-                    text = f"{text}\n\n![配图]({image.group(0)})"
-                else:
-                    # Interactive visual: embedded sandboxed frame below chat.
-                    panel = iframe_for(document)
+            if not document:
+                continue
+            image = DATA_IMAGE.search(document)
+            if image:
+                # Generated picture (illustration or question picture): inline in chat.
+                text = f"{text}\n\n![配图]({image.group(0)})"
+            else:
+                # Interactive visual: embedded sandboxed frame below chat.
+                panel = iframe_for(document)
         session["history"].append({"role": "assistant", "text": history_text})
         session["options"] = options_from(output)
         session["panel"] = panel
@@ -351,8 +352,7 @@ PROFILE_NAMES = {"learning_stage": "学段", "age_band": "年龄段", "learning_
                  "prior_knowledge": "已有基础", "preferred_language": "语言", "available_time": "可用时间",
                  "accessibility_needs": "需要的帮助", "companion_role": "陪伴者", "preferred_method": "喜欢的讲法",
                  "learning_context": "学习场景"}
-ERROR_NAMES = {"conceptual": "概念没弄清", "procedural": "步骤方法出错", "careless": "粗心",
-               "negative_transfer": "被旧知识带偏", "unclassified": "原因还没确认"}
+from learning_coach.domain.note_contracts import ERROR_LABELS as ERROR_NAMES  # noqa: E402
 NO_NOTES = "还没有整理过笔记。做完一组题后选“整理”，或者随时在对话里说“整理笔记”。"
 
 
@@ -382,7 +382,7 @@ def render_notes(notes) -> str:
                                          for item in ordered]
     if errors:
         lines += ["", "**容易错的地方**"] + [
-            f"- {labels.get(item.get('concept_id'), item.get('concept_id'))}：{ERROR_NAMES.get(item.get('category'), '原因还没确认')}"
+            f"- {labels.get(item.get('concept_id'), item.get('concept_id'))}：{ERROR_NAMES.get(item.get('category'), '原因待确认')}"
             for item in errors[-10:]]
     if review:
         lines += ["", "**复习安排**"] + [f"- {item.get('topic')}" + (f"（{item['deadline']}）" if item.get("deadline") else "")

@@ -114,7 +114,7 @@ class DirectRoutingTests(unittest.IsolatedAsyncioTestCase):
                 output, state = await self.pipeline(runner, research).run(messages(text), session_id=selected)
                 self.assert_wire(output)
                 self.assertEqual(len(research.calls), int(selected == "research"))
-                self.assertEqual(len(runner.calls_for("coordinator", "quiz")), int(selected == "quiz"))
+                self.assertEqual(len(runner.calls_for("quizzer")), int(selected == "quiz"))
                 # Learning evidence is marked for the notes compiled after a quiz set.
                 self.assertEqual(runner.calls_for("notes"), [])
                 self.assertEqual(len(runner.calls_for("visualizer")), int(selected == "visual"))
@@ -196,7 +196,7 @@ class DirectRoutingTests(unittest.IsolatedAsyncioTestCase):
                 self.assert_wire(output)
                 self.assertEqual(state["last_execution"]["tools"][selected], "skipped_policy")
                 self.assertEqual(runner.calls_for("notes"), [])
-                self.assertEqual(runner.calls_for("coordinator", "quiz"), [])
+                self.assertEqual(runner.calls_for("quizzer"), [])
 
     async def test_tool_failure_returns_status_and_finishes_without_restarting_roles(self):
         self.store.set_enabled("s", True)
@@ -314,7 +314,7 @@ class DirectRoutingTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(after["quiz"]["correct"], correct)
                 self.assertEqual(after["quiz"]["asked"], 1)
                 self.assertEqual(after["quiz"]["finished"], total == 1)
-                self.assertEqual(len(runner.calls_for("coordinator", "quiz")), 1)
+                self.assertEqual(len(runner.calls_for("quizzer")), 1)
                 if total == 1:
                     # The set is done and records are on: offer to compile notes.
                     self.assertIn("整理成笔记", output["next_step"]["text"])
@@ -459,7 +459,7 @@ class DirectRoutingTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNone(after["active_task"])
                 self.assertEqual(after["pending_tasks"], [])
                 self.assertNotIn("routing_repaired", after["last_execution"])
-                self.assertEqual(len(runner.calls_for("coordinator", "quiz")), 1)
+                self.assertEqual(len(runner.calls_for("quizzer")), 1)
                 self.assertEqual(runner.calls_for("notes"), [])
                 self.assertEqual(runner.calls_for("visualizer"), [])
         self.assertEqual(self.research.calls, [])
@@ -585,7 +585,7 @@ class DirectRoutingTests(unittest.IsolatedAsyncioTestCase):
                 self.assert_wire(output)
                 self.assertEqual(output["intent"]["primary"], "G")
                 self.assertEqual(after, {})
-                self.assertEqual(invalid.calls_for("coordinator", "quiz"), [])
+                self.assertEqual(invalid.calls_for("quizzer"), [])
 
     async def test_visual_runtime_failure_is_unavailable_without_secret_leak(self):
         text = "画图解释分数"
@@ -654,7 +654,7 @@ class DirectRoutingTests(unittest.IsolatedAsyncioTestCase):
 
         class OrderRunner(FakeRunner):
             async def __call__(self, role, payload, schema):
-                if role == "visualizer" or (role == "coordinator" and payload.get("phase") == "quiz"):
+                if role == "visualizer" or role == "quizzer":
                     if not research_finished.is_set():
                         raise AssertionError("unstated research dependency must wait for research")
                     # Question and visual do not depend on each other, so they overlap.
@@ -676,12 +676,12 @@ class DirectRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state["last_execution"]["tools"]["notes"], "deferred")
         self.assertEqual(state["last_execution"]["tools"]["visual"], "published")
         self.assertEqual(state["last_execution"]["tools"]["quiz"], "question_ready")
-        self.assertIn("research", runner.calls_for("coordinator", "quiz")[0])
+        self.assertIn("research", runner.calls_for("quizzer")[0])
         self.assertEqual(runner.calls_for("notes"), [])
         # Every sub-agent gets the same brief learner card.
         self.assertEqual(research.learners[0]["participant"], "learner")
         self.assertIn("learner", runner.calls_for("visualizer")[0])
-        self.assertIn("learner", runner.calls_for("coordinator", "quiz")[0])
+        self.assertIn("learner", runner.calls_for("quizzer")[0])
 
     async def test_visual_unrelated_to_research_does_not_wait_or_receive_it(self):
         text = "查一下最新的火星探测进展，顺便画一下太阳系结构"
@@ -711,8 +711,8 @@ class DirectRoutingTests(unittest.IsolatedAsyncioTestCase):
         _, state = await self.pipeline(runner).run(messages(text), session_id="v")
         self.assertTrue(state["last_execution"]["order"]["quiz_waits_visual"])
         roles = [(call["role"], call["payload"].get("phase")) for call in runner.calls]
-        self.assertLess(roles.index(("verifier", "visual_review")), roles.index(("coordinator", "quiz")))
-        self.assertEqual(runner.calls_for("coordinator", "quiz")[0]["visual_context"]["status"], "ready")
+        self.assertLess(roles.index(("verifier", "visual_review")), roles.index(("quizzer", "quiz")))
+        self.assertEqual(runner.calls_for("quizzer")[0]["visual_context"]["status"], "ready")
 
     async def test_cancellation_stops_both_parallel_children_without_commit(self):
         self.store.set_enabled("s", True)

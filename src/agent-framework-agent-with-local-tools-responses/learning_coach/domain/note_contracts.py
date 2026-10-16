@@ -3,7 +3,14 @@
 from typing import Any
 
 SCHEMA_VERSION = "1.0"
-ERROR_CATEGORIES = ("conceptual", "procedural", "careless", "negative_transfer", "unclassified")
+# The four error types of the product design, plus "not confirmed yet".
+ERROR_CATEGORIES = ("conceptual", "step_skipping", "misreading", "transfer_failure", "unclassified")
+ERROR_TYPES = ERROR_CATEGORIES[:4]
+ERROR_LABELS = {"conceptual": "概念性误解", "step_skipping": "步骤性跳跃", "misreading": "审题偏差",
+                "transfer_failure": "迁移失败", "unclassified": "原因待确认"}
+# Earlier stored names and the type each now counts as.
+LEGACY_ERROR_CATEGORIES = {"procedural": "step_skipping", "careless": "misreading",
+                           "negative_transfer": "conceptual"}
 PROFILE_KEYS = (
     "learning_stage", "age_band", "learning_goal", "prior_knowledge",
     "preferred_language", "available_time", "accessibility_needs",

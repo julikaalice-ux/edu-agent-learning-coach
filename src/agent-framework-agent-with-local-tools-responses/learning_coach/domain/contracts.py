@@ -6,6 +6,7 @@ import math
 from jsonschema import Draft202012Validator
 
 from learning_coach.domain.context import CONTEXT_UPDATE_SCHEMA
+from learning_coach.domain.note_contracts import ERROR_TYPES
 
 
 class ContractError(ValueError):
@@ -19,6 +20,7 @@ def object_schema(properties):
 
 TEXT = {"type": "string", "minLength": 1, "maxLength": 2000, "pattern": r"\S"}
 OPTIONAL_TEXT = {"anyOf": [TEXT, {"type": "null"}]}
+DIFFICULTY = {"enum": ["简单", "中等", "困难"]}
 OPTIONAL_BOOL = {"anyOf": [{"type": "boolean"}, {"type": "null"}]}
 DEPENDENCY_FIELDS = ("visual_uses_research", "quiz_uses_research", "quiz_uses_visual")
 INTENT_SCHEMA = object_schema({
@@ -53,7 +55,7 @@ PLAN_SCHEMA = object_schema({
     "quiz_action": {"enum": ["none", "start", "continue", "stop"]},
     "quiz_topic": OPTIONAL_TEXT,
     "quiz_total": {"type": "integer", "minimum": 1, "maximum": 20},
-    "difficulty": {"enum": ["简单", "中等", "困难"]},
+    "difficulty": DIFFICULTY,
     "participant": {"enum": ["learner", "companion_report", "unknown"]},
     "tool_reasons": TOOL_REASONS_SCHEMA,
     # Content dependencies only; the program derives the execution order.
@@ -64,11 +66,16 @@ PLAN_SCHEMA = object_schema({
 })
 
 
+# After explaining a block, the coordinator may ask for one graded check question
+# on it; the quiz writer writes it from the reply text and the program grades it.
+CHECK_SCHEMA = {"anyOf": [{"type": "null"}, object_schema({"topic": TEXT, "difficulty": DIFFICULTY})]}
+
+
 def decision_schema(response_schema):
     """Choose one complete public answer or one bounded internal tool plan.
 
     Either way the coordinator also returns its updated conversation notes
-    ("context_notes"; null = no change).
+    ("context_notes"; null = no change) and an optional check question.
     """
     return {"anyOf": [
         object_schema({
@@ -76,11 +83,13 @@ def decision_schema(response_schema):
             "response": response_schema,
             "task": TASK_SCHEMA,
             "context_notes": CONTEXT_UPDATE_SCHEMA,
+            "check_question": CHECK_SCHEMA,
         }),
         object_schema({
             "mode": {"type": "string", "const": "tools"},
             "plan": PLAN_SCHEMA,
             "context_notes": CONTEXT_UPDATE_SCHEMA,
+            "check_question": CHECK_SCHEMA,
         }),
     ]}
 
@@ -91,7 +100,30 @@ QUIZ_SCHEMA = object_schema({
     "choices": {"type": "array", "items": TEXT, "minItems": 2, "maxItems": 4, "uniqueItems": True},
     "answer_index": {"type": "integer", "minimum": 0, "maximum": 3},
     "explanation": TEXT,
+    # One entry per wrong choice: which misconception choosing it suggests.
+    "diagnoses": {"type": "array", "minItems": 1, "maxItems": 3, "items": object_schema({
+        "choice_index": {"type": "integer", "minimum": 0, "maximum": 3},
+        "error_type": {"enum": list(ERROR_TYPES)},
+        "misconception": {"type": "string", "minLength": 1, "maxLength": 200, "pattern": r"\S"},
+    })},
+    # An AI picture that the question is asked about, or null.
+    "image": {"anyOf": [{"type": "null"}, object_schema({
+        "prompt": {"type": "string", "minLength": 1, "maxLength": 800, "pattern": r"\S"},
+        "alt": {"type": "string", "minLength": 1, "maxLength": 200, "pattern": r"\S"},
+    })]},
 })
+
+
+def check_question(question):
+    """Program checks the model cannot be trusted with; returns a fixed problem code or None."""
+    count = len(question["choices"])
+    if question["answer_index"] >= count:
+        return "answer_index_out_of_range"
+    marked = [item["choice_index"] for item in question["diagnoses"]]
+    wrong = [index for index in range(count) if index != question["answer_index"]]
+    if sorted(marked) != wrong:
+        return "every_wrong_choice_needs_one_diagnosis"
+    return None
 
 
 def _pairs(items):
@@ -136,14 +168,18 @@ def public_quiz(quiz):
     return {key: quiz[key] for key in ("concept_id", "question", "choices")}
 
 
-def grade_choice(text, quiz):
-    """Only unambiguous choices get programmatic grading, never guessed prose."""
+def selected_choice(text, quiz):
+    """Index of an unambiguous choice (a letter or the exact choice text), else None."""
     value = text.strip()
     letters = "ABCD"[:len(quiz["choices"])]
     if value.upper() in letters and len(value) == 1:
-        selected = letters.index(value.upper())
-    elif value in quiz["choices"]:
-        selected = quiz["choices"].index(value)
-    else:
-        return None
-    return selected == quiz["answer_index"]
+        return letters.index(value.upper())
+    if value in quiz["choices"]:
+        return quiz["choices"].index(value)
+    return None
+
+
+def grade_choice(text, quiz):
+    """Only unambiguous choices get programmatic grading, never guessed prose."""
+    selected = selected_choice(text, quiz)
+    return None if selected is None else selected == quiz["answer_index"]
