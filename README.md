@@ -45,6 +45,9 @@ cp agent/.env.example agent/.env   # 填 FOUNDRY_PROJECT_ENDPOINT 和 AZURE_AI_M
 | `LEARNING_COACH_IMAGE_BACKEND` | | 配图后端，`flux`（默认，部署名 `flux-2-pro`）或 `pollinations` |
 | `TAVILY_API_KEY` | | 检索用 Tavily；不填时用 Wikipedia |
 | `LEARNING_COACH_DATA_DIR` | | 学习记录和互动图的存放目录 |
+| `LEARNING_COACH_MEMORY_STORE` | | Foundry Memory 语义层；不设 = 纯 SQLite。store 需先用 [`scripts/setup-memory.sh`](scripts/setup-memory.sh) 创建，失败自动降级 |
+| `LEARNING_COACH_MEMORY_SEARCH_MAX` | | 语义检索条数，默认 6 |
+| `LEARNING_COACH_MEMORY_TIMEOUT` | | 语义层调用超时秒数，默认 2 |
 | `LEARNING_COACH_DEMO_MODE` | | 设为 `1` 时跳过首次问答，学段取 `LEARNING_COACH_DEMO_STAGE` |
 | `DEMO_ACCESS_KEY` | | 演示页邀请码，访问链接需带 `?key=` |
 | `DEMO_MAX_TURNS_PER_DAY` / `DEMO_MAX_IMAGES_PER_DAY` | | 演示页每日上限，默认 150 / 20 |
@@ -152,7 +155,7 @@ azd ai agent invoke "请围绕一元一次方程考考我，一次只出一道�
 
 - 没有流式输出，每轮返回一段完整文本。
 - Foundry 托管入口里的互动图链接打不开：链接指向 `localhost:8088`，网关不转发自定义路由，需要改用 blob 存储。演示网页里互动图正常显示。
-- 跨对话的学习记录只在演示网页里生效，托管入口只按会话保存。
+- 确定性学习记录以 SQLite 为准；托管入口的跨会话连续性由 Foundry Memory 语义层提供（启用 `LEARNING_COACH_MEMORY_STORE` 后按平台用户身份分 scope）。
 - 意图分类准确率和教学效果还没有量化评测。
 
 完整的缺口和计划见 [PRD 第六部分](docs/product/Edu-agent-PRD-v3.md)。

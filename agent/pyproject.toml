@@ -6,6 +6,7 @@ requires-python = ">=3.13"
 dependencies = [
     "agent-framework-foundry",
     "agent-framework-foundry-hosting>=1.0.0b260813",
+    "azure-ai-projects>=2.3.0",
     "debugpy",
     "jsonschema==4.26.0",
     "tiktoken>=0.9,<1",

@@ -17,6 +17,14 @@ services:
         sku:
           name: GlobalStandard
           capacity: 10
+      - name: text-embedding-3-small
+        model:
+          format: OpenAI
+          name: text-embedding-3-small
+          version: '1'
+        sku:
+          name: GlobalStandard
+          capacity: 5
   agent-framework-agent-with-local-tools-responses:
     host: azure.ai.agent
     metadata:
@@ -46,6 +54,10 @@ services:
       # The hosted container's app directory is read-only; keep session data
       # (learning notes, visual artifacts, artifact index) on the writable tmpfs.
       LEARNING_COACH_DATA_DIR: /tmp/.learning-coach
+      # Foundry Memory semantic layer (unset = disabled, pure SQLite).
+      LEARNING_COACH_MEMORY_STORE: edu-agent-learning-coach
+      LEARNING_COACH_MEMORY_SEARCH_MAX: '6'
+      LEARNING_COACH_MEMORY_TIMEOUT: '2'
     container:
       resources:
         cpu: '0.5'

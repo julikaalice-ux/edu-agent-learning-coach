@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -257,6 +258,49 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request["evidence_turns"], [1])
         self.assertIn("learning_stage", self.store.snapshot("s")["profile"])
         self.assertEqual((state["context"]["notes_upto_turn"], state["context"]["evidence_turns"]), (2, []))
+
+    async def test_foundry_mirror_writes_facts_and_survives_search_failure(self):
+        from learning_coach.adapters.foundry_memory import FoundryMemoryStore
+
+        class FakeFoundryClient:
+            def __init__(self):
+                self.created = []
+
+            def create_memory(self, name, *, scope, content, kind):
+                self.created.append((name, scope, content, kind))
+
+            def search_memories(self, name, *, scope, items=None, options=None):
+                return SimpleNamespace(memories=[])
+
+            def delete_scope(self, name, scope):
+                pass
+
+            def close(self):
+                pass
+
+        class OfflineFoundryClient(FakeFoundryClient):
+            def search_memories(self, *args, **kwargs):
+                raise TimeoutError("memory store unreachable")
+
+        client = FakeFoundryClient()
+        wrapped = FoundryMemoryStore(self.store, client, "m")
+        wrapped.set_enabled("s", True)
+        runner = FakeRunner([plan(observe_learning=True)], note_results=[notes(True)])
+        pipeline = LearningPipeline(runner, self.research, wrapped, self.artifacts, RESPONSE_SCHEMA)
+        _, state = await pipeline.run(messages("我在工作，想学习分数"), session_id="s", turn_id="1")
+        output, state = await pipeline.run(messages("整理笔记", *exchange("我在工作，想学习分数")),
+                                           session_id="s", state=state, turn_id="2")
+        self.assert_protocol(output)
+        # The validated notes were mirrored under the memory key (the session here).
+        self.assertEqual(client.created, [("m", "s", "档案: 学习阶段=职场（自述）", "user_profile")])
+        # A search outage must not break the next turn's reply or its memory view.
+        offline = FoundryMemoryStore(self.store, OfflineFoundryClient(), "m")
+        later = FakeRunner([plan()])
+        offline_pipeline = LearningPipeline(later, self.research, offline, self.artifacts, RESPONSE_SCHEMA)
+        result, _ = await offline_pipeline.run(messages("接着讲讲", *exchange("我在工作，想学习分数")),
+                                               session_id="s", state=state, turn_id="3")
+        self.assert_protocol(result)
+        self.assertEqual(later.calls_for("coordinator", "decide")[0]["memory"]["semantic"], [])
 
     async def test_emotion_boundary_and_unclear_intents_never_run_learning_workers(self):
         self.store.set_enabled("s", True)

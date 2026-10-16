@@ -115,8 +115,25 @@ class LearnerCardAndRecordsTests(unittest.TestCase):
         self.assertEqual(len(view["concepts"]), 8)
         self.assertNotIn("evidence_quote", view["concepts"][0])
         self.assertEqual(view["profile"]["learning_stage"], {"value": "初中", "origin": "self_report"})
-        self.assertEqual(view["not_shown"], {"concepts": 6, "error_records": 4, "review_plan": 0})
+        self.assertEqual(view["semantic"], [])
+        self.assertEqual(view["not_shown"],
+                         {"semantic": 0, "concepts": 6, "error_records": 4, "review_plan": 0})
         self.assertLessEqual(ctx.count_tokens(view), 1500)
+
+    def test_memory_slice_folds_semantic_items_and_drops_them_first_on_budget(self):
+        semantic = [{"id": f"s{i}", "content": f"语义记忆{i}"} for i in range(8)]
+        memory = {"profile": {}, "semantic": semantic, "concepts": [], "error_records": [], "review_plan": []}
+        view = ctx.memory_slice(memory, "分数", 1500)
+        self.assertEqual([item["id"] for item in view["semantic"]], [f"s{i}" for i in range(5)])
+        self.assertEqual(view["not_shown"]["semantic"], 3)
+        # Content is capped defensively.
+        long_memory = {"profile": {}, "semantic": [{"id": "long", "content": "长" * 500}],
+                       "concepts": [], "error_records": [], "review_plan": []}
+        self.assertEqual(ctx.memory_slice(long_memory, "分数", 1500)["semantic"][0]["content"], "长" * 300)
+        # Semantic items are the first thing trimmed when over budget.
+        tight = ctx.memory_slice(memory, "分数", 1)
+        self.assertEqual(tight["semantic"], [])
+        self.assertEqual(tight["not_shown"]["semantic"], 8)
 
     def test_research_digest_drops_page_excerpts(self):
         research = {"overall": "verified", "warnings": [],

@@ -5,6 +5,19 @@ import re
 
 from learning_coach.domain.contracts import ContractError, DEPENDENCY_FIELDS, PLAN_SCHEMA, grade_choice, validate
 
+# Intent taxonomy from prompts/instructions.md: the coordinator classifies every
+# turn into exactly one primary intent. Letters never appear bare in logic.
+INTENT_CONCEPT = "A"        # 概念求助
+INTENT_PROBLEM = "B"        # 解题/实践求助
+INTENT_PRACTICE = "C"       # 主动练习/测验
+INTENT_PLANNING = "D"       # 学习/复习规划
+INTENT_CHAT = "E"           # 闲聊/情绪
+INTENT_OUT_OF_SCOPE = "F"   # 越界请求
+INTENT_UNCLEAR = "G"        # 需求无法确定
+EXPLAIN_INTENTS = INTENT_CONCEPT + INTENT_PROBLEM          # "AB": 讲解后可以插检查题
+QUIZ_INTENTS = INTENT_CONCEPT + INTENT_PROBLEM + INTENT_PRACTICE  # "ABC": 允许出题
+NON_TEACHING_INTENTS = INTENT_CHAT + INTENT_OUT_OF_SCOPE + INTENT_UNCLEAR  # "EFG": 不启用工具
+
 TOOLS = ("research", "quiz", "notes", "visual")
 QUIZ_SET_SIZE = 3  # questions in a practice set
 TERMINAL_STATUS = {
@@ -72,9 +85,9 @@ def select_tools(plan, learner_text, *, memory_enabled):
             raise ContractError("quiz_reason_action_mismatch")
 
     allowed = dict(requested)
-    if plan["intent"]["primary"] in "EFG" or plan["end_task"] or plan["pause_task"] or plan["quiz_action"] == "stop":
+    if plan["intent"]["primary"] in NON_TEACHING_INTENTS or plan["end_task"] or plan["pause_task"] or plan["quiz_action"] == "stop":
         allowed = dict.fromkeys(TOOLS, False)
-    if plan["intent"]["primary"] not in "ABC":
+    if plan["intent"]["primary"] not in QUIZ_INTENTS:
         allowed["quiz"] = False
     if not memory_enabled:
         allowed["notes"] = False
@@ -126,7 +139,7 @@ def recover_quiz_route(decision, state, learner_text, *, memory_enabled):
     if decision["mode"] == "tools":
         participant = conservative_participant(participant, decision["plan"]["participant"])
     repaired = {
-        "intent": {"primary": "C", "is_implicit": True},
+        "intent": {"primary": INTENT_PRACTICE, "is_implicit": True},
         "research_query": None, "visual_request": None, "observe_learning": memory_enabled,
         "task_summary": quiz["topic"], "pause_task": False, "end_task": False,
         "quiz_action": "continue", "quiz_topic": quiz["topic"], "quiz_total": quiz["total"],
@@ -150,7 +163,7 @@ def recover_practice_route(decision, state, learner_text):
     if decision["mode"] != "answer":
         return decision, False
     task = decision["task"]
-    if decision["response"]["intent"]["primary"] != "C" or task["end_task"] or task["pause_task"]:
+    if decision["response"]["intent"]["primary"] != INTENT_PRACTICE or task["end_task"] or task["pause_task"]:
         return decision, False
     quiz = state.get("quiz")
     continuing = bool(quiz and not quiz.get("finished"))
@@ -161,7 +174,7 @@ def recover_practice_route(decision, state, learner_text):
     reasons["quiz"] = {"code": "continue_practice" if continuing else "explicit_practice",
                        "evidence_quote": quote}
     plan = {
-        "intent": {"primary": "C", "is_implicit": False},
+        "intent": {"primary": INTENT_PRACTICE, "is_implicit": False},
         "research_query": None, "visual_request": None, "observe_learning": False,
         "task_summary": task["task_summary"], "pause_task": False, "end_task": False,
         "quiz_action": "continue" if continuing else "start",
@@ -239,7 +252,7 @@ def recover_explicit_visual_route(decision, learner_text):
     task = decision["task"]
     if task["end_task"] or task["pause_task"]:
         return decision, False
-    if decision["response"]["intent"]["primary"] in "EFG":
+    if decision["response"]["intent"]["primary"] in NON_TEACHING_INTENTS:
         return decision, False
     quote = _visual_quote(learner_text)
     if quote is None:
@@ -247,7 +260,7 @@ def recover_explicit_visual_route(decision, learner_text):
     reasons = dict.fromkeys(TOOLS)
     reasons["visual"] = {"code": "explicit_visual", "evidence_quote": quote}
     plan = {
-        "intent": {"primary": "A", "is_implicit": False},
+        "intent": {"primary": INTENT_CONCEPT, "is_implicit": False},
         "research_query": None, "visual_request": learner_text.strip(),
         "observe_learning": False,
         "task_summary": task["task_summary"], "pause_task": False, "end_task": False,
