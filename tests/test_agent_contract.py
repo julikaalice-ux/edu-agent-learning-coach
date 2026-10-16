@@ -10,7 +10,7 @@ from jsonschema import Draft202012Validator
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / 'src/agent-framework-agent-with-local-tools-responses'
+SOURCE = ROOT / 'agent'
 
 
 class ResponseContractTests(unittest.TestCase):
@@ -79,14 +79,15 @@ class ResponseContractTests(unittest.TestCase):
 
 class RuntimePromptTests(unittest.TestCase):
     def test_loads_prompt_relative_to_source(self):
-        tree = ast.parse((SOURCE / 'main.py').read_text())
-        namespace = {'Path': Path, '__file__': str(SOURCE / 'main.py')}
+        factory = SOURCE / 'learning_coach/server.py'
+        tree = ast.parse(factory.read_text())
+        namespace = {'Path': Path, '__file__': str(factory)}
         assignments = [node for node in tree.body if isinstance(node, ast.Assign)
                        and any(isinstance(target, ast.Name) and target.id in ('SRC_DIR', 'INSTRUCTIONS_PATH')
                                for target in node.targets)]
         exec(compile(ast.fix_missing_locations(ast.Module(body=assignments, type_ignores=[])),
                      '<prompt-path>', 'exec'), namespace)
-        self.assertEqual(namespace['INSTRUCTIONS_PATH'], SOURCE / 'instructions.md')
+        self.assertEqual(namespace['INSTRUCTIONS_PATH'], SOURCE / 'prompts/instructions.md')
         actual = namespace['INSTRUCTIONS_PATH'].read_text(encoding='utf-8')
         self.assertIn('# 根据画像选择教学方式', actual)
         self.assertIn('## 意图单一来源与复合需求', actual)

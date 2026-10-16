@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-SOURCE = Path(__file__).resolve().parents[1] / "src/agent-framework-agent-with-local-tools-responses"
+SOURCE = Path(__file__).resolve().parents[1] / "agent"
 sys.path.insert(0, str(SOURCE))
 from learning_coach.db.memory import LearningStore
 from learning_coach.service.ports import StorageError
@@ -89,8 +89,22 @@ assert "learning_coach.adapters.visuals" not in sys.modules
             self.assertIs(agents.call_args.args[0], client)
             pipeline.store.close()
 
+    def test_each_role_can_use_its_own_model(self):
+        from learning_coach.server import role_models_from_env
+        from learning_coach.adapters.runner import ROLES, create_agents
+        env = {"LEARNING_COACH_MODEL_COORDINATOR": "gpt-6-luna", "LEARNING_COACH_MODEL_VERIFIER": " "}
+        with patch.dict(os.environ, env):
+            models = role_models_from_env("gpt-5.4-mini")
+        self.assertEqual(models["coordinator"], "gpt-6-luna")
+        self.assertEqual({models[role] for role in ROLES if role != "coordinator"}, {"gpt-5.4-mini"})
+        default, strong = object(), object()
+        with patch("learning_coach.adapters.runner.Agent", side_effect=lambda **kw: kw["client"]):
+            agents = create_agents(default, SOURCE / "prompts/instructions.md", role_clients={"coordinator": strong})
+        self.assertIs(agents["coordinator"], strong)
+        self.assertTrue(all(agents[role] is default for role in ROLES if role != "coordinator"))
+
     def test_both_entrypoints_use_shared_factory(self):
-        root = SOURCE.parents[1]
+        root = SOURCE.parent
         for path in (SOURCE / "main.py", root / "space/app.py"):
             tree = ast.parse(path.read_text())
             self.assertTrue(any(isinstance(n, ast.ImportFrom) and n.module == "learning_coach.server"

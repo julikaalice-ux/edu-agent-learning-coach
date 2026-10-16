@@ -10,7 +10,7 @@ from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request
 
 import sys
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/agent-framework-agent-with-local-tools-responses"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "agent"))
 from learning_coach.service import research
 from learning_coach.adapters import search_providers as providers
 

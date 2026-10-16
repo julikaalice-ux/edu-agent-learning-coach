@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-SOURCE = Path(__file__).resolve().parents[1] / "src/agent-framework-agent-with-local-tools-responses"
+SOURCE = Path(__file__).resolve().parents[1] / "agent"
 sys.path.insert(0, str(SOURCE))
 SDK_AVAILABLE = all(importlib.util.find_spec(name) is not None for name in
                     ("agent_framework", "agent_framework_foundry_hosting", "jsonschema"))
@@ -26,7 +26,8 @@ if SDK_AVAILABLE:
     from learning_coach.db.memory import LearningStore
     from learning_coach.service.pipeline import LearningPipeline
     from learning_coach.service.research import ResearchService
-    from learning_coach.adapters.runner import BUDGET, CallBudget, ROLES, StageFailure, StructuredRunner, create_agents
+    from learning_coach.adapters.runner import BUDGET, ROLES, StageFailure, StructuredRunner, create_agents
+    from learning_coach.service.execution import CallBudget
     from learning_coach.adapters.visuals import VISUAL_SCHEMA, render_visual
     from learning_coach.db.artifacts import ArtifactStore
 
@@ -211,13 +212,13 @@ class StructuredRunnerTests(unittest.IsolatedAsyncioTestCase):
 class AgentFactoryTests(unittest.IsolatedAsyncioTestCase):
     async def test_six_real_agents_load_prompts_and_accept_fake_client(self):
         client = FakeChatClient()
-        agents = create_agents(client, SOURCE / "instructions.md")
-        prompt_paths = {"coordinator": SOURCE / "instructions.md",
-                        "researcher": SOURCE / "agents/material-search.md",
-                        "verifier": SOURCE / "agents/source-check.md",
-                        "notes": SOURCE / "agents/note-organizer.md",
-                        "visualizer": SOURCE / "agents/visual-designer.md",
-                        "quizzer": SOURCE / "agents/quiz-writer.md"}
+        agents = create_agents(client, SOURCE / "prompts/instructions.md")
+        prompt_paths = {"coordinator": SOURCE / "prompts/instructions.md",
+                        "researcher": SOURCE / "prompts/agents/material-search.md",
+                        "verifier": SOURCE / "prompts/agents/source-check.md",
+                        "notes": SOURCE / "prompts/agents/note-organizer.md",
+                        "visualizer": SOURCE / "prompts/agents/visual-designer.md",
+                        "quizzer": SOURCE / "prompts/agents/quiz-writer.md"}
         self.assertEqual(set(agents), set(ROLES))
         self.assertEqual(len({id(agent) for agent in agents.values()}), 6)
         for role, agent in agents.items():
@@ -234,7 +235,7 @@ class AgentFactoryTests(unittest.IsolatedAsyncioTestCase):
     async def test_native_visual_union_is_wrapped_and_returns_original_spec(self):
         visual = {"kind": "flashcards", "title": "分数", "cards": [{"front": "一半", "back": "二分之一"}]}
         client = FakeChatClient({"result": visual})
-        runner = StructuredRunner(create_agents(client, SOURCE / "instructions.md"), native_json=True)
+        runner = StructuredRunner(create_agents(client, SOURCE / "prompts/instructions.md"), native_json=True)
         result = await runner("visualizer", {"topic": "分数"}, VISUAL_SCHEMA)
         self.assertEqual(result, visual)
         options = client.calls[-1][2]
@@ -347,7 +348,7 @@ class FiveRoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
         for native in (False, True):
             with self.subTest(native=native), TemporaryDirectory() as directory:
                 client = FakeChatClient({"result": decision} if native else decision)
-                runner = StructuredRunner(create_agents(client, SOURCE / "instructions.md"), native_json=native)
+                runner = StructuredRunner(create_agents(client, SOURCE / "prompts/instructions.md"), native_json=native)
                 store = LearningStore(Path(directory) / "memory.sqlite3")
                 try:
                     artifacts = ArtifactStore(Path(directory) / "artifacts", renderer=render_visual)
@@ -448,7 +449,7 @@ class FiveRoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 return ChatResponse(messages=[Message("assistant", [json.dumps(answer, ensure_ascii=False)])])
 
         client, provider = ScriptedChatClient(), Provider()
-        agents = create_agents(client, SOURCE / "instructions.md")
+        agents = create_agents(client, SOURCE / "prompts/instructions.md")
         runner = StructuredRunner(agents)
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -459,7 +460,7 @@ class FiveRoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 host = LearningCoachAgent(pipeline)
                 session = host.create_session()
                 self.assertFalse(store.is_enabled(session.session_id))
-                consent = await host.run("/memory on", session=session)
+                await host.run("/memory on", session=session)
                 validate(session.state["learning_coach"]["last_response"], FINAL_SCHEMA)
                 self.assertTrue(store.is_enabled(session.session_id))
                 self.assertEqual(client.roles, [])

@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from test_pipeline import FakeArtifacts, FakeResearch, FakeRunner, LearningPipeline, LearningStore
-from test_pipeline import RESPONSE_SCHEMA, VISUAL, messages, notes, plan, validate
+from test_pipeline import RESPONSE_SCHEMA, messages, notes, plan, validate
 from learning_coach.adapters.runner import StageFailure
 
 

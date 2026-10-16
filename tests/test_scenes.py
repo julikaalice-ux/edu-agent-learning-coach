@@ -16,7 +16,7 @@ from unittest.mock import patch
 from jsonschema import Draft202012Validator
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / "src/agent-framework-agent-with-local-tools-responses"
+SOURCE = ROOT / "agent"
 sys.path.insert(0, str(SOURCE))
 from learning_coach.adapters import scenes
 from learning_coach.adapters.visuals import render_visual

@@ -1,40 +1,22 @@
-# Coding Agent Instructions
+# Coding agent instructions
 
-This project is a **Microsoft Foundry hosted agent** — a containerized AI agent that runs in [Foundry Agent Service](https://learn.microsoft.com/en-us/azure/foundry/agents/concepts/hosted-agents). The platform handles containerization, hosting, security, scaling, and observability so you can focus on agent logic.
+Edu-Agent is a Microsoft Foundry hosted agent. See [README.md](README.md) for the project layout and [docs/design/architecture.md](docs/design/architecture.md) for layering rules.
 
-## Key files
-
-- `Dockerfile` — container definition
-
-## Development workflow
-
-The **Azure Developer CLI (`azd`)** manages the full lifecycle:
+## Commands
 
 ```bash
-azd ai agent run                           # Run locally on http://localhost:8088
-azd ai agent invoke --local "your message" # Test the local agent
-azd deploy                                 # Deploy to Foundry
-azd ai agent invoke "your message"         # Invoke the deployed agent
+uv run --project agent --locked --group dev python -m unittest discover -s tests   # tests (fake models)
+uv run --project agent --locked python agent/main.py                               # Responses API on :8088
+python scripts/build_space.py                                                      # package the Hugging Face Space
+azd deploy                                                                         # deploy to Foundry
 ```
 
-## Microsoft Foundry Skill
+## Rules
 
-This project was built with the microsoft-foundry skill. Before working on or answering questions about foundry agents, read the microsoft-foundry skill first.
-
-Install the **Microsoft Foundry Skill** for guided deployment, evaluation, and troubleshooting workflows.
-
-Direct install (preferred, works with any coding agent):
-
-```bash
-npx skills add https://github.com/microsoft/azure-skills --skill microsoft-foundry
-```
-
-Or install the Azure Skills Plugin:
-
-- **Copilot CLI**: `/plugin marketplace add microsoft/azure-skills` then `/plugin install azure@azure-skills`
-- **Claude Code**: `/plugin install azure@claude-plugins-official`
-
-Then ask naturally, e.g. `Use the Microsoft Foundry Skill to deploy this agent.`
+- `agent/learning_coach/server.py` is the only place that creates model clients, databases and adapters.
+- `domain/` and `service/` must not import `api/`, `db/`, `adapters/` or `server.py` (enforced by `tests/test_architecture.py`).
+- Prompts live in `agent/prompts/`; follow [docs/design/prompt-house-rules.md](docs/design/prompt-house-rules.md) when editing them.
+- Never commit `agent/.env` or anything under `.azure/`.
 
 ## References
 
