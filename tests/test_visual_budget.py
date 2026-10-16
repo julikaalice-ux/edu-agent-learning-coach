@@ -160,7 +160,8 @@ class QuizVisualFailureTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(state["quiz"]["finished"])
         self.assertEqual(state["quiz"]["correct"], 1)
         self.assertEqual(state["last_execution"]["tools"]["visual"], "unavailable")
-        self.assertEqual(state["last_execution"]["tools"]["notes"], "failed")
+        # Learning evidence is only marked in the turn; notes are compiled later.
+        self.assertEqual(state["last_execution"]["tools"]["notes"], "deferred")
         self.assertEqual(
             agents["coordinator"].calls, 3
         )  # decide, invalid respond, valid retry

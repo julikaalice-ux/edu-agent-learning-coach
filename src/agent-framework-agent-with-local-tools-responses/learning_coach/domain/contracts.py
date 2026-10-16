@@ -5,6 +5,8 @@ import math
 
 from jsonschema import Draft202012Validator
 
+from learning_coach.domain.context import CONTEXT_UPDATE_SCHEMA
+
 
 class ContractError(ValueError):
     """A fixed diagnostic, with no learner/model content in the error."""
@@ -63,16 +65,22 @@ PLAN_SCHEMA = object_schema({
 
 
 def decision_schema(response_schema):
-    """Choose one complete public answer or one bounded internal tool plan."""
+    """Choose one complete public answer or one bounded internal tool plan.
+
+    Either way the coordinator may also update its conversation notes and ask
+    to look back at earlier turns ("context"; null = no change, no lookback).
+    """
     return {"anyOf": [
         object_schema({
             "mode": {"type": "string", "const": "answer"},
             "response": response_schema,
             "task": TASK_SCHEMA,
+            "context": CONTEXT_UPDATE_SCHEMA,
         }),
         object_schema({
             "mode": {"type": "string", "const": "tools"},
             "plan": PLAN_SCHEMA,
+            "context": CONTEXT_UPDATE_SCHEMA,
         }),
     ]}
 

@@ -63,6 +63,11 @@ def messages(text, *history):
     return [*history, {"role": "user", "text": text}]
 
 
+def exchange(*texts, reply="我们先看整体被分成了几份。"):
+    """Earlier turns: each learner text followed by a coach reply."""
+    return tuple(item for text in texts for item in ({"role": "user", "text": text}, {"role": "assistant", "text": reply}))
+
+
 class FakeRunner:
     """Only implements the documented role/phase contract; does no I/O."""
 
@@ -105,6 +110,8 @@ class FakeRunner:
                         "visual": {"code": "comparison", "evidence_quote": current_text} if proposed["visual_request"] else None,
                     }
                     result = {"mode": "tools", "plan": proposed}
+            # Decisions carry the coordinator's context update; null = no change.
+            result = {**result, "context": result.get("context")}
         elif role == "coordinator" and payload["phase"] == "quiz":
             if self.questions:
                 result = self.questions.popleft()
@@ -145,8 +152,9 @@ class FakeResearch:
         self.result = result or {"overall": "verified", "sources": [], "claims": []}
         self.calls = []
 
-    async def run(self, query):
+    async def run(self, query, learner=None):
         self.calls.append(query)
+        self.learners = getattr(self, "learners", []) + [learner]
         if isinstance(self.result, Exception):
             raise self.result
         return deepcopy(self.result)
@@ -205,8 +213,11 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
     async def test_learner_records_carry_across_conversations(self):
         self.store.set_enabled("learner-1", True)
         runner = FakeRunner([plan(observe_learning=True)], note_results=[notes(True)])
-        await self.pipeline(runner).run(messages("我在工作，想学习分数"), session_id="c1",
-                                        turn_id="1", learner_id="learner-1")
+        pipeline = self.pipeline(runner)
+        _, state = await pipeline.run(messages("我在工作，想学习分数"), session_id="c1",
+                                      turn_id="1", learner_id="learner-1")
+        await pipeline.run(messages("整理笔记", *exchange("我在工作，想学习分数")), session_id="c1",
+                           state=state, turn_id="2", learner_id="learner-1")
         later = FakeRunner([plan()])
         await self.pipeline(later).run(messages("接着上次的"), session_id="c2", turn_id="1",
                                        learner_id="learner-1")
@@ -221,15 +232,27 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
     async def test_routes_learning_through_notes_research_and_visual_then_commits(self):
         self.store.set_enabled("s", True)
         runner = FakeRunner([plan(research_query="分数定义", visual_request="比较分子分母", observe_learning=True)], note_results=[notes(True)])
-        output, state = await self.pipeline(runner).run(messages("我在工作，想学习分数"), session_id="s", turn_id="1")
+        pipeline = self.pipeline(runner)
+        output, state = await pipeline.run(messages("我在工作，想学习分数"), session_id="s", turn_id="1")
         self.assert_protocol(output)
         self.assertEqual(self.research.calls, ["分数定义"])
         self.assertEqual([runner.calls[0]["role"], runner.calls[-1]["role"]], ["coordinator", "coordinator"])
-        self.assertCountEqual([call["role"] for call in runner.calls[1:-1]], ["notes", "visualizer", "verifier"])
+        self.assertCountEqual([call["role"] for call in runner.calls[1:-1]], ["visualizer", "verifier"])
         self.assertEqual(len(self.artifacts.committed), 1)
-        self.assertIn("learning_stage", self.store.snapshot("s")["profile"])
+        # The learning evidence is marked; notes wait until the learner agrees.
+        self.assertEqual(self.store.snapshot("s")["profile"], {})
+        self.assertEqual(state["context"]["evidence_turns"], [1])
         self.assertEqual(state["revision"], 1)
         self.assertIn("打开互动图", output["message"])
+        compiled, state = await pipeline.run(messages("整理笔记", *exchange("我在工作，想学习分数")),
+                                             session_id="s", state=state, turn_id="2")
+        self.assert_protocol(compiled)
+        self.assertIn("1 条学习情况", compiled["message"])
+        request = runner.calls_for("notes")[0]
+        self.assertEqual(request["learner_messages"], [{"turn": 1, "text": "我在工作，想学习分数"}])
+        self.assertEqual(request["evidence_turns"], [1])
+        self.assertIn("learning_stage", self.store.snapshot("s")["profile"])
+        self.assertEqual((state["context"]["notes_upto_turn"], state["context"]["evidence_turns"]), (2, []))
 
     async def test_emotion_boundary_and_unclear_intents_never_run_learning_workers(self):
         self.store.set_enabled("s", True)
@@ -260,6 +283,7 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.store.is_enabled("s"))
         self.assertEqual(runner.calls, [])
         _, state = await pipeline.run(messages("我在工作"), session_id="s", state=state, turn_id="learn")
+        _, state = await pipeline.run(messages("整理笔记", *exchange("我在工作")), session_id="s", state=state, turn_id="notes")
         self.assertIn("learning_stage", self.store.snapshot("s")["profile"])
         _, state = await pipeline.run(messages("/memory off"), session_id="s", state=state, turn_id="off")
         self.assertFalse(self.store.is_enabled("s"))
@@ -306,7 +330,8 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         _, state = await pipeline.run(messages("/memory on"), session_id="s", state=state, turn_id="enable")
         self.assertFalse(state["memory_blocked"])
         self.assertTrue(self.store.is_enabled("s"))
-        await pipeline.run(messages("我在工作"), session_id="s", state=state, turn_id="after-enable")
+        _, state = await pipeline.run(messages("我在工作"), session_id="s", state=state, turn_id="after-enable")
+        await pipeline.run(messages("整理笔记", *exchange("我在工作")), session_id="s", state=state, turn_id="notes")
         self.assertEqual(len(runner.calls_for("notes")), 1)
         self.assertIn("learning_stage", self.store.snapshot("s")["profile"])
 
@@ -354,8 +379,8 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first, replay)
         self.assertEqual(state, replay_state)
         self.assertEqual(len(runner.calls_for("coordinator", "quiz")), 1)
-        self.assertEqual(len(runner.calls_for("notes")), 1)
-        self.assertFalse(self.store.apply_notes("s", "same", notes(), ""))
+        self.assertEqual(runner.calls_for("notes"), [])
+        self.assertEqual(state["context"]["evidence_turns"], [1])
 
     async def test_delayed_transport_replay_does_not_rerun_an_older_accepted_turn(self):
         runner = FakeRunner([
@@ -481,8 +506,8 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(after["quiz"]["awaiting"], QUIZ)
         self.assertEqual(len(runner.calls_for("coordinator", "quiz")), 3)
         self.assertEqual(len(runner.calls_for("coordinator", "respond")), 1)
-        # Notes run alongside question generation; the failed turn discards them.
-        self.assertEqual(len(runner.calls_for("notes")), 2)
+        # Notes are not compiled during a turn; the failed turn wrote nothing.
+        self.assertEqual(runner.calls_for("notes"), [])
         self.assertEqual(self.store.snapshot("s")["concepts"], [])
         self.assertTrue(self.store.apply_notes("s", "answer", notes(), "A"))
 
@@ -600,10 +625,12 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         invalid["profile"][0]["evidence_quote"] = "SECRET_FROM_UNRELATED_HISTORY"
         for number, child in enumerate((invalid, StageFailure("SECRET_PROVIDER_ERROR"))):
             with self.subTest(number=number):
-                runner = FakeRunner([plan(observe_learning=True)], note_results=[child])
-                output, _ = await self.pipeline(runner).run(messages("我在工作"), session_id="s", turn_id=f"note-{number}")
+                runner = FakeRunner(note_results=[child])
+                output, state = await self.pipeline(runner).run(messages("整理笔记", *exchange("我在工作")),
+                                                                session_id="s", turn_id=f"note-{number}")
                 self.assert_protocol(output)
-                self.assertIn("本轮学习笔记未保存", output["message"])
+                self.assertIn("没有整理成功", output["message"])
+                self.assertNotIn("notes_upto_turn", state.get("context", {}))
                 self.assertNotIn("SECRET", json.dumps(output))
                 self.assertEqual(self.store.snapshot("s")["profile"], {})
 

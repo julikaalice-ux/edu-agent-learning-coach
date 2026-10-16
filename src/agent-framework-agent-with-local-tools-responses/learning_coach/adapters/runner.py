@@ -1,6 +1,7 @@
 """Bounded, stateless calls to five actual Agent Framework agents."""
 
 import asyncio
+from collections import deque
 import json
 import logging
 from pathlib import Path
@@ -8,6 +9,7 @@ from time import perf_counter
 
 from agent_framework import Agent
 
+from learning_coach.domain.context import count_tokens
 from learning_coach.domain.contracts import ContractError, parse, validate, object_schema
 
 
@@ -30,20 +32,43 @@ def native_schema(schema):
     return object_schema({"result": convert(schema)})
 
 
+USAGE_KEYS = ("input_token_count", "output_token_count", "cache_read_input_token_count")
+
+
+def usage_of(response) -> dict:
+    """Token usage the model API reported for one call (missing values stay None)."""
+    details = getattr(response, "usage_details", None) or {}
+    get = details.get if isinstance(details, dict) else (lambda key: getattr(details, key, None))
+    return {key: get(key) for key in USAGE_KEYS}
+
+
 class StructuredRunner:
-    def __init__(self, agents, *, native_json=False, timeout=45):
+    """Calls one role with one JSON request; checks the reply against its schema.
+
+    Each call is fresh and stateless. The request puts the output schema
+    before the input, so the unchanging part comes first and can be served
+    from the provider's prompt cache. A malformed reply gets one corrected
+    retry; a failed or timed-out call gets one plain retry. Every call is
+    logged with estimated and reported token usage (never content).
+    """
+
+    def __init__(self, agents, *, native_json=False, timeout=45, retry_delay=1.0):
         if set(agents) != set(ROLES):
             raise ValueError("exactly_five_agent_roles_required")
         self.agents = agents
         self.native_json = native_json
         self.timeout = timeout
+        self.retry_delay = retry_delay
+        # Recent per-call usage, for evaluations and the token comparison.
+        self.usage = deque(maxlen=500)
 
     async def __call__(self, role, payload, schema):
         if role not in self.agents:
             raise StageFailure("unknown_role")
         requested_schema = native_schema(schema) if self.native_json else schema
-        request = {"input": payload, "output_schema": requested_schema}
+        request = {"output_schema": requested_schema, "input": payload}
         phase = payload.get("phase") if payload.get("phase") in ("decide", "quiz", "respond", "visual_review") else "specialist"
+        provider_retried = False
         for attempt in range(2):
             budget = BUDGET.get()
             if budget is not None:
@@ -52,13 +77,16 @@ class StructuredRunner:
                 budget.remaining -= 1
             started = perf_counter()
             outcome = "cancelled"
+            message = json.dumps(request, ensure_ascii=False)
+            usage = dict.fromkeys(USAGE_KEYS)
             try:
                 options = {"response_format": requested_schema} if self.native_json else {}
                 # Fresh stateless child calls prevent cross-role/session history leaks.
                 response = await asyncio.wait_for(
-                    self.agents[role].run(json.dumps(request, ensure_ascii=False), options=options),
+                    self.agents[role].run(message, options=options),
                     timeout=self.timeout,
                 )
+                usage = usage_of(response)
                 parsed = parse(response.text, requested_schema)
                 result = validate(parsed["result"], schema) if self.native_json else parsed
                 outcome = "ok"
@@ -71,10 +99,16 @@ class StructuredRunner:
                 outcome = "provider_or_timeout_failure"
                 # Never log provider exceptions: they can contain requests or credentials.
                 LOG.warning("agent_stage_failed role=%s error_type=%s", role, type(error).__name__)
-                raise StageFailure("provider_or_timeout_failure") from None
+                if attempt == 1 or provider_retried:
+                    raise StageFailure("provider_or_timeout_failure") from None
+                provider_retried = True
+                await asyncio.sleep(self.retry_delay)
             finally:
-                LOG.info("agent_stage role=%s phase=%s attempt=%s outcome=%s elapsed_ms=%s",
-                         role, phase, attempt + 1, outcome, round((perf_counter() - started) * 1000))
+                record = {"role": role, "phase": phase, "attempt": attempt + 1, "outcome": outcome,
+                          "estimated_input_tokens": count_tokens(message), **usage,
+                          "elapsed_ms": round((perf_counter() - started) * 1000)}
+                self.usage.append(record)
+                LOG.info("agent_stage %s", " ".join(f"{key}={value}" for key, value in record.items()))
         raise StageFailure("invalid_stage_output")
 
 

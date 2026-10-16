@@ -84,7 +84,7 @@ class OnboardingPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("先记下", outputs[0]["message"])
         decide = runner.calls_for("coordinator", "decide")
         self.assertEqual(len(decide), 1)
-        self.assertEqual(decide[0]["messages"], [{"role": "user", "text": "讲讲光合作用"}])
+        self.assertEqual(decide[0]["messages"], [{"turn": 1, "role": "user", "text": "讲讲光合作用"}])
         self.assertIs(decide[0]["first_meeting"], False)
         self.assertEqual(decide[0]["state"]["onboarding"]["stage"], "大学")
         self.assertTrue(outputs[3]["message"].startswith("好，这次不保存学习记录"))

@@ -13,6 +13,7 @@ from azure.identity import DefaultAzureCredential
 from dotenv import load_dotenv
 
 from learning_coach.db.memory import LearningStore
+from learning_coach.domain.context import Budgets, encoder
 from learning_coach.service.pipeline import LearningPipeline
 from learning_coach.service.research import ResearchService
 from learning_coach.adapters.search_providers import default_provider
@@ -51,12 +52,15 @@ def create_pipeline(*, client=None, data_dir=None, public_base_url=None, native_
                               os.environ.get("LEARNING_COACH_PUBLIC_BASE_URL", "http://localhost:8088"))
     from learning_coach.adapters.illustrate import generate_image
 
+    encoder()  # load the tokenizer once at startup, not inside the first turn
+
     return LearningPipeline(
         runner, ResearchService(runner, search_provider if search_provider is not None else default_provider()), LearningStore(directory / "memory.sqlite3"), artifacts,
         json.loads((SRC_DIR / "response.schema.json").read_text(encoding="utf-8")),
         image_generator=image_generator if image_generator is not None else generate_image,
         onboarding=os.environ.get("LEARNING_COACH_ONBOARDING", "1") == "1",
         demo_stage=demo_stage_from_env(),
+        budgets=Budgets.from_env(),
     )
 
 

@@ -12,7 +12,7 @@ class AgentRunner(Protocol):
 
 
 class ResearchPort(Protocol):
-    async def run(self, question: str) -> dict: ...
+    async def run(self, question: str, learner: dict | None = None) -> dict: ...
 
 
 class ImageGenerator(Protocol):

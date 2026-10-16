@@ -81,6 +81,7 @@ class StructuredRunnerTests(unittest.IsolatedAsyncioTestCase):
     def make_runner(self, fake, **kwargs):
         agents = {role: FakeAgent() for role in ROLES}
         agents["coordinator"] = fake
+        kwargs.setdefault("retry_delay", 0)
         return StructuredRunner(agents, **kwargs)
 
     async def test_bad_json_retries_once_with_schema_correction(self):
@@ -100,11 +101,35 @@ class StructuredRunnerTests(unittest.IsolatedAsyncioTestCase):
             await self.make_runner(fake)("coordinator", {}, SCHEMA)
         self.assertEqual(len(fake.calls), 2)
 
-    async def test_timeout_is_bounded_and_not_retried(self):
+    async def test_timeout_is_bounded_and_retried_once(self):
         fake = FakeAgent(delay=10)
         with self.assertRaisesRegex(StageFailure, "provider_or_timeout_failure"):
             await self.make_runner(fake, timeout=.01)("coordinator", {}, SCHEMA)
-        self.assertEqual(len(fake.calls), 1)
+        self.assertEqual(len(fake.calls), 2)
+
+    async def test_one_passing_provider_error_is_retried(self):
+        class Flaky(FakeAgent):
+            async def run(self, message, **kwargs):
+                self.calls.append((message, kwargs))
+                if len(self.calls) == 1:
+                    raise ConnectionError("PRIVATE_NETWORK_DETAIL")
+                return SimpleNamespace(text='{"ok":true}', usage_details={
+                    "input_token_count": 120, "output_token_count": 5, "cache_read_input_token_count": 64})
+        fake = Flaky()
+        runner = self.make_runner(fake)
+        self.assertEqual(await runner("coordinator", {"phase": "decide"}, SCHEMA), {"ok": True})
+        self.assertEqual(len(fake.calls), 2)
+        # Usage reported by the API is kept per call, next to the local estimate.
+        last = runner.usage[-1]
+        self.assertEqual((last["outcome"], last["input_token_count"], last["cache_read_input_token_count"]),
+                         ("ok", 120, 64))
+        self.assertGreater(last["estimated_input_tokens"], 0)
+        self.assertEqual(runner.usage[0]["outcome"], "provider_or_timeout_failure")
+
+    async def test_unchanging_schema_comes_before_the_input(self):
+        fake = FakeAgent()
+        await self.make_runner(fake)("coordinator", {"phase": "decide", "messages": []}, SCHEMA)
+        self.assertEqual(list(json.loads(fake.calls[0][0])), ["output_schema", "input"])
 
     async def test_provider_failure_has_no_private_exception_text(self):
         fake = FakeAgent(error=RuntimeError("secret-token learner-private-text"))
@@ -120,8 +145,10 @@ class StructuredRunnerTests(unittest.IsolatedAsyncioTestCase):
             await self.make_runner(fake)("coordinator", {"phase": "decide", "question": "PRIVATE_LEARNER_INPUT"}, SCHEMA)
         stages = [record.getMessage() for record in logs.records if record.getMessage().startswith("agent_stage ")]
         self.assertEqual(len(stages), 2)
-        self.assertRegex(stages[0], r"role=coordinator phase=decide attempt=1 outcome=invalid_output elapsed_ms=\d+$")
-        self.assertRegex(stages[1], r"role=coordinator phase=decide attempt=2 outcome=ok elapsed_ms=\d+$")
+        self.assertRegex(stages[0], r"role=coordinator phase=decide attempt=1 outcome=invalid_output "
+                                    r"estimated_input_tokens=\d+ .* elapsed_ms=\d+$")
+        self.assertRegex(stages[1], r"role=coordinator phase=decide attempt=2 outcome=ok "
+                                    r"estimated_input_tokens=\d+ .* elapsed_ms=\d+$")
         self.assertNotIn("PRIVATE", " ".join(logs.output))
         failure = FakeAgent(error=RuntimeError("PRIVATE_PROVIDER_SECRET"))
         with self.assertLogs("learning_coach.adapters.runner", level="INFO") as errors:
@@ -314,7 +341,8 @@ class ResponsesRouteTests(unittest.IsolatedAsyncioTestCase):
 class FiveRoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_real_sdk_direct_decision_finishes_in_one_model_call(self):
         decision = {"mode": "answer", "response": deepcopy(FINAL),
-                    "task": {"task_summary": "理解分数", "pause_task": False, "end_task": False}}
+                    "task": {"task_summary": "理解分数", "pause_task": False, "end_task": False},
+                    "context": None}
         for native in (False, True):
             with self.subTest(native=native), TemporaryDirectory() as directory:
                 client = FakeChatClient({"result": decision} if native else decision)
@@ -379,7 +407,7 @@ class FiveRoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         "notes": {"code": "profile_update", "evidence_quote": quote},
                         "visual": {"code": "explicit_visual", "evidence_quote": quote},
                     }
-                    answer = {"mode": "tools", "plan": answer}
+                    answer = {"mode": "tools", "plan": answer, "context": None}
                 elif data.get("phase") == "respond":
                     role = "coordinator"
                     self.response_payload = deepcopy(data)
@@ -400,7 +428,7 @@ class FiveRoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 elif "question" in data:
                     role = "researcher"
                     answer = {"queries": ["water freezing expansion", "ordinary ice open lattice density"]}
-                elif "learner_text" in data:
+                elif "learner_messages" in data:
                     role = "notes"
                     answer = {"schema_version": "1.0", "profile": [{"key": "learning_stage", "value": "成人工作后学习",
                               "origin": "self_report", "evidence_quote": "我在工作后学习"}],
@@ -444,11 +472,9 @@ class FiveRoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 expected_text = output["message"] + ("\n\n" + output["next_step"]["text"] if output["next_step"] else "")
                 self.assertEqual(final.text, expected_text)
                 self.assertEqual(len(updates), 1)
-                self.assertEqual(set(client.roles), set(ROLES))
-                self.assertEqual(client.roles[:3], ["coordinator", "researcher", "verifier"])
-                self.assertCountEqual(client.roles[3:5], ["notes", "visualizer"])
-                self.assertEqual(client.roles[5:], ["verifier", "coordinator"])
-                self.assertEqual(client.roles[-1], "coordinator")
+                # Notes are not compiled inside the teaching turn.
+                self.assertEqual(client.roles, ["coordinator", "researcher", "verifier", "visualizer", "verifier",
+                                                "coordinator"])
                 self.assertEqual(len(provider.calls), 2)
                 self.assertEqual(client.response_payload["research"]["overall"], "verified")
                 self.assertEqual(client.response_payload["visual_status"], "ready")
@@ -458,6 +484,13 @@ class FiveRoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 token_match = re.search(r"http://localhost:8088/artifacts/([A-Za-z0-9_-]{32})", final.text)
                 self.assertIsNotNone(token_match)
                 token = token_match.group(1)
+                self.assertEqual(store.snapshot(session.session_id)["profile"], {})
+                said = "我在工作后学习，想知道水结冰为什么会膨胀，请查资料并做一个对比图。"
+                compiled = await host.run([Message("user", [said]), Message("assistant", [final.text]),
+                                           Message("user", ["整理笔记"])], session=session)
+                self.assertIn("整理好了", compiled.text)
+                self.assertEqual(set(client.roles), set(ROLES))
+                self.assertEqual(client.roles[-1], "notes")
                 stored = store.snapshot(session.session_id)
                 self.assertEqual(stored["profile"]["learning_stage"]["value"], "成人工作后学习")
                 self.assertEqual(stored["profile"]["learning_stage"]["origin"], "self_report")

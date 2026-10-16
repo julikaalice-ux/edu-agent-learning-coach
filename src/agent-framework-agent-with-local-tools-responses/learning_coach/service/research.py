@@ -12,13 +12,18 @@ class ResearchService:
         self.runner = runner
         self.provider = provider
 
-    async def run(self, question: str) -> dict:
+    async def run(self, question: str, learner: dict | None = None) -> dict:
+        """learner: the program's brief learner card (stage, goal), used only to
+        pitch the search queries at the right level."""
         result = {"queries": [], "sources": [], "claims": [], "overall": "unavailable", "warnings": []}
         if not isinstance(question, str) or not question.strip():
             result["warnings"].append("empty_question")
             return result
         try:
-            planned = await self.runner("researcher", {"question": question[:4000]}, QUERY_SCHEMA)
+            request = {"question": question[:4000]}
+            if learner:
+                request["learner"] = {key: learner.get(key) for key in ("stage", "goal")}
+            planned = await self.runner("researcher", request, QUERY_SCHEMA)
             candidates = planned.get("queries", []) if isinstance(planned, dict) else []
             if not isinstance(candidates, list):
                 candidates = []
