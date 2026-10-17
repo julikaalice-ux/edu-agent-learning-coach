@@ -165,7 +165,8 @@ class QuizWriterPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.artifacts.prepared[0][1]["kind"], "illustration")
         self.assertEqual(len(self.artifacts.committed), 1)
         self.assertIn("[看题目配图](", output["message"])
-        self.assertTrue(runner.calls_for("coordinator", "respond")[0]["quiz"]["new_question"]["has_picture"])
+        self.assertTrue(runner.calls_for("coordinator", "respond")[0]["quiz"]["new_question_has_picture"])
+        self.assertNotIn("new_question", runner.calls_for("coordinator", "respond")[0]["quiz"])
 
     async def test_picture_failure_asks_for_a_text_only_question(self):
         pictured = {**QUIZ, "image": {"prompt": "four equal slices of a round pie", "alt": "切成四块的饼"}}

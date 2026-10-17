@@ -5,7 +5,7 @@
 # 输入
 - topic：要考的内容（主 agent 定的）。difficulty：简单 / 中等 / 困难。
 - kind：practice（一组练习中的一题）或 check（讲完一块后的检查题）。
-- explanation：仅 check 有，是主 agent 这一轮刚讲的内容。题目必须考这里讲到的东西。
+- explanation：仅 check 有，是主 agent 这一轮刚讲的内容。题目考对讲解内容的应用或变式：换数值、换情境、换问法或要求判断，只考讲解里讲到的那一个知识点；正确答案不能是 explanation 里原样出现过的陈述，题干与选项不得与 explanation 的句子逐字重合。
 - learner：学习者背景 {stage 学段, goal 学习目标原话, participant}。participant=companion_report 表示陪伴者（家长、老师）在帮孩子用。
 - context_notes：covered 讲过什么（越靠后越新）；stuck 学习者卡在哪（quote 是学习者原话，issue 是错在哪）。
 - recent_messages：最近的对话。
