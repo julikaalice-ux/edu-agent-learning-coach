@@ -52,7 +52,7 @@ cp agent/.env.example agent/.env   # 填 FOUNDRY_PROJECT_ENDPOINT 和 AZURE_AI_M
 | `DEMO_ACCESS_KEY` | | 演示页邀请码，访问链接需带 `?key=` |
 | `DEMO_MAX_TURNS_PER_DAY` / `DEMO_MAX_IMAGES_PER_DAY` | | 演示页每日上限，默认 150 / 20 |
 
-当前模型分工：检索 `gpt-6-luna`，其余 agent `gpt-5.4-mini`，配图 `flux-2-pro`。
+当前模型分工：检索、核对（查证和审图）、画图用 `gpt-6-luna`，主 agent、出题、笔记用 `gpt-5.4-mini`，配图 `flux-2-pro`。三处入口要一致：本地看 `agent/.env`，托管看 `azure.yaml`，Space 看它的 Variables。
 
 ## 项目结构
 
