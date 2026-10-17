@@ -7,6 +7,8 @@ dependencies = [
     "agent-framework-foundry",
     "agent-framework-foundry-hosting>=1.0.0b260813",
     "azure-ai-projects>=2.3.0",
+    "azure-storage-blob==12.30.1",
+    "azure-identity==1.25.3",
     "debugpy",
     "jsonschema==4.26.0",
     "tiktoken>=0.9,<1",

@@ -60,6 +60,10 @@ services:
       LEARNING_COACH_MEMORY_STORE: edu-agent-learning-memory
       LEARNING_COACH_MEMORY_SEARCH_MAX: '6'
       LEARNING_COACH_MEMORY_TIMEOUT: '5'
+      # Public blob container for interactive visuals; provisioned by
+      # scripts/setup-artifact-blob.sh (anonymous blob reads, unguessable
+      # 32-char tokens, blobs auto-deleted by a 2-day lifecycle rule).
+      LEARNING_COACH_ARTIFACT_BLOB_URL: https://eduartifacts5044621b.blob.core.windows.net/artifacts
     container:
       resources:
         cpu: '0.5'

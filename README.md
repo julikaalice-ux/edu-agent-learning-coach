@@ -48,6 +48,7 @@ cp agent/.env.example agent/.env   # 填 FOUNDRY_PROJECT_ENDPOINT 和 AZURE_AI_M
 | `LEARNING_COACH_MEMORY_STORE` | | Foundry Memory 语义层；不设 = 纯 SQLite。store 需先用 [`scripts/setup-memory.sh`](scripts/setup-memory.sh) 创建，失败自动降级 |
 | `LEARNING_COACH_MEMORY_SEARCH_MAX` | | 语义检索条数，默认 6 |
 | `LEARNING_COACH_MEMORY_TIMEOUT` | | 语义层调用超时秒数，默认 5 |
+| `LEARNING_COACH_ARTIFACT_BLOB_URL` | | 托管入口互动图的公开 blob 容器地址（形如 `https://<账户>.blob.core.windows.net/artifacts`）；不设 = 本机 `/artifacts` 路由（演示网页/Space 默认）。先运行 [`scripts/setup-artifact-blob.sh`](scripts/setup-artifact-blob.sh) |
 | `LEARNING_COACH_DEMO_MODE` | | 设为 `1` 时跳过首次问答，学段取 `LEARNING_COACH_DEMO_STAGE` |
 | `DEMO_ACCESS_KEY` | | 演示页邀请码，访问链接需带 `?key=` |
 | `DEMO_MAX_TURNS_PER_DAY` / `DEMO_MAX_IMAGES_PER_DAY` | | 演示页每日上限，默认 150 / 20 |
@@ -68,7 +69,7 @@ cp agent/.env.example agent/.env   # 填 FOUNDRY_PROJECT_ENDPOINT 和 AZURE_AI_M
 ├── space/                  Hugging Face Space 演示网页（Gradio）
 ├── tests/                  单元与集成测试
 ├── evals/                  评测用例与打分脚本
-├── scripts/                打包 Space、离线校验、修复权限
+├── scripts/                打包 Space、离线校验、云配置（setup-memory / setup-artifact-blob / fix-permissions）
 ├── docs/                   产品、设计、报告与历史文档
 └── azure.yaml              azd 部署配置
 ```
@@ -145,6 +146,7 @@ uv run --project agent --locked --group dev python -m unittest discover -s tests
 **Foundry 托管 agent**（配置见 [`azure.yaml`](azure.yaml)）：
 
 ```bash
+sh scripts/setup-artifact-blob.sh   # 首次或权限被清后：互动图公开 blob 容器（地址已写死在 azure.yaml）
 azd deploy
 azd ai agent invoke "请围绕一元一次方程考考我，一次只出一道题。"
 ```
@@ -154,7 +156,7 @@ azd ai agent invoke "请围绕一元一次方程考考我，一次只出一道�
 ## 已知限制
 
 - 没有流式输出，每轮返回一段完整文本。
-- Foundry 托管入口里的互动图链接打不开：链接指向 `localhost:8088`，网关不转发自定义路由，需要改用 blob 存储。演示网页里互动图正常显示。
+- 托管入口的互动图经公开 blob 容器提供（`LEARNING_COACH_ARTIFACT_BLOB_URL`，由 [`scripts/setup-artifact-blob.sh`](scripts/setup-artifact-blob.sh) 配置）：链接是带 32 位不可猜 token 的匿名能力链接，不可列举，约 2 天后被生命周期规则删除，内容应限于教学材料。演示网页仍直接在页面里显示互动图。
 - 确定性学习记录以 SQLite 为准；托管入口的跨会话连续性由 Foundry Memory 语义层提供（启用 `LEARNING_COACH_MEMORY_STORE` 后按平台用户身份分 scope）。
 - 意图分类准确率和教学效果还没有量化评测。
 
