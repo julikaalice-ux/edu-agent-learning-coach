@@ -62,7 +62,7 @@ cp agent/.env.example agent/.env   # 填 FOUNDRY_PROJECT_ENDPOINT 和 AZURE_AI_M
 │   ├── main.py             Responses API 入口
 │   ├── demo.py             命令行对话
 │   ├── learning_coach/     应用代码（分层见「架构」）
-│   ├── prompts/            主 agent 与 5 个子 agent 的提示词
+│   ├── prompts/            主 agent 与 4 个子 agent 的提示词
 │   ├── response.schema.json
 │   └── pyproject.toml, uv.lock, Dockerfile, .env.example
 ├── space/                  Hugging Face Space 演示网页（Gradio）
