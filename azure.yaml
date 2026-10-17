@@ -53,6 +53,9 @@ services:
       # model; the coordinator, quiz writer and notes use the default.
       LEARNING_COACH_MODEL_VISUALIZER: gpt-6-luna
       LEARNING_COACH_MODEL_VERIFIER: gpt-6-luna
+      # Foundry evaluations send each case as a new conversation; skip the
+      # first-meeting questions so the reply answers the case itself.
+      LEARNING_COACH_ONBOARDING: '0'
       # The hosted container's app directory is read-only; keep session data
       # (learning notes, visual artifacts, artifact index) on the writable tmpfs.
       LEARNING_COACH_DATA_DIR: /tmp/.learning-coach
@@ -64,6 +67,37 @@ services:
       # scripts/setup-artifact-blob.sh (anonymous blob reads, unguessable
       # 32-char tokens, blobs auto-deleted by a 2-day lifecycle rule).
       LEARNING_COACH_ARTIFACT_BLOB_URL: https://eduartifacts5044621b.blob.core.windows.net/artifacts
+    container:
+      resources:
+        cpu: '0.5'
+        memory: 1Gi
+  # Single-agent baseline for the single vs multi-agent comparison only
+  # (evals/foundry_compare.py). Same code, LEARNING_COACH_ARCHITECTURE=single.
+  edu-agent-single:
+    host: azure.ai.agent
+    metadata:
+      tags:
+        - Agent Framework
+        - AI Agent Hosting
+        - Responses Protocol
+    project: agent
+    language: python
+    codeConfiguration:
+      runtime: python_3_13
+      entryPoint: main.py
+    uses:
+      - ai-project
+    kind: hosted
+    name: edu-agent-single
+    description: Single-agent baseline of the learning coach, for comparison.
+    protocols:
+      - protocol: responses
+        version: 2.0.0
+    env:
+      AZURE_AI_MODEL_DEPLOYMENT_NAME: ${AZURE_AI_MODEL_DEPLOYMENT_NAME}
+      LEARNING_COACH_ARCHITECTURE: single
+      LEARNING_COACH_ONBOARDING: '0'
+      LEARNING_COACH_DATA_DIR: /tmp/.learning-coach
     container:
       resources:
         cpu: '0.5'

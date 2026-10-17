@@ -21,11 +21,15 @@ from learning_coach.service.pipeline import LearningPipeline
 from learning_coach.service.research import ResearchService
 from learning_coach.adapters.search_providers import default_provider
 from learning_coach.adapters.runner import ROLES, StructuredRunner, create_agents
+from learning_coach.adapters.single_runner import MAX_ITERATIONS as SINGLE_MAX_ITERATIONS
+from learning_coach.adapters.single_runner import SingleAgentRunner, create_single_agent
+from learning_coach.service.single_agent import SingleAgentPipeline
 from learning_coach.adapters.visuals import render_visual
 from learning_coach.db.artifacts import ArtifactStore
 
 SRC_DIR = Path(__file__).resolve().parent.parent
 INSTRUCTIONS_PATH = SRC_DIR / "prompts/instructions.md"
+PROMPTS_DIR = INSTRUCTIONS_PATH.parent
 
 
 def demo_stage_from_env():
@@ -97,36 +101,68 @@ def _artifact_store(directory: Path, public_base_url: str | None, credential):
         return inner
 
 
+ARCHITECTURES = ("multi", "single")
+
+
+def architecture_from_env() -> str:
+    """LEARNING_COACH_ARCHITECTURE=single runs the single-agent baseline (comparison only)."""
+    value = os.environ.get("LEARNING_COACH_ARCHITECTURE", "multi").strip() or "multi"
+    if value not in ARCHITECTURES:
+        raise ValueError("unknown_architecture")
+    return value
+
+
 def create_pipeline(*, client=None, data_dir=None, public_base_url=None, native_json=None,
-                    image_generator=None, search_provider=None, stage_observer=None):
-    """Build dependencies without launching a server or contacting a model."""
+                    image_generator=None, search_provider=None, stage_observer=None, architecture=None):
+    """Build dependencies without launching a server or contacting a model.
+
+    architecture: "multi" (default, the product) or "single" (the single-agent
+    baseline used for comparison). Both share storage, search, rendering,
+    image generation and every program check.
+    """
     role_clients = None
     credential = None
     if client is None:
         load_dotenv(SRC_DIR / ".env")
+    architecture = architecture or architecture_from_env()
+    if architecture not in ARCHITECTURES:
+        raise ValueError("unknown_architecture")
+    if client is None and architecture == "multi":
         models = role_models_from_env(os.environ["AZURE_AI_MODEL_DEPLOYMENT_NAME"])
         role_clients, credential = _foundry_clients(os.environ["FOUNDRY_PROJECT_ENDPOINT"], models)
         client = role_clients["coordinator"]
+    elif client is None:
+        credential = DefaultAzureCredential()
+        model = (os.environ.get("LEARNING_COACH_MODEL_SINGLE", "").strip()
+                 or os.environ["AZURE_AI_MODEL_DEPLOYMENT_NAME"])
+        client = FoundryChatClient(project_endpoint=os.environ["FOUNDRY_PROJECT_ENDPOINT"], model=model,
+                                   credential=credential,
+                                   function_invocation_configuration={"max_iterations": SINGLE_MAX_ITERATIONS})
     directory = Path(data_dir or os.environ.get("LEARNING_COACH_DATA_DIR", SRC_DIR / ".learning-coach"))
     if not directory.is_absolute():
         directory = SRC_DIR / directory
     directory.mkdir(parents=True, exist_ok=True)
-    native = os.environ.get("LEARNING_COACH_NATIVE_JSON", "0") == "1" if native_json is None else native_json
-    runner = StructuredRunner(create_agents(client, INSTRUCTIONS_PATH, role_clients=role_clients),
-                              native_json=native, observer=stage_observer)
     artifacts = _artifact_store(directory, public_base_url, credential)
     from learning_coach.adapters.illustrate import generate_image
 
     encoder()  # load the tokenizer once at startup, not inside the first turn
 
-    return LearningPipeline(
-        runner, ResearchService(runner, search_provider if search_provider is not None else default_provider()), _memory_store(directory, credential), artifacts,
-        json.loads((SRC_DIR / "response.schema.json").read_text(encoding="utf-8")),
+    provider = search_provider if search_provider is not None else default_provider()
+    shared = dict(
         image_generator=image_generator if image_generator is not None else generate_image,
         onboarding=os.environ.get("LEARNING_COACH_ONBOARDING", "1") == "1",
         demo_stage=demo_stage_from_env(),
         budgets=Budgets.from_env(),
     )
+    response_schema = json.loads((SRC_DIR / "response.schema.json").read_text(encoding="utf-8"))
+    store = _memory_store(directory, credential)
+    if architecture == "single":
+        agent = SingleAgentRunner(create_single_agent(client, PROMPTS_DIR), observer=stage_observer)
+        return SingleAgentPipeline(agent, provider, store, artifacts, response_schema, **shared)
+    native = os.environ.get("LEARNING_COACH_NATIVE_JSON", "0") == "1" if native_json is None else native_json
+    runner = StructuredRunner(create_agents(client, INSTRUCTIONS_PATH, role_clients=role_clients),
+                              native_json=native, observer=stage_observer)
+    return LearningPipeline(runner, ResearchService(runner, provider), store, artifacts, response_schema, **shared)
 
 
 

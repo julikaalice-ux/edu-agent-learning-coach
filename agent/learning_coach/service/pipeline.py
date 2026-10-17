@@ -633,7 +633,7 @@ class LearningPipeline:
             "memory": memory_slice(memory, " ".join(item["text"] for item in shown)[-2000:], self.budgets.memory),
         }
         try:
-            notes = validate(await self.runner("notes", payload, NOTES_SCHEMA), NOTES_SCHEMA)
+            notes = validate(await self._draft_notes(payload), NOTES_SCHEMA)
             key = f"notes:{event_id}" if memory_key == session_id else f"{session_id}:notes:{event_id}"
             written = self.store.apply_notes(memory_key, key, notes, said)
         except (StageFailure, ContractError, ValueError, OSError, StorageError):
@@ -652,6 +652,14 @@ class LearningPipeline:
         else:
             message = "看了一遍，这次没有需要新记下的内容。"
         return reply(message, INTENT_CHAT, {"kind": "question", "text": "接下来想学什么？"}), state
+
+    async def _draft_notes(self, payload):
+        """The notes agent writes the draft; the program checks and writes it."""
+        return await self.runner("notes", payload, NOTES_SCHEMA)
+
+    async def _draft_question(self, request):
+        """The quiz writer drafts one question; the program checks it."""
+        return await self.runner("quizzer", request, QUIZ_SCHEMA)
 
     @staticmethod
     def _track_tasks(state, previous_task, previous_quiz, turn, text):
@@ -795,7 +803,7 @@ class LearningPipeline:
         for _ in range(3):
             if problem:
                 request["correction"] = problem
-            question = validate(await self.runner("quizzer", request, QUIZ_SCHEMA), QUIZ_SCHEMA)
+            question = validate(await self._draft_question(request), QUIZ_SCHEMA)
             problem = check_question(question)
             if problem is None and question["question"].strip().casefold() in known:
                 problem = "repeated_question"

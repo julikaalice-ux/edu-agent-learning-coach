@@ -1,6 +1,7 @@
 """Application-owned ports. Adapters conform structurally; no SDK imports."""
 
-from typing import Protocol
+from dataclasses import dataclass
+from typing import Any, Awaitable, Callable, Protocol
 
 
 class StorageError(RuntimeError):
@@ -41,3 +42,17 @@ class SearchProvider(Protocol):
 
 class VisualRenderer(Protocol):
     def __call__(self, spec: dict, image: bytes | None = None) -> str: ...
+
+
+@dataclass(frozen=True)
+class ToolSpec:
+    """A program function the single-agent baseline may call; adapters turn it into a model tool."""
+    name: str
+    description: str
+    parameters: dict          # JSON schema of the keyword arguments
+    func: Callable[..., Awaitable[dict]]
+
+
+class SingleAgentPort(Protocol):
+    """One model with tools; returns the final JSON already checked against schema."""
+    async def __call__(self, task: str, payload: dict, schema: dict, tools: list[ToolSpec]) -> dict: ...
