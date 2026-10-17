@@ -74,7 +74,7 @@ def _memory_store(directory: Path, credential):
 
 
 def create_pipeline(*, client=None, data_dir=None, public_base_url=None, native_json=None,
-                    image_generator=None, search_provider=None):
+                    image_generator=None, search_provider=None, stage_observer=None):
     """Build dependencies without launching a server or contacting a model."""
     role_clients = None
     credential = None
@@ -88,7 +88,8 @@ def create_pipeline(*, client=None, data_dir=None, public_base_url=None, native_
         directory = SRC_DIR / directory
     directory.mkdir(parents=True, exist_ok=True)
     native = os.environ.get("LEARNING_COACH_NATIVE_JSON", "0") == "1" if native_json is None else native_json
-    runner = StructuredRunner(create_agents(client, INSTRUCTIONS_PATH, role_clients=role_clients), native_json=native)
+    runner = StructuredRunner(create_agents(client, INSTRUCTIONS_PATH, role_clients=role_clients),
+                              native_json=native, observer=stage_observer)
     artifacts = ArtifactStore(directory / "artifacts", renderer=render_visual, public_base_url=public_base_url or
                               os.environ.get("LEARNING_COACH_PUBLIC_BASE_URL", "http://localhost:8088"))
     from learning_coach.adapters.illustrate import generate_image

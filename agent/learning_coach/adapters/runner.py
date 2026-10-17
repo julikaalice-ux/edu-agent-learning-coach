@@ -53,13 +53,16 @@ class StructuredRunner:
     logged with estimated and reported token usage (never content).
     """
 
-    def __init__(self, agents, *, native_json=False, timeout=45, retry_delay=1.0):
+    def __init__(self, agents, *, native_json=False, timeout=45, retry_delay=1.0, observer=None):
         if set(agents) != set(ROLES):
             raise ValueError("agent_roles_mismatch")
         self.agents = agents
         self.native_json = native_json
         self.timeout = timeout
         self.retry_delay = retry_delay
+        # Optional per-stage progress callback, called with the same record
+        # that gets logged (role, phase, attempt, outcome, elapsed_ms, ...).
+        self.observer = observer
         # Recent per-call usage, for evaluations and the token comparison.
         self.usage = deque(maxlen=USAGE_HISTORY)
 
@@ -110,6 +113,8 @@ class StructuredRunner:
                           "elapsed_ms": round((perf_counter() - started) * 1000)}
                 self.usage.append(record)
                 LOG.info("agent_stage %s", " ".join(f"{key}={value}" for key, value in record.items()))
+                if self.observer is not None:
+                    self.observer(record)
         raise StageFailure("invalid_stage_output")
 
 

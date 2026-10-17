@@ -32,6 +32,7 @@ import os
 import re
 import secrets
 import sys
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -151,11 +152,37 @@ def browser_secret(data_dir: Path = DATA_DIR):
         return None  # Gradio then uses a random key for this run only
 
 
+# Progress hints shown in the chat while a turn runs: the runner's per-stage
+# observer updates the current label, and the chat generator polls it while
+# awaiting the pipeline so long stages (visuals) never look frozen.
+STAGE_LABELS = {
+    ("coordinator", "decide"): "正在理解你的问题…",
+    ("researcher", "specialist"): "正在检索和查证资料…",
+    ("quizzer", "quiz"): "正在出题…",
+    ("notes", "specialist"): "正在整理学习笔记…",
+    ("visualizer", "specialist"): "正在生成互动图，可能需要半分钟左右…",
+    ("verifier", "visual_review"): "正在审阅图示…",
+    ("coordinator", "respond"): "正在组织回复…",
+}
+
+
+class StageStatus:
+    def __init__(self):
+        self.current = None
+
+    def update(self, record):
+        self.current = STAGE_LABELS.get((record.get("role"), record.get("phase")), "正在思考…")
+
+
+STAGE_STATUS = StageStatus()
+
+
 def build_pipeline() -> LearningPipeline:
     return create_pipeline(
         data_dir=DATA_DIR,
         public_base_url="http://localhost:8088", native_json=False,
         image_generator=limited_image,
+        stage_observer=STAGE_STATUS.update,
     )
 
 
@@ -210,10 +237,30 @@ async def respond(user_text, session, device=None, allowed=False):
         ]
         yield session, thinking, session["panel"], "", device
         session["history"].append({"role": "user", "text": user_text})
-        output, new_state = await asyncio.wait_for(
-            PIPELINE.run(list(session["history"]), session_id=session["session_id"],
-                         state=session["state"], learner_id=device["learner_id"],
-                         returning_visitor=device["seen"]), timeout=240)
+        # Await the pipeline while polling the stage observer: each new stage
+        # replaces the placeholder so long generations show what is happening.
+        STAGE_STATUS.current = None
+        task = asyncio.create_task(PIPELINE.run(list(session["history"]), session_id=session["session_id"],
+                                                state=session["state"], learner_id=device["learner_id"],
+                                                returning_visitor=device["seen"]))
+        deadline = time.monotonic() + 240
+        shown = None
+        while True:
+            try:
+                output, new_state = await asyncio.wait_for(asyncio.shield(task), timeout=1.0)
+                break
+            except TimeoutError:
+                if time.monotonic() > deadline:
+                    task.cancel()
+                    raise
+                label = STAGE_STATUS.current
+                if label and label != shown:
+                    shown = label
+                    thinking = session["chat"] + [
+                        {"role": "user", "content": user_text},
+                        {"role": "assistant", "content": label},
+                    ]
+                    yield session, thinking, session["panel"], "", device
         device = {**device, "seen": True}
         session["state"] = new_state
         text = learner_text(output)

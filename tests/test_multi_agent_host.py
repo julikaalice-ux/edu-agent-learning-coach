@@ -102,6 +102,16 @@ class StructuredRunnerTests(unittest.IsolatedAsyncioTestCase):
             await self.make_runner(fake)("coordinator", {}, SCHEMA)
         self.assertEqual(len(fake.calls), 2)
 
+    async def test_observer_receives_every_stage_record(self):
+        records = []
+        runner = self.make_runner(FakeAgent(), observer=records.append)
+        await runner("coordinator", {"phase": "decide", "question": "分数"}, SCHEMA)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["role"], "coordinator")
+        self.assertEqual(records[0]["phase"], "decide")
+        self.assertEqual(records[0]["outcome"], "ok")
+        self.assertIn("elapsed_ms", records[0])
+
     async def test_timeout_is_bounded_and_retried_once(self):
         fake = FakeAgent(delay=10)
         with self.assertRaisesRegex(StageFailure, "provider_or_timeout_failure"):
