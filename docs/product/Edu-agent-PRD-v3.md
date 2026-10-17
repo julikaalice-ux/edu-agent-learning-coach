@@ -338,7 +338,7 @@
 | 出题 agent | 出一道单选题，标出每个错误选项的疑似错因，需要时请求配图 | 主题、难度、题的用途（检查或练习）、这一轮的讲解（检查题）、出过的题、背景卡、讲过什么、卡在哪；按依赖带上核实过的资料或图 | 题目、选项、答案、解析、错因标注、配图请求。除题目和选项外都由程序保管，作答前谁也看不到 |
 | 笔记 agent | 整理结构化笔记 | 学习者这次说过的话、标记过的轮次、要点、判分结果、背景卡、已有笔记切片 | 画像、知识点、易错点、复习安排 |
 
-**模型**：检索角色用 gpt-6-luna，主 agent、查证、出题、笔记、画图用 gpt-5.4-mini，AI 配图用 FLUX.2-pro，都部署在 Azure AI Foundry。每个角色的模型由 `LEARNING_COACH_MODEL_<角色>` 配置，没配置的用默认部署 `AZURE_AI_MODEL_DEPLOYMENT_NAME`。
+**模型**：检索、核对（查证和审图）、画图三个角色用 gpt-6-luna（画复杂互动图时 mini 常常过不了审图），主 agent、出题、笔记用 gpt-5.4-mini，AI 配图用 FLUX.2-pro，都部署在 Azure AI Foundry。每个角色的模型由 `LEARNING_COACH_MODEL_<角色>` 配置，没配置的用默认部署 `AZURE_AI_MODEL_DEPLOYMENT_NAME`。
 
 **为什么出题单独做一个 agent**：
 
