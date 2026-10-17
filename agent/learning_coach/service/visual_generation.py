@@ -41,7 +41,7 @@ class VisualGenerationService:
     """At most two drafts/reviews; publication belongs to the outer transaction."""
 
     def __init__(self, runner: AgentRunner, artifacts: Artifacts,
-                 image_generator: ImageGenerator | None = None, *, timeout: float = 60):
+                 image_generator: ImageGenerator | None = None, *, timeout: float = 90):
         self.runner, self.artifacts, self.image_generator = runner, artifacts, image_generator
         self.timeout = timeout
 
