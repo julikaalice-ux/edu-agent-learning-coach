@@ -220,17 +220,16 @@ class StructuredRunnerTests(unittest.IsolatedAsyncioTestCase):
 
 @unittest.skipUnless(SDK_AVAILABLE, "Run with the project's locked SDK environment")
 class AgentFactoryTests(unittest.IsolatedAsyncioTestCase):
-    async def test_six_real_agents_load_prompts_and_accept_fake_client(self):
+    async def test_five_real_agents_load_prompts_and_accept_fake_client(self):
         client = FakeChatClient()
         agents = create_agents(client, SOURCE / "prompts/instructions.md")
         prompt_paths = {"coordinator": SOURCE / "prompts/instructions.md",
-                        "researcher": SOURCE / "prompts/agents/material-search.md",
                         "verifier": SOURCE / "prompts/agents/source-check.md",
                         "notes": SOURCE / "prompts/agents/note-organizer.md",
                         "visualizer": SOURCE / "prompts/agents/visual-designer.md",
                         "quizzer": SOURCE / "prompts/agents/quiz-writer.md"}
         self.assertEqual(set(agents), set(ROLES))
-        self.assertEqual(len({id(agent) for agent in agents.values()}), 6)
+        self.assertEqual(len({id(agent) for agent in agents.values()}), 5)
         for role, agent in agents.items():
             with self.subTest(role=role):
                 self.assertIsInstance(agent, Agent)
@@ -240,7 +239,7 @@ class AgentFactoryTests(unittest.IsolatedAsyncioTestCase):
                 options = client.calls[-1][2]
                 self.assertIn(prompt_paths[role].read_text(encoding="utf-8"), options["instructions"])
                 self.assertIs(options["store"], False)
-        self.assertEqual(len(client.calls), 6)
+        self.assertEqual(len(client.calls), 5)
 
     async def test_native_visual_union_is_wrapped_and_returns_original_spec(self):
         visual = {"kind": "flashcards", "title": "分数", "cards": [{"front": "一半", "back": "二分之一"}]}
@@ -426,6 +425,7 @@ class FiveRoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 if data.get("phase") == "decide":
                     role = "coordinator"
                     answer = {"intent": FINAL["intent"], "research_query": "water freezing expansion",
+                              "search_queries": ["water freezing expansion", "ordinary ice open lattice density"],
                               "visual_request": "展示水和冰的结构差异", "observe_learning": True,
                               "task_summary": "理解水结冰体积变化", "pause_task": False, "end_task": False,
                               "quiz_action": "none", "quiz_topic": None, "quiz_total": 1,
@@ -456,9 +456,6 @@ class FiveRoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                               "status": "verified", "independent": True, "explanation": "Both excerpts directly support the claim.",
                               "evidence": [{"source_id": item["id"], "quote": item["excerpt"], "relation": "supports"}
                                            for item in data["sources"]]}]}
-                elif "question" in data:
-                    role = "researcher"
-                    answer = {"queries": ["water freezing expansion", "ordinary ice open lattice density"]}
                 elif "learner_messages" in data:
                     role = "notes"
                     answer = {"schema_version": "1.0", "profile": [{"key": "learning_stage", "value": "成人工作后学习",
@@ -504,8 +501,7 @@ class FiveRoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(final.text, expected_text)
                 self.assertEqual(len(updates), 1)
                 # Notes are not compiled inside the teaching turn.
-                self.assertEqual(client.roles, ["coordinator", "researcher", "verifier", "visualizer", "verifier",
-                                                "coordinator"])
+                self.assertEqual(client.roles, ["coordinator", "verifier", "visualizer", "verifier", "coordinator"])
                 self.assertEqual(len(provider.calls), 2)
                 self.assertEqual(client.response_payload["research"]["overall"], "verified")
                 self.assertEqual(client.response_payload["visual_status"], "ready")

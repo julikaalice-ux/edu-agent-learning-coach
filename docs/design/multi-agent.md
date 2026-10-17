@@ -1,13 +1,12 @@
 # 多 Agent 实现与本地验证
 
-本文描述当前代码里的一个主 agent 和五个子 agent 怎样协作。六个 agent 共享一个应用进程，由程序按显式流水线调度；不需要部署六个服务，也不代表已经通过真实模型、搜索端点或 Foundry 部署验收。对外 JSON 协议继续使用 `schema_version: "1.0"`。代码分层、模型分工和数据存放见 [`architecture.md`](architecture.md)。
+本文描述当前代码里的一个主 agent 和四个子 agent 怎样协作。五个 agent 共享一个应用进程，由程序按显式流水线调度；不需要部署五个服务，也不代表已经通过真实模型、搜索端点或 Foundry 部署验收。对外 JSON 协议继续使用 `schema_version: "1.0"`。代码分层、模型分工和数据存放见 [`architecture.md`](architecture.md)。
 
 ## 1. 角色及执行顺序
 
 | 角色 | 提示词 | 工作 | 输出与约束 |
 |---|---|---|---|
-| `coordinator` 主 agent | `prompts/instructions.md` | 识别 A–G 主意图、选择教学方式，优先直接回答，确有必要才派活；汇总结果写最终回复；讲完一块时可以要一道检查题。 | 首次 `decide` 返回内部 `answer` 或 `tools` 模式；同时返回更新后的对话要点（`context_notes`）。对外结果仍为四字段响应。 |
-| `researcher` 检索 | `material-search.md` | 把问题拆成 2–4 个可搜索的查询。 | 不生成网址或来源；程序执行真正的搜索。 |
+| `coordinator` 主 agent | `prompts/instructions.md` | 识别 A–G 主意图、选择教学方式，优先直接回答，确有必要才派活；需要查资料时写检索问题和 2–4 条搜索词；汇总结果写最终回复；讲完一块时可以要一道检查题。 | 首次 `decide` 返回内部 `answer` 或 `tools` 模式；同时返回更新后的对话要点（`context_notes`）。对外结果仍为四字段响应。 |
 | `verifier` 核对 | `source-check.md` | 核查检索材料；以独立调用的 `phase=visual_review` 审阅教学图方案。 | 信源引用必须来自已取得的资料；审图检查声明式内容与教学目标，不能声称检查过真实渲染的像素。 |
 | `visualizer` 画图 | `visual-designer.md` | 按知识点设计带标签、关系和分步变化的图示，必要时按审阅意见重画。 | 输出声明式 spec；程序绘制 HTML/SVG，不执行模型写的代码；内容重画最多一次。 |
 | `quizzer` 出题 | `quiz-writer.md` | 每次写一道单选题，给每个错误选项标疑似错因；需要时请求一张配图。 | 判分由程序做，答案和错因标注在作答前不给学习者和主 agent 看；错因标不全就退回重写。 |
@@ -23,7 +22,7 @@
             ▼                                                  ▼
     四字段答复 + 内部任务控制                     检查派活理由与原文证据，算出执行顺序
             │                                                  │
-            │                         检索 → 核对（查证）  画图 → 核对（审图）  出题
+            │                       程序搜索 → 核对（查证）  画图 → 核对（审图）  出题
             │                              按依赖等待，没有依赖的同时开工
             │                                                  │
             │                                  coordinator respond + 各能力终态
@@ -55,7 +54,7 @@
 
 | 能力 | 允许的理由 code | 必要条件与执行边界 |
 |---|---|---|
-| 检索 | `explicit_lookup`、`time_sensitive`、`fact_check`、`knowledge_gap` | 明确查找、时效、核查或知识缺口；检索 agent 生成查询后由程序搜索，取得真实材料后才调用核对 agent。 |
+| 检索 | `explicit_lookup`、`time_sensitive`、`fact_check`、`knowledge_gap` | 明确查找、时效、核查或知识缺口；主 agent 在计划里写 2–4 条搜索词（`search_queries`），程序直接拿去搜索，没写时用检索问题本身搜；取得真实材料后才调用核对 agent。 |
 | 测验 | `explicit_practice`、`accepted_check`、`continue_practice` | `start` 对应前两项，`continue` 必须对应 `continue_practice`；范围不足先澄清。一组练习默认 3 题，每次出一道，当前选择题答案由程序判分。 |
 | 笔记 | `profile_update`、`learning_evidence`、`error_record`、`review_plan` | 必须已开启学习记录，并且本轮有相应信息或证据；教学回合里只记为待整理（`deferred`），笔记 agent 在整理笔记时才运行。 |
 | 可视化 | `explicit_visual`、`comparison`、`process`、`function`、`active_recall` | 原理、机制和变化生成通用 scene；也支持 comparison / process / linear_function / flashcards / diagram；外观和场景可以用 illustration。需要图不自动意味着需要检索。 |
@@ -111,7 +110,9 @@ E/F/G、明确结束或暂停都不启动这些能力，分别先处理情绪、
 
 ## 3. 检索与核查
 
-实现文件：[`research.py`](../../agent/learning_coach/service/research.py)。接口为 `ResearchService(runner, provider)`，调用 `await service.run(question, learner)` 得到 `queries / sources / claims / overall / warnings`。检索 agent 会收到学习者的学段和学习目标，用来选合适的搜索词。
+实现文件：[`research.py`](../../agent/learning_coach/service/research.py)。接口为 `ResearchService(runner, provider)`，调用 `await service.run(question, queries)` 得到 `queries / sources / claims / overall / warnings`。`question` 是主 agent 写的检索问题，`queries` 是它在同一个计划里写的搜索词；程序去重、截断后直接搜索，一条都没有时用检索问题本身搜，并记一条 `queries_missing` 警告。写搜索词的规则在主 agent 的提示词里：第 1 条查概念或原理，第 2 条找权威资料或反例，有争议时才加第 3–4 条；措辞中性，按学段决定资料深浅，不写任何个人信息。
+
+搜索词原来由单独的检索 agent 写。它只做这一件很小的事，却要多一次模型调用；主 agent 判断时本来就要写“查什么”，所以并了进去。
 
 默认使用不需要密钥的 Wikipedia Action API：先搜索页面，再通过 TextExtracts 取纯文本节选。设置 `TAVILY_API_KEY` 时改用 Tavily，优先用它返回的页面原文，原文缺失时明确标为搜索摘要。Tavily 生成的 `answer` 不进入证据。实际使用 Tavily 可能产生该提供方的费用。
 
@@ -242,7 +243,7 @@ uv run --project agent --locked python agent/demo.py
 
 演示需要可用的模型部署和 Azure 登录。命令行本身不启动 HTTP 产物服务；打开 `/artifacts/{token}` 链接需要本地托管服务正在运行。
 
-从仓库根运行全部离线测试（共 320 个）：
+从仓库根运行全部离线测试（共 321 个）：
 
 ```bash
 uv run --project agent --locked --group dev python -m unittest discover -s tests -v

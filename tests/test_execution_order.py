@@ -11,7 +11,8 @@ from learning_coach.domain.routing import execution_order  # noqa: E402
 
 
 def plan(research=None, visual=None, quiz="none", **deps):
-    value = {"research_query": research, "visual_request": visual, "quiz_action": quiz,
+    value = {"research_query": research, "search_queries": [research] if research else None,
+             "visual_request": visual, "quiz_action": quiz,
              "visual_uses_research": None, "quiz_uses_research": None, "quiz_uses_visual": None}
     value.update(deps)
     return value

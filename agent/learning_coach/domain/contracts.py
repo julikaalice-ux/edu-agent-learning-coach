@@ -7,6 +7,7 @@ from jsonschema import Draft202012Validator
 
 from learning_coach.domain.context import CONTEXT_UPDATE_SCHEMA
 from learning_coach.domain.note_contracts import ERROR_TYPES
+from learning_coach.domain.research_contracts import MAX_QUERIES, MAX_QUERY_CHARS
 
 
 class ContractError(ValueError):
@@ -26,6 +27,9 @@ MAX_QUESTION_CHARS = 4000
 OPTIONAL_TEXT = {"anyOf": [TEXT, {"type": "null"}]}
 DIFFICULTY = {"enum": ["简单", "中等", "困难"]}
 OPTIONAL_BOOL = {"anyOf": [{"type": "boolean"}, {"type": "null"}]}
+# The coordinator writes the search queries itself when it asks for research.
+SEARCH_QUERIES = {"anyOf": [{"type": "null"}, {"type": "array", "minItems": 1, "maxItems": MAX_QUERIES,
+    "items": {"type": "string", "minLength": 1, "maxLength": MAX_QUERY_CHARS, "pattern": r"\S"}}]}
 DEPENDENCY_FIELDS = ("visual_uses_research", "quiz_uses_research", "quiz_uses_visual")
 INTENT_SCHEMA = object_schema({
     "primary": {"enum": list("ABCDEFG")}, "is_implicit": {"type": "boolean"},
@@ -51,6 +55,7 @@ TOOL_REASONS_SCHEMA = object_schema({
 PLAN_SCHEMA = object_schema({
     "intent": INTENT_SCHEMA,
     "research_query": OPTIONAL_TEXT,
+    "search_queries": SEARCH_QUERIES,
     "visual_request": OPTIONAL_TEXT,
     "observe_learning": {"type": "boolean"},
     "task_summary": OPTIONAL_TEXT,
