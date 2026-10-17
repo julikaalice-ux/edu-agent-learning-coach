@@ -507,6 +507,12 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             output, state = await pipeline.run(messages("A"), session_id="s", state=state, turn_id=f"answer-{number}")
             self.assertEqual(state["quiz"]["answered"], number)
             self.assertEqual(len(runner.calls_for("quizzer")), min(number + 1, 3))
+            # The responder never sees the upcoming question: the program
+            # appends it afterwards, and a visible question invites the
+            # coordinator to hint its answer in the feedback.
+            quiz_view = runner.calls_for("coordinator", "respond")[-1]["quiz"]
+            self.assertNotIn("new_question", quiz_view)
+            self.assertNotIn("awaiting", quiz_view)
         self.assertEqual([call["count"] for call in runner.calls_for("quizzer")], [1, 1, 1])
         self.assertEqual(state["quiz"]["correct"], 3)
         self.assertTrue(state["quiz"]["finished"])

@@ -516,13 +516,22 @@ class LearningPipeline:
 
         respond_window = recent_window(numbered, budgets.respond_window, min_turns=min(2, budgets.min_turns),
                                        message_max=budgets.message_max)
+        # Question payloads stay out of the responder's view: the program
+        # appends the new question to next_step afterwards, and showing it
+        # here lets the coordinator solve it and hint the answer in its
+        # feedback ("同时除以 4" right before "4x = 20"). A scalar flag keeps
+        # the responder aware that the upcoming question carries a picture.
+        quiz_view = {key: value for key, value in (quiz_context or {}).items()
+                     if key not in ("new_question", "awaiting")}
+        if ((quiz_context or {}).get("new_question") or {}).get("has_picture"):
+            quiz_view["new_question_has_picture"] = True
         response_input = {
             "phase": "respond", "messages": respond_window,
             "context_notes": notes_now or empty_notes(),
             "learner": learner_card(state, memory, memory_enabled=memory_enabled),
             "plan": plan, "memory": memory_view,
             "state": {key: state.get(key) for key in ("active_task", "pending_tasks", "resume_stage")},
-            "research": research_digest(research), "quiz": quiz_context,
+            "research": research_digest(research), "quiz": quiz_view,
             "visual_status": "ready" if artifact else "unavailable" if visual_warning else "not_requested",
             "visual_context": visual_context,
             "memory_enabled": memory_enabled, "first_meeting": first_meeting,
