@@ -207,6 +207,14 @@ Service 只用 Domain 规则和自己定义的接口；模型、数据库、搜�
 
 当前是单机 SQLite、单进程会话状态，没有分布式存储，也没有把子 agent 部署成独立服务。多副本部署需要另外解决会话定位、并发状态和共享产物存储。服务器不自动初始化云端遥测，也不采集原始消息。
 
+## 单 agent 对照版
+
+为了回答“拆成多个 agent 值不值”，代码里有一个只用一个 agent 的对照版，设置 `LEARNING_COACH_ARCHITECTURE=single` 启用（[`service/single_agent.py`](../../agent/learning_coach/service/single_agent.py)、[`adapters/single_runner.py`](../../agent/learning_coach/adapters/single_runner.py)）。它只用于对比，不是产品入口。
+
+- **一样的**：教学、核对、画图、出题、笔记的规则（提示词从同几份文件拼出来，外加 [`single-agent.md`](../../agent/prompts/single-agent.md) 说明工具和流程）；模型部署；搜索、渲染和生图；所有程序检查和状态（开场、记录开关、判分、出题检查、链接检查、校验后才提交）。
+- **不一样的**：一个 agent 在一次带工具的对话里自己写搜索词、核对资料（`search`、`record_claims`）、画图（`draw_visual`）、出题（`ask_question`）并写回复；没有单独的出题 agent，图没有独立审阅，也没有对话要点。
+- **怎么比**：[`evals/compare.py`](../../evals/compare.py) 在本机用真实模型跑两版，统计程序检查、判分模型按用例要求的通过率、每轮模型调用次数、token 和耗时；[`evals/foundry_compare.py`](../../evals/foundry_compare.py) 把 31 条单轮用例放到 Foundry 评估页，对两个托管 agent 并排评估（`azure.yaml` 里的 `edu-agent-single`）。
+
 ## 验证与后续工作
 
 从仓库根运行：

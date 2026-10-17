@@ -136,10 +136,20 @@ flowchart TB
 uv run --project agent --locked --group dev python -m unittest discover -s tests
 ```
 
-测试用 fake 模型覆盖真实 SDK 接口，不调用真实模型；交互图测试需要 Node，没装时自动跳过。共 321 个测试；需要完整 SDK 环境或 Node 的测试，缺少时自动跳过。
+测试用 fake 模型覆盖真实 SDK 接口，不调用真实模型；需要完整 SDK 环境或 Node 的测试，缺少时自动跳过。
 
 - 评测用例：[`evals/cases.jsonl`](evals/cases.jsonl)，打分脚本 [`evals/score.py`](evals/score.py)
 - 离线校验真实响应：[`scripts/validate_responses.py`](scripts/validate_responses.py)
+
+**单 agent 与多 agent 对比**：单 agent 对照版（`LEARNING_COACH_ARCHITECTURE=single`）只有一个 agent，用同样的规则、同样的工具和同样的程序检查，自己完成查资料、核对、画图、出题和写回复。
+
+```bash
+uv run --project agent --locked python evals/compare.py --sample 10   # 先跑 10 条看花费
+uv run --project agent --locked python evals/compare.py               # 49 条全跑
+uv run --project agent --locked python evals/foundry_compare.py       # 31 条单轮用例在 Foundry 里并排评估
+```
+
+`compare.py` 在本机用真实模型跑两版，默认所有角色用同一个模型部署；结果（对比表、图表页和原始记录）写在 `runs/`。`foundry_compare.py` 需要先 `azd deploy` 两个托管 agent（`azure.yaml` 里的 `edu-agent-single` 是对照版）。
 
 ## 部署
 
