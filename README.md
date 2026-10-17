@@ -1,6 +1,6 @@
 # Edu-Agent 学习教练
 
-面向 K12 的学习教练：一个主 agent 调度五个子 agent（检索、查证、出题、笔记、画图），会讲解，会出小题检查是否真的学会，答错时先找原因，学完后经学习者同意整理成笔记。模型部署在 Azure AI Foundry，基于 Microsoft Agent Framework，演示网页部署在 Hugging Face Space。
+面向 K12 的学习教练：一个主 agent 调度四个子 agent（核对、画图、出题、笔记），需要查资料时主 agent 自己写搜索词，由程序去搜，会讲解，会出小题检查是否真的学会，答错时先找原因，学完后经学习者同意整理成笔记。模型部署在 Azure AI Foundry，基于 Microsoft Agent Framework，演示网页部署在 Hugging Face Space。
 
 核心原则是**模型提出，程序决定**：模型负责理解和生成；判分、权限、执行顺序、写入数据这些必须确定的事由程序完成，每个模型输出都要先通过 schema 校验才能使用。
 
@@ -41,7 +41,7 @@ cp agent/.env.example agent/.env   # 填 FOUNDRY_PROJECT_ENDPOINT 和 AZURE_AI_M
 | --- | --- | --- |
 | `FOUNDRY_PROJECT_ENDPOINT` | 是 | Foundry 项目地址，到 `/api/projects/<项目名>` 为止 |
 | `AZURE_AI_MODEL_DEPLOYMENT_NAME` | 是 | 默认模型部署名 |
-| `LEARNING_COACH_MODEL_<角色>` | | 给单个 agent 指定模型，角色为 `COORDINATOR`、`RESEARCHER`、`VERIFIER`、`NOTES`、`VISUALIZER`、`QUIZZER` |
+| `LEARNING_COACH_MODEL_<角色>` | | 给单个 agent 指定模型，角色为 `COORDINATOR`、`VERIFIER`、`NOTES`、`VISUALIZER`、`QUIZZER` |
 | `LEARNING_COACH_IMAGE_BACKEND` | | 配图后端，`flux`（默认，部署名 `flux-2-pro`）或 `pollinations` |
 | `TAVILY_API_KEY` | | 检索用 Tavily；不填时用 Wikipedia |
 | `LEARNING_COACH_DATA_DIR` | | 学习记录和互动图的存放目录 |
@@ -52,7 +52,7 @@ cp agent/.env.example agent/.env   # 填 FOUNDRY_PROJECT_ENDPOINT 和 AZURE_AI_M
 | `DEMO_ACCESS_KEY` | | 演示页邀请码，访问链接需带 `?key=` |
 | `DEMO_MAX_TURNS_PER_DAY` / `DEMO_MAX_IMAGES_PER_DAY` | | 演示页每日上限，默认 150 / 20 |
 
-当前模型分工：检索、核对（查证和审图）、画图用 `gpt-6-luna`，主 agent、出题、笔记用 `gpt-5.4-mini`，配图 `flux-2-pro`。三处入口要一致：本地看 `agent/.env`，托管看 `azure.yaml`，Space 看它的 Variables。
+当前模型分工：核对（查证和审图）、画图用 `gpt-6-luna`，主 agent（含写搜索词）、出题、笔记用 `gpt-5.4-mini`，配图 `flux-2-pro`。三处入口要一致：本地看 `agent/.env`，托管看 `azure.yaml`，Space 看它的 Variables。
 
 ## 项目结构
 
@@ -96,7 +96,7 @@ cp agent/.env.example agent/.env   # 填 FOUNDRY_PROJECT_ENDPOINT 和 AZURE_AI_M
 ```text
 学习者 → coordinator（决定）─┬─ 直接回答 ──────────────────────────┐
                             └─ 调用子 agent：                      │
-                                 researcher + verifier  检索、查证  │
+                                 程序搜索 + verifier    检索、查证  │
                                  quizzer                出题、判分  │
                                  notes / visualizer     笔记、画图  │
                                                                    ↓
@@ -135,7 +135,7 @@ flowchart TB
 uv run --project agent --locked --group dev python -m unittest discover -s tests
 ```
 
-测试用 fake 模型覆盖真实 SDK 接口，不调用真实模型；交互图测试需要 Node，没装时自动跳过。目前 298 个测试中有 297 个通过，失败的那个是测试桩缺少出题 agent，见 PRD 第六部分。
+测试用 fake 模型覆盖真实 SDK 接口，不调用真实模型；交互图测试需要 Node，没装时自动跳过。共 321 个测试；需要完整 SDK 环境或 Node 的测试，缺少时自动跳过。
 
 - 评测用例：[`evals/cases.jsonl`](evals/cases.jsonl)，打分脚本 [`evals/score.py`](evals/score.py)
 - 离线校验真实响应：[`scripts/validate_responses.py`](scripts/validate_responses.py)

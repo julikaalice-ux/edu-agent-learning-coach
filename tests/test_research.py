@@ -32,16 +32,17 @@ class FakeProvider:
         return self.items
 
 
+# The coordinator writes these in its plan; the service only searches with them.
+QUERIES = ["water freezing volume", "water ice density evidence"]
+
+
 class FakeRunner:
-    def __init__(self, alter=None, queries=None):
+    def __init__(self, alter=None):
         self.calls = []
         self.alter = alter
-        self.queries = queries if queries is not None else ["water freezing volume", "water ice density evidence"]
 
     async def __call__(self, role, payload, schema):
         self.calls.append((role, payload, schema))
-        if role == "researcher":
-            return {"queries": self.queries}
         claim = {"text": "Freezing water expands.", "status": "verified", "independent": True,
                  "explanation": "Comparing supplied excerpts.", "evidence": [
                      {"source_id": item["id"], "quote": item["excerpt"], "relation": "supports"}
@@ -56,44 +57,45 @@ class ResearchServiceTests(unittest.IsolatedAsyncioTestCase):
         provider = FakeProvider([source(), source("https://two.test/ice",
             "The structure of ordinary ice occupies more volume than the same mass of liquid.")])
         runner = FakeRunner()
-        result = await research.ResearchService(runner, provider).run("Why does water expand?")
+        result = await research.ResearchService(runner, provider).run("Why does water expand?", QUERIES)
         self.assertEqual(result["overall"], "verified")
-        self.assertEqual([call[0] for call in runner.calls], ["researcher", "verifier"])
+        self.assertEqual([call[0] for call in runner.calls], ["verifier"])
+        self.assertEqual(provider.queries, QUERIES)
         self.assertEqual(len(result["sources"]), 2)
 
     async def test_wikipedia_languages_are_one_publisher(self):
         provider = FakeProvider([source("https://zh.wikipedia.org/wiki/水", "水冻结时体积增大。"),
                                  source("https://en.wikipedia.org/wiki/Water")])
-        result = await research.ResearchService(FakeRunner(), provider).run("水")
+        result = await research.ResearchService(FakeRunner(), provider).run("水", QUERIES)
         self.assertEqual(result["overall"], "likely")
         self.assertEqual({s["publisher"] for s in result["sources"]}, {"wikipedia.org"})
 
     async def test_same_domain_and_subdomains_not_independent(self):
         provider = FakeProvider([source("https://science.example.com/ice"),
                                  source("https://www.example.com/ice", "An unrelatedly worded account of ice volume.")])
-        result = await research.ResearchService(FakeRunner(), provider).run("ice")
+        result = await research.ResearchService(FakeRunner(), provider).run("ice", QUERIES)
         self.assertEqual(result["overall"], "likely")
 
     async def test_mirrored_excerpts_not_independent(self):
         provider = FakeProvider([source(), source("https://mirror.test/copied")])
-        result = await research.ResearchService(FakeRunner(), provider).run("ice")
+        result = await research.ResearchService(FakeRunner(), provider).run("ice", QUERIES)
         self.assertEqual(result["overall"], "likely")
 
     async def test_duplicate_result_urls_do_not_inflate_sources(self):
-        result = await research.ResearchService(FakeRunner(), FakeProvider([source(), source()])).run("ice")
+        result = await research.ResearchService(FakeRunner(), FakeProvider([source(), source()])).run("ice", QUERIES)
         self.assertEqual(len(result["sources"]), 1)
         self.assertEqual(result["overall"], "likely")
 
     async def test_search_snippets_cannot_reach_verified(self):
         provider = FakeProvider([source(kind="search_snippet"),
             source("https://two.test/ice", "Ice volume is greater than liquid volume.", "search_snippet")])
-        result = await research.ResearchService(FakeRunner(), provider).run("ice")
+        result = await research.ResearchService(FakeRunner(), provider).run("ice", QUERIES)
         self.assertEqual(result["overall"], "likely")
 
     async def test_fabricated_source_id_is_rejected(self):
         def forge(claim):
             claim["evidence"] = [{"source_id": "invented", "quote": "true", "relation": "supports"}]
-        result = await research.ResearchService(FakeRunner(forge), FakeProvider([source()])).run("ice")
+        result = await research.ResearchService(FakeRunner(forge), FakeProvider([source()])).run("ice", QUERIES)
         self.assertEqual(result["overall"], "unavailable")
         self.assertEqual(result["claims"][0]["evidence"], [])
         self.assertIn("invalid_evidence_rejected", result["warnings"])
@@ -101,59 +103,67 @@ class ResearchServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_rewritten_excerpt_is_rejected(self):
         def forge(claim):
             claim["evidence"][0]["quote"] = "Not an actual retrieved quote"
-        result = await research.ResearchService(FakeRunner(forge), FakeProvider([source()])).run("ice")
+        result = await research.ResearchService(FakeRunner(forge), FakeProvider([source()])).run("ice", QUERIES)
         self.assertEqual(result["overall"], "unavailable")
 
     async def test_verifier_must_confirm_independent_publication(self):
         def related(claim):
             claim["independent"] = False
         provider = FakeProvider([source(), source("https://two.test/ice", "Ice has a relatively open lattice.")])
-        result = await research.ResearchService(FakeRunner(related), provider).run("ice")
+        result = await research.ResearchService(FakeRunner(related), provider).run("ice", QUERIES)
         self.assertEqual(result["overall"], "likely")
 
     async def test_contradiction_sets_disputed(self):
         def conflict(claim):
             claim["evidence"][0]["relation"] = "contradicts"
-        result = await research.ResearchService(FakeRunner(conflict), FakeProvider([source()])).run("ice")
+        result = await research.ResearchService(FakeRunner(conflict), FakeProvider([source()])).run("ice", QUERIES)
         self.assertEqual(result["overall"], "disputed")
 
     async def test_empty_results_skip_verifier(self):
         runner = FakeRunner()
-        result = await research.ResearchService(runner, FakeProvider()).run("ice")
+        result = await research.ResearchService(runner, FakeProvider()).run("ice", QUERIES)
         self.assertEqual(result["overall"], "unavailable")
-        self.assertEqual(len(runner.calls), 1)
+        self.assertEqual(runner.calls, [])
         self.assertIn("no_evidence", result["warnings"])
 
     async def test_network_failure_is_safe_unavailable(self):
-        result = await research.ResearchService(FakeRunner(), FakeProvider(fail=True)).run("ice")
+        result = await research.ResearchService(FakeRunner(), FakeProvider(fail=True)).run("ice", QUERIES)
         self.assertEqual(result["overall"], "unavailable")
         self.assertIn("provider_unavailable", result["warnings"])
         self.assertNotIn("SENSITIVE", json.dumps(result))
 
     async def test_query_and_result_counts_are_bounded(self):
         provider = FakeProvider([source(f"https://site{i}.example/item", f"Excerpt {i}") for i in range(20)])
-        result = await research.ResearchService(FakeRunner(queries=[str(i) for i in range(20)]), provider).run("ice")
+        result = await research.ResearchService(FakeRunner(), provider).run("ice", [str(i) for i in range(20)])
         self.assertEqual(len(provider.queries), 4)
         self.assertLessEqual(len(result["sources"]), 12)
 
-    async def test_invalid_plan_skips_network(self):
+    async def test_repeated_queries_are_searched_once(self):
         provider = FakeProvider()
-        result = await research.ResearchService(FakeRunner(queries=["same", "same"]), provider).run("ice")
-        self.assertEqual(provider.queries, [])
-        self.assertIn("query_plan_invalid", result["warnings"])
+        await research.ResearchService(FakeRunner(), provider).run("ice", ["same", " same ", ""])
+        self.assertEqual(provider.queries, ["same"])
+
+    async def test_missing_queries_fall_back_to_the_question(self):
+        for queries in (None, [], ["  "], "not a list"):
+            with self.subTest(queries=queries):
+                provider = FakeProvider([source()])
+                result = await research.ResearchService(FakeRunner(), provider).run("  ice volume  ", queries)
+                self.assertEqual(provider.queries, ["ice volume"])
+                self.assertIn("queries_missing", result["warnings"])
+                self.assertEqual(result["overall"], "likely")
 
     async def test_malformed_evidence_is_rejected_without_crashing(self):
         def malformed(claim):
             claim["status"] = []
             claim["evidence"][0]["relation"] = []
-        result = await research.ResearchService(FakeRunner(malformed), FakeProvider([source()])).run("ice")
+        result = await research.ResearchService(FakeRunner(malformed), FakeProvider([source()])).run("ice", QUERIES)
         self.assertEqual(result["overall"], "unavailable")
         self.assertIn("invalid_evidence_rejected", result["warnings"])
 
     async def test_bad_provider_source_is_not_evidence(self):
         invalid = source()
         invalid["excerpt_kind"] = []
-        result = await research.ResearchService(FakeRunner(), FakeProvider([invalid])).run("ice")
+        result = await research.ResearchService(FakeRunner(), FakeProvider([invalid])).run("ice", QUERIES)
         self.assertEqual(result["overall"], "unavailable")
 
     async def test_provider_timeout_does_not_wait_unboundedly(self):
@@ -161,7 +171,7 @@ class ResearchServiceTests(unittest.IsolatedAsyncioTestCase):
             async def search(self, query):
                 await asyncio.sleep(60)
         with patch.object(research, "PROVIDER_TIMEOUT", .01):
-            result = await research.ResearchService(FakeRunner(), SlowProvider()).run("ice")
+            result = await research.ResearchService(FakeRunner(), SlowProvider()).run("ice", QUERIES)
         self.assertEqual(result["overall"], "unavailable")
 
 

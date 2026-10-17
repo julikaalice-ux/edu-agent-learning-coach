@@ -606,7 +606,7 @@ class DirectRoutingTests(unittest.IsolatedAsyncioTestCase):
         text = "查一下资料并画图"
 
         class FailingResearch(FakeResearch):
-            async def run(self, query, learner=None):
+            async def run(self, query, queries=None):
                 child_tasks.append(asyncio.current_task())
                 await visual_started.wait()
                 raise LookupError("PRIVATE_UNEXPECTED_CHILD_FAILURE")
@@ -646,9 +646,9 @@ class DirectRoutingTests(unittest.IsolatedAsyncioTestCase):
         text = "我在工作，请查资料、出一道题并画图解释，再记录学习情况"
 
         class SlowResearch(FakeResearch):
-            async def run(self, query, learner=None):
+            async def run(self, query, queries=None):
                 await asyncio.sleep(0)
-                result = await super().run(query, learner)
+                result = await super().run(query, queries)
                 research_finished.set()
                 return result
 
@@ -678,8 +678,8 @@ class DirectRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state["last_execution"]["tools"]["quiz"], "question_ready")
         self.assertIn("research", runner.calls_for("quizzer")[0])
         self.assertEqual(runner.calls_for("notes"), [])
-        # Every sub-agent gets the same brief learner card.
-        self.assertEqual(research.learners[0]["participant"], "learner")
+        # Research searches with the coordinator's own queries; sub-agents get the learner card.
+        self.assertEqual(research.queries[0], ["分数"])
         self.assertIn("learner", runner.calls_for("visualizer")[0])
         self.assertIn("learner", runner.calls_for("quizzer")[0])
 
@@ -688,7 +688,7 @@ class DirectRoutingTests(unittest.IsolatedAsyncioTestCase):
         visual_started = asyncio.Event()
 
         class GatedResearch(FakeResearch):
-            async def run(self, query, learner=None):
+            async def run(self, query, queries=None):
                 await visual_started.wait()
                 return await super().run(query)
 
@@ -731,7 +731,7 @@ class DirectRoutingTests(unittest.IsolatedAsyncioTestCase):
                 raise
 
         class BlockingResearch(FakeResearch):
-            async def run(self, query, learner=None):
+            async def run(self, query, queries=None):
                 await block("research")
 
         class BlockingRunner(FakeRunner):

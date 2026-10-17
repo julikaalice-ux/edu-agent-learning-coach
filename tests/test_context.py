@@ -254,7 +254,7 @@ class PipelineContextTests(unittest.IsolatedAsyncioTestCase):
         pipeline = LearningPipeline(runner, research, self.store, FakeArtifacts(), RESPONSE_SCHEMA)
         await pipeline.run(messages("我上初中，考考我分数"), session_id="card",
                            state={"onboarding": {"step": "done", "stage": "初中", "who": "self", "records": "off"}})
-        self.assertEqual(research.learners[0]["stage"], "初中")
+        self.assertEqual(research.queries[0], ["分数定义"])  # written by the coordinator
         quiz = runner.calls_for("quizzer")[0]
         self.assertEqual(quiz["learner"]["stage"], "初中")
         self.assertEqual(set(quiz["context_notes"]), {"covered", "stuck"})

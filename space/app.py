@@ -157,7 +157,7 @@ def browser_secret(data_dir: Path = DATA_DIR):
 # awaiting the pipeline so long stages (visuals) never look frozen.
 STAGE_LABELS = {
     ("coordinator", "decide"): "正在理解你的问题…",
-    ("researcher", "specialist"): "正在检索和查证资料…",
+    ("verifier", "specialist"): "正在查证资料…",
     ("quizzer", "quiz"): "正在出题…",
     ("notes", "specialist"): "正在整理学习笔记…",
     ("visualizer", "specialist"): "正在生成互动图，可能需要半分钟左右…",

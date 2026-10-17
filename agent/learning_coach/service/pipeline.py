@@ -442,7 +442,7 @@ class LearningPipeline:
             if not plan["research_query"]:
                 return None
             try:
-                found = await self.research.run(plan["research_query"], learner=brief)
+                found = await self.research.run(plan["research_query"], plan["search_queries"])
             except (StageFailure, OSError, TimeoutError, ValueError):
                 found = {"overall": "unavailable", "sources": [], "claims": [],
                          "queries": [], "warnings": ["research_failed"]}

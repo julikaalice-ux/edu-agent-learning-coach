@@ -1,4 +1,4 @@
-"""Bounded, stateless calls to six actual Agent Framework agents: a coordinator and five specialists."""
+"""Bounded, stateless calls to five actual Agent Framework agents: a coordinator and four specialists."""
 
 import asyncio
 from collections import deque
@@ -14,7 +14,7 @@ from learning_coach.domain.contracts import ContractError, parse, validate, obje
 
 
 LOG = logging.getLogger(__name__)
-ROLES = ("coordinator", "researcher", "verifier", "notes", "visualizer", "quizzer")
+ROLES = ("coordinator", "verifier", "notes", "visualizer", "quizzer")
 
 
 from learning_coach.service.execution import BUDGET, CALL_RESERVE, StageFailure
@@ -122,7 +122,7 @@ def create_agents(client, instructions_path: Path, *, role_clients=None):
     """role_clients maps a role to its own model client; other roles use client."""
     role_clients = role_clients or {}
     root = instructions_path.parent / "agents"
-    files = {"researcher": "material-search.md", "verifier": "source-check.md",
+    files = {"verifier": "source-check.md",
              "notes": "note-organizer.md", "visualizer": "visual-designer.md",
              "quizzer": "quiz-writer.md"}
     shared = (

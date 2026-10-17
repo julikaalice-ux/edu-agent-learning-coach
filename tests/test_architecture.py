@@ -80,7 +80,7 @@ assert "learning_coach.adapters.visuals" not in sys.modules
             return b"image"
         with tempfile.TemporaryDirectory() as folder:
             with patch("learning_coach.server.create_agents", return_value=dict.fromkeys(
-                    ("coordinator", "researcher", "verifier", "notes", "visualizer", "quizzer"), object())) as agents, \
+                    ("coordinator", "verifier", "notes", "visualizer", "quizzer"), object())) as agents, \
                  patch("learning_coach.server.DefaultAzureCredential", side_effect=AssertionError("credentials")):
                 pipeline = create_pipeline(client=client, data_dir=folder,
                                            image_generator=image_generator, search_provider=provider)

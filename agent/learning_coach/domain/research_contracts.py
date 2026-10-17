@@ -24,8 +24,6 @@ def _object(properties: dict) -> dict:
             "required": list(properties), "additionalProperties": False}
 
 
-QUERY_SCHEMA = _object({"queries": {"type": "array", "minItems": 2,
-    "maxItems": MAX_QUERIES, "items": {"type": "string", "minLength": 1, "maxLength": MAX_QUERY_CHARS}}})
 EVIDENCE_SCHEMA = _object({"source_id": {"type": "string"},
     "quote": {"type": "string", "minLength": 1, "maxLength": MAX_QUOTE_CHARS},
     "relation": {"type": "string", "enum": ["supports", "contradicts"]}})

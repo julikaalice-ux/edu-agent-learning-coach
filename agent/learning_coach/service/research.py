@@ -3,7 +3,7 @@ import asyncio
 
 from learning_coach.service.ports import AgentRunner, SearchProvider
 from learning_coach.domain.contracts import MAX_QUESTION_CHARS
-from learning_coach.domain.research_contracts import (QUERY_SCHEMA, VERIFY_SCHEMA, MAX_QUERIES, MAX_SOURCES, MAX_CLAIMS,
+from learning_coach.domain.research_contracts import (VERIFY_SCHEMA, MAX_QUERIES, MAX_SOURCES, MAX_CLAIMS,
                                  MAX_QUERY_CHARS, MAX_QUOTE_CHARS,
                                  _clean_source, _independent_count)
 
@@ -15,29 +15,23 @@ class ResearchService:
         self.runner = runner
         self.provider = provider
 
-    async def run(self, question: str, learner: dict | None = None) -> dict:
-        """learner: the program's brief learner card (stage, goal), used only to
-        pitch the search queries at the right level."""
+    async def run(self, question: str, queries: list[str] | None = None) -> dict:
+        """Search with the coordinator's queries, then have the verifier check the sources.
+
+        The coordinator writes the queries in its plan. Without usable ones the
+        research question itself becomes the only query, so research degrades
+        instead of failing.
+        """
         result = {"queries": [], "sources": [], "claims": [], "overall": "unavailable", "warnings": []}
         if not isinstance(question, str) or not question.strip():
             result["warnings"].append("empty_question")
             return result
-        try:
-            request = {"question": question[:MAX_QUESTION_CHARS]}
-            if learner:
-                request["learner"] = {key: learner.get(key) for key in ("stage", "goal")}
-            planned = await self.runner("researcher", request, QUERY_SCHEMA)
-            candidates = planned.get("queries", []) if isinstance(planned, dict) else []
-            if not isinstance(candidates, list):
-                candidates = []
-            queries = list(dict.fromkeys(q.strip()[:MAX_QUERY_CHARS] for q in candidates[:MAX_QUERIES]
-                                        if isinstance(q, str) and q.strip()))
-            if len(queries) < 2:
-                result["warnings"].append("query_plan_invalid")
-                return result
-        except Exception:
-            result["warnings"].append("query_planning_failed")
-            return result
+        candidates = queries if isinstance(queries, list) else []
+        queries = list(dict.fromkeys(q.strip()[:MAX_QUERY_CHARS] for q in candidates[:MAX_QUERIES]
+                                    if isinstance(q, str) and q.strip()))
+        if not queries:
+            result["warnings"].append("queries_missing")
+            queries = [question.strip()[:MAX_QUERY_CHARS]]
         result["queries"] = queries
 
         async def search(query: str):

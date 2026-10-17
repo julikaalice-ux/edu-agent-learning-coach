@@ -45,13 +45,16 @@ VISUAL = {
 def plan(primary="A", **updates):
     value = {
         "intent": {"primary": primary, "is_implicit": False},
-        "research_query": None, "visual_request": None, "observe_learning": False,
+        "research_query": None, "search_queries": None, "visual_request": None, "observe_learning": False,
         "task_summary": "学习分数", "pause_task": False, "end_task": False,
         "quiz_action": "none", "quiz_topic": None, "quiz_total": 3,
         "difficulty": "简单", "participant": "learner",
         "visual_uses_research": None, "quiz_uses_research": None, "quiz_uses_visual": None,
     }
     value.update(updates)
+    if value["research_query"] and "search_queries" not in updates:
+        # The coordinator writes the search queries along with the research question.
+        value["search_queries"] = [value["research_query"][:200]]
     return value
 
 
@@ -157,9 +160,9 @@ class FakeResearch:
         self.result = result or {"overall": "verified", "sources": [], "claims": []}
         self.calls = []
 
-    async def run(self, query, learner=None):
+    async def run(self, query, queries=None):
         self.calls.append(query)
-        self.learners = getattr(self, "learners", []) + [learner]
+        self.queries = getattr(self, "queries", []) + [queries]
         if isinstance(self.result, Exception):
             raise self.result
         return deepcopy(self.result)
