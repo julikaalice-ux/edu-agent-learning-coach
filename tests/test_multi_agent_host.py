@@ -547,7 +547,7 @@ class FiveRoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(events[0]["type"], "http.response.start")
                 self.assertEqual(events[0]["status"], 200)
                 self.assertIn("水与冰".encode(), b"".join(event.get("body", b"") for event in events))
-                self.assertEqual(len(client.roles), 7)  # Fetching an artifact never runs a model.
+                self.assertEqual(len(client.roles), 6)  # Fetching an artifact never runs a model.
             finally:
                 store.close()
 
