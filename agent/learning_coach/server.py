@@ -5,8 +5,11 @@ Importing it does not create clients, databases, or agents.
 """
 
 import json
+import logging
 import os
 from pathlib import Path
+
+LOG = logging.getLogger(__name__)
 
 from agent_framework.foundry import FoundryChatClient
 from azure.identity import DefaultAzureCredential
@@ -73,6 +76,27 @@ def _memory_store(directory: Path, credential):
     return FoundryMemoryStore(inner, client.beta.memory_stores, name, search_max=search_max)
 
 
+def _artifact_store(directory: Path, public_base_url: str | None, credential):
+    """File ArtifactStore, or a public blob wrapper for the hosted entry.
+
+    LEARNING_COACH_ARTIFACT_BLOB_URL unset = local /artifacts route (Space and
+    local demo). When set, prepared artifact URLs point at the public blob
+    container; upload failures degrade to the local file (the link 404s) and
+    are logged, never raised. A malformed URL degrades to the plain store.
+    """
+    inner = ArtifactStore(directory / "artifacts", renderer=render_visual, public_base_url=public_base_url or
+                          os.environ.get("LEARNING_COACH_PUBLIC_BASE_URL", "http://localhost:8088"))
+    blob_url = os.environ.get("LEARNING_COACH_ARTIFACT_BLOB_URL", "").strip()
+    if not blob_url:
+        return inner
+    from learning_coach.adapters.blob_artifacts import BlobArtifactStore
+    try:
+        return BlobArtifactStore(inner, blob_url, credential=credential)
+    except ValueError as error:
+        LOG.warning("artifact_blob_wiring_disabled error=%s", error)
+        return inner
+
+
 def create_pipeline(*, client=None, data_dir=None, public_base_url=None, native_json=None,
                     image_generator=None, search_provider=None, stage_observer=None):
     """Build dependencies without launching a server or contacting a model."""
@@ -90,8 +114,7 @@ def create_pipeline(*, client=None, data_dir=None, public_base_url=None, native_
     native = os.environ.get("LEARNING_COACH_NATIVE_JSON", "0") == "1" if native_json is None else native_json
     runner = StructuredRunner(create_agents(client, INSTRUCTIONS_PATH, role_clients=role_clients),
                               native_json=native, observer=stage_observer)
-    artifacts = ArtifactStore(directory / "artifacts", renderer=render_visual, public_base_url=public_base_url or
-                              os.environ.get("LEARNING_COACH_PUBLIC_BASE_URL", "http://localhost:8088"))
+    artifacts = _artifact_store(directory, public_base_url, credential)
     from learning_coach.adapters.illustrate import generate_image
 
     encoder()  # load the tokenizer once at startup, not inside the first turn

@@ -205,7 +205,7 @@ API 依据：[MediaWiki Search](https://www.mediawiki.org/wiki/API:Search)、[Te
 
 模型只提供受约束的数据，不提供 HTML、JavaScript 或外部资源 URL。模板转义文案，交互用固定脚本；互动模板运行时不加载外部资源，illustration 在服务端调用生图。准备产物和提交分开，最终回复失败时不提前发布文件。
 
-产物用随机能力 token，经 `/artifacts/{token}` 路由读取，有效期 24 小时。拿到链接的人在有效期内都能打开，它不是登录鉴权链接，内容应限于教学材料。演示网页把互动图和配图直接显示在页面里。Foundry 托管网关是否转发这个自定义路由，仍要部署后验证。
+产物用随机能力 token，经 `/artifacts/{token}` 路由读取，有效期 24 小时。拿到链接的人在有效期内都能打开，它不是登录鉴权链接，内容应限于教学材料。演示网页把互动图和配图直接显示在页面里。托管网关不转发自定义路由，所以托管入口经 `LEARNING_COACH_ARTIFACT_BLOB_URL` 把同一份产物镜像到公开 blob 容器（匿名可读、不可列举、32 位不可猜 token、约 2 天生命周期删除），回复里给 blob 链接。
 
 ### 生成、校验与有界修正
 
@@ -231,6 +231,7 @@ scene 是通用的交互逐帧图解，不是任意连续物理仿真引擎。�
 | `LEARNING_COACH_DATA_DIR` | 默认 `agent/.learning-coach`；保存 `memory.sqlite3` 和 `artifacts` 目录。 |
 | `LEARNING_COACH_PUBLIC_BASE_URL` | 默认 `http://localhost:8088`；用于生成产物链接，不会自动启动服务或配置公开路由。 |
 | `LEARNING_COACH_MEMORY_STORE` | 设置后开启 Foundry Memory 语义层；不设置只用 SQLite。 |
+| `LEARNING_COACH_ARTIFACT_BLOB_URL` | 托管入口的产物公开 blob 容器地址（`scripts/setup-artifact-blob.sh` 创建）；不设置时链接走本机 `/artifacts/{token}`（演示网页默认）。 |
 | `LEARNING_COACH_CTX_*` | 各 agent 看到的上下文 token 预算，默认值见 `domain/context.py`。 |
 | `LEARNING_COACH_NATIVE_JSON` | 默认不开启；设为 `1` 请模型端按结构输出，本地校验始终执行。 |
 | `TAVILY_API_KEY` | 可选；配置后用 Tavily，没配置时用 Wikipedia。 |

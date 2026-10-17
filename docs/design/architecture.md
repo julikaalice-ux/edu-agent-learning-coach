@@ -60,6 +60,7 @@ agent/
     └── adapters/
         ├── runner.py         # 调用五个 agent：结构校验、重试、用量记录、阶段回调
         ├── foundry_memory.py # Foundry Memory 语义层（可选），包在 SQLite 外面
+        ├── blob_artifacts.py # 托管入口：产物公开 blob 镜像（可选），包在文件存储外面
         ├── search_providers.py   # Wikipedia / Tavily
         ├── illustrate.py     # FLUX.2-pro 生图
         ├── scenes.py         # 分步场景渲染（scene_assets/、vendor/ 为前端资源）
@@ -201,7 +202,7 @@ Service 只用 Domain 规则和自己定义的接口；模型、数据库、搜�
 | 做题进度、任务、对话要点 | 服务器内存 | 只在本次对话里有效，进程重启就没了 |
 | 学习记录（SQLite） | 数据目录 `memory.sqlite3` | 托管容器放在 `/tmp/.learning-coach`，Space 默认 `/tmp/learning-coach`，重启后会清空；要长期保留需要持久磁盘 |
 | 语义记忆 | Foundry Memory | 不随容器重启丢失；只有短句，没有原话和掌握程度 |
-| 互动图和配图 | 数据目录 `artifacts/` | `/artifacts/{token}` 能力链接，24 小时有效；拿到链接的人都能打开，不是登录鉴权 |
+| 互动图和配图 | 数据目录 `artifacts/` | `/artifacts/{token}` 能力链接，24 小时有效；拿到链接的人都能打开，不是登录鉴权。托管入口另存公开 blob 容器（`LEARNING_COACH_ARTIFACT_BLOB_URL`），链接匿名可读、不可列举，约 2 天后由生命周期规则删除 |
 | 完整对话记录 | 演示网页：访问者浏览器（加密）；托管：进程内存 | 托管的响应历史显式用内存存储，不写入用户目录 |
 
 当前是单机 SQLite、单进程会话状态，没有分布式存储，也没有把子 agent 部署成独立服务。多副本部署需要另外解决会话定位、并发状态和共享产物存储。服务器不自动初始化云端遥测，也不采集原始消息。
