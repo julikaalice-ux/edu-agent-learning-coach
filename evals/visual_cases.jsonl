@@ -1,0 +1,9 @@
+{"id": "VISQ-SCENE-WATER", "prompt": "画一个互动图展示水从冰变成水蒸气的过程", "note": "scene 简单机制"}
+{"id": "VISQ-SCENE-MOVE", "prompt": "画一个互动图解释一元一次方程的移项", "note": "scene 复杂机制（历史上最不稳定）"}
+{"id": "VISQ-SCENE-REDUCE", "prompt": "画一个互动图展示分数的约分过程", "note": "scene 复杂机制"}
+{"id": "VISQ-PROCESS", "prompt": "用步骤图展示解一元一次方程的完整步骤", "note": "process 步骤卡"}
+{"id": "VISQ-DIAGRAM", "prompt": "画一个结构图展示三角形的分类", "note": "diagram 静态结构"}
+{"id": "VISQ-COMPARISON", "prompt": "画一个对比图比较有丝分裂和减数分裂", "note": "comparison 逐项对比"}
+{"id": "VISQ-LINEAR", "prompt": "画一个一次函数的互动图，让我观察斜率和截距变化", "note": "linear_function 参数观察"}
+{"id": "VISQ-FLASH", "prompt": "给我做一组元素周期表前 20 号元素的记忆卡片", "note": "flashcards 翻面自测"}
+{"id": "VISQ-PHOTO", "prompt": "给我一张显微镜下的植物细胞配图", "note": "illustration（走 flux 生图路径）"}
