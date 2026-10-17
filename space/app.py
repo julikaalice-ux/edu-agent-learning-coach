@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
+import logging
 import os
 import re
 import secrets
@@ -34,6 +35,14 @@ import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+# Mirror agent/main.py: the package logs at INFO, and the default root
+# logger (lastResort) would otherwise swallow those lines on the Space.
+logger = logging.getLogger("learning_coach")
+logger.setLevel(logging.INFO)
+logger.propagate = False
+if not logger.handlers:
+    logger.addHandler(logging.StreamHandler())
 
 def _find_root() -> Path:
     """Local dev runs from space/ next to agent/; deployed builds are flat."""
