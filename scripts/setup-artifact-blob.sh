@@ -47,11 +47,17 @@ fi
 # Set Container ACL requires account-key auth: Entra ID is not supported here.
 KEY=$(az storage account keys list --account-name "$ACCOUNT" --resource-group "$RESOURCE_GROUP" \
     --query "[0].value" -o tsv)
-az storage container create --name "$CONTAINER" --account-name "$ACCOUNT" --account-key "$KEY" \
-    --auth-mode key --public-access blob --fail-on-exist false --output none
+if az storage container show --name "$CONTAINER" --account-name "$ACCOUNT" \
+        --account-key "$KEY" --auth-mode key -o none 2>/dev/null; then
+    echo "container already exists: $CONTAINER"
+else
+    az storage container create --name "$CONTAINER" --account-name "$ACCOUNT" \
+        --account-key "$KEY" --auth-mode key --public-access blob --output none
+    echo "created container: $CONTAINER"
+fi
 az storage container set-permission --name "$CONTAINER" --account-name "$ACCOUNT" \
     --account-key "$KEY" --auth-mode key --public-access blob --output none
-echo "container ready: $CONTAINER (public-access=blob)"
+echo "container public-access: blob"
 
 # 3. Lifecycle rule: delete artifacts older than 2 days (idempotent PUT).
 az storage account management-policy create --account-name "$ACCOUNT" \
