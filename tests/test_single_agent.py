@@ -80,6 +80,29 @@ class ScriptedAgent:
         return validate(answer, schema)
 
 
+class ScriptedStreamAgent(ScriptedAgent):
+    """Like ScriptedAgent, but stream_call emits the reply text in pieces first."""
+
+    async def stream_call(self, task, payload, schema, tools, *, on_delta):
+        self.calls.append({"task": task, "payload": deepcopy(payload), "tools": [tool.name for tool in tools]})
+        by_name = {tool.name: tool for tool in tools}
+        script = self.scripts.pop(0)
+        for step in script[:-1]:
+            name, kwargs = step
+            if callable(kwargs):
+                kwargs = kwargs(self)
+            result = await by_name[name].func(**kwargs)
+            self.tool_results.append((name, result))
+        answer = script[-1]
+        answer = answer(self) if callable(answer) else answer
+        message = answer["response"]["message"]
+        for start, end in ((0, 3), (3, 9), (9, len(message))):
+            piece = message[start:end]
+            if piece:
+                on_delta(piece)
+        return validate(answer, schema)
+
+
 class SingleAgentTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -365,6 +388,59 @@ class ServerWiringTests(unittest.TestCase):
         with patch.dict("os.environ", {"LEARNING_COACH_ARCHITECTURE": "both"}):
             with self.assertRaises(ValueError):
                 architecture_from_env()
+
+
+class MessageExtractionTests(unittest.TestCase):
+    """Incremental JSON message-field extraction for streaming."""
+
+    def test_plain_text_splits_and_escapes(self):
+        from learning_coach.adapters.single_runner import extract_message_partial
+        self.assertEqual(extract_message_partial('{"message":"你好', 0), "你好")
+        self.assertEqual(extract_message_partial('{"message":"a\\nb\\"c', 0), "a\nb\"c")
+        self.assertEqual(extract_message_partial('{"message":"abc","next_step":null}', 0), "abc")
+        self.assertEqual(extract_message_partial('{"message":"abc","next_step":null}', 3), "")
+        self.assertEqual(extract_message_partial('{"message":"abcd\\', 0), "abcd")  # split escape waits
+        self.assertEqual(extract_message_partial('{"tool_calls":[{"name":"search"}]}', 0), "")
+        self.assertEqual(extract_message_partial('{"message":""}', 0), "")
+
+    def test_nested_message_key_inside_tool_round_is_not_the_reply(self):
+        from learning_coach.adapters.single_runner import extract_message_partial
+        # The raw pattern only matches a real JSON key, not escaped argument text.
+        payload = '{"response":{"message":"hello","next_step":null}}'
+        self.assertEqual(extract_message_partial(payload, 0), "hello")
+
+
+class StreamingPipelineTests(SingleAgentTests):
+    async def test_run_stream_yields_deltas_then_the_validated_reply(self):
+        agent = ScriptedStreamAgent([final(reply("分数表示整体被平均分成的份数。"))])
+        events = [event async for event in self.pipeline(agent).run_stream(messages("分数是什么"), session_id="s")]
+        deltas = "".join(event["delta"] for event in events if "delta" in event)
+        last = [event for event in events if "output" in event][-1]
+        self.assertEqual(deltas, "分数表示整体被平均分成的份数。")
+        self.assertEqual(last["output"]["message"], "分数表示整体被平均分成的份数。")
+        self.assertEqual(last["state"]["last_execution"]["mode"], "single")
+
+    async def test_run_stream_matches_plain_run_results(self):
+        text = "分数表示整体被平均分成的份数。"
+        streamed = [event async for event in self.pipeline(ScriptedStreamAgent([final(reply(text))]))
+                    .run_stream(messages("分数是什么"), session_id="s1")]
+        plain_output, plain_state = await self.pipeline(ScriptedAgent([final(reply(text))]))             .run(messages("分数是什么"), session_id="s2")
+        final_event = [event for event in streamed if "output" in event][-1]
+        self.assertEqual(final_event["output"], plain_output)
+        self.assertEqual(final_event["state"]["active_task"], plain_state["active_task"])
+
+    async def test_run_stream_after_a_failed_draft_yields_the_fallback_reply(self):
+        from learning_coach.service.execution import StageFailure
+
+        class FailingStreamAgent(ScriptedStreamAgent):
+            async def stream_call(self, task, payload, schema, tools, *, on_delta):
+                on_delta("看到一半的草稿")
+                raise StageFailure("invalid_stage_output")
+
+        events = [event async for event in self.pipeline(FailingStreamAgent([final()]))
+                  .run_stream(messages("分数是什么"), session_id="s")]
+        last = [event for event in events if "output" in event][-1]
+        self.assertIn("这次处理没有顺利完成", last["output"]["message"])
 
 
 if __name__ == "__main__":

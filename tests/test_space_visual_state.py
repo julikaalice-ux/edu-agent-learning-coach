@@ -87,6 +87,26 @@ class SpaceVisualStateTests(SpaceTestBase):
         self.assertIsNone(self.pipeline.options[1]["learner_id"])
         self.assertNotEqual(self.pipeline.options[1]["session_id"], self.pipeline.options[0]["session_id"])
 
+    async def test_streaming_reply_appears_incrementally_then_finalizes(self):
+        final_output = response("分数表示整体被平均分成的份数。")
+
+        class StreamingPipeline(PipelineStub):
+            async def run_stream(self, messages, **kwargs):
+                self.calls.append(messages)
+                self.options.append(kwargs)
+                for piece in ("分数表示", "整体被平均", "分成的份数。"):
+                    yield {"delta": piece}
+                yield {"output": final_output, "state": {}}
+
+        self.app.PIPELINE = StreamingPipeline()
+        events = [event async for event in self.app.respond("分数是什么", self.session, None, True)]
+        self.assertEqual(events[0][1][-1]["content"], "我先想想…")
+        for event, piece in zip(events[1:4], ("分数表示", "分数表示整体被平均", "分数表示整体被平均分成的份数。")):
+            self.assertEqual(event[1][-1]["content"], piece)
+        self.assertEqual(events[-1][1][-1]["content"], "分数表示整体被平均分成的份数。")
+        self.assertEqual(self.session["history"][-1]["text"], "分数表示整体被平均分成的份数。")
+        self.assertIs(events[-1][4], True)  # seen marker after the first turn
+
     async def test_reopening_starts_a_fresh_session_without_previous_context(self):
         self.pipeline.responses.extend([response("第一句回答。"), response("第二句回答。")])
         await self.send("讲讲分数")

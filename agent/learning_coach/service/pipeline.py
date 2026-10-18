@@ -139,7 +139,7 @@ class LearningPipeline:
         self._accepted = OrderedDict()
 
     async def run(self, messages, *, session_id, state=None, turn_id=None,
-                  learner_id=None, returning_visitor=False):
+                  learner_id=None, returning_visitor=False, on_delta=None):
         """Run one turn.
 
         session_id identifies this conversation. learner_id is an optional,
@@ -188,7 +188,7 @@ class LearningPipeline:
             try:
                 output, updated = await asyncio.wait_for(
                     self._execute(clean, session_id, working, event_id, memory_key,
-                                  returning_visitor is True), timeout=TURN_TIMEOUT_SECONDS,
+                                  returning_visitor is True, on_delta), timeout=TURN_TIMEOUT_SECONDS,
                 )
             except (StageFailure, ContractError, TimeoutError, OSError, ValueError, StorageError):
                 LOG.warning("learning_turn_failed")
@@ -227,7 +227,7 @@ class LearningPipeline:
         for key in [key for key in self._accepted if key[0] == session_id]:
             del self._accepted[key]
 
-    async def _execute(self, messages, session_id, state, event_id, memory_key, returning_visitor):
+    async def _execute(self, messages, session_id, state, event_id, memory_key, returning_visitor, on_delta=None):
         text = messages[-1]["text"].strip()
         # Plain-language record controls map onto the same program commands.
         pending_forget = state.pop("pending_forget", False)
@@ -356,13 +356,14 @@ class LearningPipeline:
         if prefix is None and text in SKIP_QUESTION and waiting.get("awaiting") and not waiting.get("finished"):
             return await self._replace_question(messages, session_id, state, memory_key)
 
-        output, state = await self._teach(messages, session_id, state, event_id, memory_key, returning_visitor)
+        output, state = await self._teach(messages, session_id, state, event_id, memory_key,
+                                          returning_visitor, on_delta)
         if prefix:
             output["message"] = prefix + "\n\n" + output["message"]
             validate(output, self.response_schema)
         return output, state
 
-    async def _teach(self, messages, session_id, state, event_id, memory_key, returning_visitor):
+    async def _teach(self, messages, session_id, state, event_id, memory_key, returning_visitor, on_delta=None):
         text = messages[-1]["text"].strip()
         budgets = self.budgets
         numbered = number_turns(messages)

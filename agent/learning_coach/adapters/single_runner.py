@@ -25,6 +25,50 @@ LOG = logging.getLogger(__name__)
 MAX_ITERATIONS = 10
 FORMAT_CORRECTION = "上次输出未通过结构校验。仅返回符合 output_schema 的 JSON；不附围栏，不再调用工具。"
 
+# The wire reply is JSON; the learner sees only the message field inside it.
+# Streaming extracts that field incrementally so text appears as it is written.
+MESSAGE_PREFIX = '"message":"'
+
+
+def extract_message_partial(buffer: str, seen: int) -> str:
+    """The complete-plus-partial text of the JSON ``message`` field, minus ``seen``.
+
+    Handles the escapes that matter inside message text (\\n, \\", \\\\, \\uXXXX).
+    Returns "" while the field has not started or the buffer ends mid-escape.
+    """
+    start = buffer.find(MESSAGE_PREFIX)
+    if start < 0:
+        return ""
+    pos = start + len(MESSAGE_PREFIX)
+    out = []
+    while pos < len(buffer):
+        char = buffer[pos]
+        if char == "\\":
+            if pos + 1 >= len(buffer):
+                break  # the escape is split across chunks; wait for more
+            nxt = buffer[pos + 1]
+            if nxt == "n":
+                out.append("\n")
+                pos += 2
+            elif nxt in ('"', "\\"):
+                out.append(nxt)
+                pos += 2
+            elif nxt == "u" and pos + 5 < len(buffer):
+                try:
+                    out.append(chr(int(buffer[pos + 2:pos + 6], 16)))
+                except ValueError:
+                    out.append("�")
+                pos += 6
+            else:
+                out.append(char)
+                pos += 1
+        elif char == '"':
+            break  # the field is complete
+        else:
+            out.append(char)
+            pos += 1
+    return "".join(out)[seen:]
+
 # (file, top-level sections to keep, subsections to keep inside them or None for all)
 RULE_PARTS = (
     ("教学规则（与多 agent 版本的主 agent 相同）", "instructions.md", [
@@ -145,27 +189,52 @@ class SingleAgentRunner:
         self.observer = observer
         self.usage = deque(maxlen=USAGE_HISTORY)
 
-    async def __call__(self, task, payload, schema, tools):
-        from agent_framework import FunctionTool, Message
-
+    def _budget_allows(self) -> None:
         budget = BUDGET.get()
         if budget is not None and budget.remaining <= 1:
             raise StageFailure("call_budget_exhausted")
-        function_tools = [FunctionTool(name=spec.name, description=spec.description, func=_as_text(spec.func),
-                                       input_model=_tool_schema(spec.parameters)) for spec in tools]
+
+    @staticmethod
+    def _new_record(task, message):
+        return {"role": "single", "phase": task, "attempt": 1, "outcome": "cancelled",
+                "model_calls": 0, "tool_calls": 0, "estimated_input_tokens": count_tokens(message),
+                **dict.fromkeys(USAGE_KEYS)}
+
+    def _add_usage(self, record, response) -> None:
+        model, tool_calls = _counts(response)
+        record["model_calls"] += model
+        record["tool_calls"] += tool_calls
+        for key, value in usage_of(response).items():
+            if value is not None:
+                record[key] = (record[key] or 0) + value
+
+    def _finish(self, record, started, budget) -> None:
+        if budget is not None:
+            budget.remaining -= max(record["model_calls"], 1)
+        record["elapsed_ms"] = round((perf_counter() - started) * 1000)
+        self.usage.append(record)
+        LOG.info("agent_stage %s", " ".join(f"{key}={value}" for key, value in record.items()))
+        if self.observer is not None:
+            self.observer(record)
+
+    def _tools_for(self, tools):
+        from agent_framework import FunctionTool
+
+        return [FunctionTool(name=spec.name, description=spec.description, func=_as_text(spec.func),
+                             input_model=_tool_schema(spec.parameters)) for spec in tools]
+
+    async def __call__(self, task, payload, schema, tools):
+        from agent_framework import Message
+
+        budget = BUDGET.get()
+        self._budget_allows()
+        function_tools = self._tools_for(tools)
         message = json.dumps({"task": task, "output_schema": schema, "input": payload}, ensure_ascii=False)
-        record = {"role": "single", "phase": task, "attempt": 1, "outcome": "cancelled",
-                  "model_calls": 0, "tool_calls": 0, "estimated_input_tokens": count_tokens(message),
-                  **dict.fromkeys(USAGE_KEYS)}
+        record = self._new_record(task, message)
         started = perf_counter()
 
         def add(response):
-            model, tool_calls = _counts(response)
-            record["model_calls"] += model
-            record["tool_calls"] += tool_calls
-            for key, value in usage_of(response).items():
-                if value is not None:
-                    record[key] = (record[key] or 0) + value
+            self._add_usage(record, response)
 
         try:
             response = await asyncio.wait_for(
@@ -200,10 +269,74 @@ class SingleAgentRunner:
             LOG.warning("agent_stage_failed role=single error_type=%s", type(error).__name__)
             raise StageFailure("provider_or_timeout_failure") from None
         finally:
-            if budget is not None:
-                budget.remaining -= max(record["model_calls"], 1)
-            record["elapsed_ms"] = round((perf_counter() - started) * 1000)
-            self.usage.append(record)
-            LOG.info("agent_stage %s", " ".join(f"{key}={value}" for key, value in record.items()))
-            if self.observer is not None:
-                self.observer(record)
+            self._finish(record, started, budget)
+
+    async def stream_call(self, task, payload, schema, tools, *, on_delta):
+        """Like __call__, but the final answer's message text streams through on_delta.
+
+        The learner never sees raw JSON: only the message field is extracted
+        incrementally. Tool rounds produce no message field, so nothing is
+        shown while the agent searches, draws or writes questions; the final
+        JSON's message streams as it is generated. Validation still happens
+        on the complete reply, and a format correction runs non-streamed.
+        """
+        from agent_framework import Message
+
+        budget = BUDGET.get()
+        self._budget_allows()
+        function_tools = self._tools_for(tools)
+        message = json.dumps({"task": task, "output_schema": schema, "input": payload}, ensure_ascii=False)
+        record = self._new_record(task, message)
+        started = perf_counter()
+
+        def add(response):
+            self._add_usage(record, response)
+
+        try:
+            stream = await asyncio.wait_for(
+                self.agent.run(message, tools=function_tools, stream=True) if function_tools
+                else self.agent.run(message, stream=True), timeout=self.timeout)
+            seen = 0
+            buffer = ""
+            async for update in stream:
+                text = getattr(update, "text", "") or ""
+                # Updates may carry the accumulated text so far or just the new
+                # piece; a prefix match tells which and normalizes both.
+                if text.startswith(buffer):
+                    buffer = text
+                else:
+                    buffer += text
+                partial = extract_message_partial(buffer, seen)
+                if partial:
+                    on_delta(partial)
+                seen = len(extract_message_partial(buffer, 0))
+            response = await stream.get_final_response()
+            add(response)
+            try:
+                result = parse(response.text, schema)
+                record["outcome"] = "ok"
+                return result
+            except ContractError:
+                LOG.info("agent_stage_invalid role=single attempt=1")
+                record["attempt"] = 2
+            history = [Message("user", [message]), *response.messages, Message("user", [FORMAT_CORRECTION])]
+            options = {"tool_choice": "none"}
+            retry = await asyncio.wait_for(
+                self.agent.run(history, tools=function_tools, options=options) if function_tools
+                else self.agent.run(history, options=options), timeout=self.timeout)
+            add(retry)
+            try:
+                result = parse(retry.text, schema)
+            except ContractError:
+                record["outcome"] = "invalid_output"
+                raise StageFailure("invalid_stage_output") from None
+            record["outcome"] = "ok"
+            return result
+        except StageFailure:
+            raise
+        except Exception as error:
+            record["outcome"] = "provider_or_timeout_failure"
+            LOG.warning("agent_stage_failed role=single error_type=%s", type(error).__name__)
+            raise StageFailure("provider_or_timeout_failure") from None
+        finally:
+            self._finish(record, started, budget)

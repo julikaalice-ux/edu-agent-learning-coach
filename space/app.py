@@ -235,11 +235,59 @@ async def respond(user_text, session, device=None, allowed=False):
         ]
         yield session, thinking, session["panel"], "", device
         session["history"].append({"role": "user", "text": user_text})
-        # Await the pipeline while polling the stage observer: each new stage
-        # replaces the placeholder so long generations show what is happening.
         STAGE_STATUS.current = None
         # No learner_id: learning records are keyed by this page's session and
         # die with it. seen only skips the first-meeting questions.
+
+        def render_final(sess, output, new_state):
+            """Publish the validated reply: chat entry, choices, panel, records."""
+            sess["state"] = new_state
+            text = learner_text(output)
+            # Keep model context separate from presentation-only markup and image bytes.
+            history_text = ARTIFACT_LINK.sub("", text).rstrip()
+            panel = sess["panel"]
+            tokens = ARTIFACT_LINK.findall(text)
+            text = ARTIFACT_LINK.sub("", text).rstrip()
+            for token in tokens:
+                document = PIPELINE.artifacts.get(token)
+                if not document:
+                    continue
+                image = DATA_IMAGE.search(document)
+                if image:
+                    # Generated picture (illustration or question picture): inline in chat.
+                    text = f"{text}\n\n![配图]({image.group(0)})"
+                else:
+                    # Interactive visual: embedded sandboxed frame below chat.
+                    panel = iframe_for(document)
+            sess["history"].append({"role": "assistant", "text": history_text})
+            sess["options"] = options_from(output)
+            sess["panel"] = panel
+            sess["chat"] = sess["chat"] + [
+                {"role": "user", "content": user_text},
+                {"role": "assistant", "content": text},
+            ]
+            return panel
+
+        streamer = getattr(PIPELINE, "run_stream", None)
+        if streamer is not None:
+            # Streaming: each delta replaces the placeholder, so the reply text
+            # appears as it is generated; the final event is the validated reply.
+            partial = ""
+            async for event in streamer(list(session["history"]), session_id=session["session_id"],
+                                        state=session["state"], learner_id=None,
+                                        returning_visitor=seen_before(device)):
+                if "delta" in event:
+                    partial += event["delta"]
+                    yield session, session["chat"] + [
+                        {"role": "user", "content": user_text},
+                        {"role": "assistant", "content": partial},
+                    ], session["panel"], "", device
+                    continue
+                device = True
+                panel = render_final(session, event["output"], event["state"])
+                yield session, session["chat"], panel, "", device
+            return
+        # No streaming support: poll the stage observer while awaiting the turn.
         task = asyncio.create_task(PIPELINE.run(list(session["history"]), session_id=session["session_id"],
                                                 state=session["state"], learner_id=None,
                                                 returning_visitor=seen_before(device)))
@@ -262,31 +310,7 @@ async def respond(user_text, session, device=None, allowed=False):
                     ]
                     yield session, thinking, session["panel"], "", device
         device = True
-        session["state"] = new_state
-        text = learner_text(output)
-        # Keep model context separate from presentation-only markup and image bytes.
-        history_text = ARTIFACT_LINK.sub("", text).rstrip()
-        panel = session["panel"]
-        tokens = ARTIFACT_LINK.findall(text)
-        text = ARTIFACT_LINK.sub("", text).rstrip()
-        for token in tokens:
-            document = PIPELINE.artifacts.get(token)
-            if not document:
-                continue
-            image = DATA_IMAGE.search(document)
-            if image:
-                # Generated picture (illustration or question picture): inline in chat.
-                text = f"{text}\n\n![配图]({image.group(0)})"
-            else:
-                # Interactive visual: embedded sandboxed frame below chat.
-                panel = iframe_for(document)
-        session["history"].append({"role": "assistant", "text": history_text})
-        session["options"] = options_from(output)
-        session["panel"] = panel
-        session["chat"] = session["chat"] + [
-            {"role": "user", "content": user_text},
-            {"role": "assistant", "content": text},
-        ]
+        panel = render_final(session, output, new_state)
         yield session, session["chat"], panel, "", device
     except Exception:
         session["chat"] = session["chat"] + [

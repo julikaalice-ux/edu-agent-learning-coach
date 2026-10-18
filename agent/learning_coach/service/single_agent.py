@@ -110,6 +110,43 @@ class SingleAgentPipeline(LearningPipeline):
         self.agent, self.provider = agent, provider
         self.turn_schema = single_turn_schema(response_schema)
 
+    async def run_stream(self, messages, *, session_id, state=None, turn_id=None,
+                         learner_id=None, returning_visitor=False):
+        """Run one turn while streaming the reply's message text.
+
+        Yields {"delta": text} events as the final message is written, then a
+        final {"output": ..., "state": ...} event carrying the validated reply
+        (the same values a plain run() would return). The deltas are the
+        unvalidated draft; the final event is authoritative.
+        """
+        queue = asyncio.Queue()
+
+        def on_delta(text):
+            queue.put_nowait(text)
+
+        task = asyncio.create_task(self.run(
+            messages, session_id=session_id, state=state, turn_id=turn_id,
+            learner_id=learner_id, returning_visitor=returning_visitor, on_delta=on_delta))
+        getter = asyncio.create_task(queue.get())
+        while True:
+            finished, _ = await asyncio.wait({task, getter}, return_when=asyncio.FIRST_COMPLETED)
+            # The getter is drained first: it can complete in the same batch as
+            # the run task, and its delta must not be lost to the break.
+            if getter in finished:
+                yield {"delta": getter.result()}
+                getter = asyncio.create_task(queue.get())
+                continue
+            if task in finished:
+                getter.cancel()
+                break
+        while True:
+            try:
+                yield {"delta": queue.get_nowait()}
+            except asyncio.QueueEmpty:
+                break
+        output, state = task.result()
+        yield {"output": output, "state": state}
+
     # Program-triggered drafts (“换一题”, “整理笔记”) go to the same single agent.
     async def _draft_notes(self, payload):
         return await self.agent("compile_notes", payload, NOTES_SCHEMA, [])
@@ -261,7 +298,7 @@ class SingleAgentPipeline(LearningPipeline):
                      QUESTION_PARAMETERS, ask_question),
         ]
 
-    async def _teach(self, messages, session_id, state, event_id, memory_key, returning_visitor):
+    async def _teach(self, messages, session_id, state, event_id, memory_key, returning_visitor, on_delta=None):
         text = messages[-1]["text"].strip()
         budgets = self.budgets
         numbered = number_turns(messages)
@@ -293,8 +330,12 @@ class SingleAgentPipeline(LearningPipeline):
             "quiz_feedback": quiz_feedback,
         }
         turn = _Turn()
-        result = validate(await self.agent("teach", payload, self.turn_schema,
-                                           self._tools(turn, session_id, state, text)), self.turn_schema)
+        tools = self._tools(turn, session_id, state, text)
+        if on_delta is not None and hasattr(self.agent, "stream_call"):
+            drafted = await self.agent.stream_call("teach", payload, self.turn_schema, tools, on_delta=on_delta)
+        else:
+            drafted = await self.agent("teach", payload, self.turn_schema, tools)
+        result = validate(drafted, self.turn_schema)
         output, task = result["response"], result["task"]
         primary = output["intent"]["primary"]
         stopping = task["end_task"] or task["pause_task"] or result["stop_quiz"]
