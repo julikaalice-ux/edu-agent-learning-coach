@@ -43,7 +43,7 @@ cp agent/.env.example agent/.env   # 填 FOUNDRY_PROJECT_ENDPOINT 和 AZURE_AI_M
 | `AZURE_AI_MODEL_DEPLOYMENT_NAME` | 是 | 默认模型部署名 |
 | `LEARNING_COACH_MODEL_<角色>` | | 给单个 agent 指定模型，角色为 `COORDINATOR`、`VERIFIER`、`NOTES`、`VISUALIZER`、`QUIZZER` |
 | `LEARNING_COACH_IMAGE_BACKEND` | | 配图后端，`flux`（默认，部署名 `flux-2-pro`）或 `pollinations` |
-| `TAVILY_API_KEY` | | 检索用 Tavily；不填时用 Wikipedia |
+| `BOCHA_API_KEY` | | 检索用博查（国内直连、中文优先）；不填时依次看 Tavily、Wikipedia |
 | `LEARNING_COACH_DATA_DIR` | | 学习记录和互动图的存放目录 |
 | `LEARNING_COACH_MEMORY_STORE` | | Foundry Memory 语义层；不设 = 纯 SQLite。store 需先用 [`scripts/setup-memory.sh`](scripts/setup-memory.sh) 创建，失败自动降级 |
 | `LEARNING_COACH_MEMORY_SEARCH_MAX` | | 语义检索条数，默认 6 |

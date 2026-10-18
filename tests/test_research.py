@@ -239,5 +239,39 @@ class HttpBoundaryTests(unittest.TestCase):
                 self.assertIsNone(research._clean_source(source(url)))
 
 
+class ProviderAdapterTests(unittest.IsolatedAsyncioTestCase):
+    """Bocha and Tavily parsing and failure behavior, offline."""
+
+    async def test_bocha_pages_become_search_snippets(self):
+        payload = {"code": 200, "msg": "success",
+                   "data": {"webPages": {"value": [
+                       {"name": "一元二次方程", "url": "https://example.com/eq", "snippet": "求根公式…",
+                        "siteName": "例站"},
+                       {"name": "求根公式推导", "url": "https://other.cn/derivation", "snippet": "配方法…"},
+                       {"name": "历史", "url": "https://example.com/history", "snippet": "丢番图…"},
+                       {"name": "多余的第四条", "url": "https://example.com/extra", "snippet": "…"}]}}}
+        with patch.object(providers, "_fetch_json", return_value=payload) as fetch:
+            found = await providers.BochaProvider("sk-test").search("一元二次方程 求根公式")
+        body = json.loads(fetch.call_args.args[0].data.decode())
+        self.assertEqual((body["query"], body["count"], body["freshness"], body["summary"]),
+                         ("一元二次方程 求根公式", 3, "noLimit", False))
+        self.assertEqual([item["url"] for item in found], ["https://example.com/eq", "https://other.cn/derivation", "https://example.com/history"])
+        self.assertEqual(found[0]["excerpt_kind"], "search_snippet")
+        self.assertEqual(found[0]["title"], "一元二次方程")
+
+    async def test_bocha_quota_error_degrades_safely(self):
+        with patch.object(providers, "_fetch_json", return_value={"code": 403, "message": "quota"}):
+            with self.assertRaisesRegex(providers.RetrievalError, "provider_quota_or_error"):
+                await providers.BochaProvider("sk-test").search("任何问题")
+
+    async def test_default_provider_prefers_bocha_over_tavily_over_wikipedia(self):
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertIsInstance(providers.default_provider(), providers.WikipediaProvider)
+        with patch.dict("os.environ", {"BOCHA_API_KEY": "sk-b", "TAVILY_API_KEY": "tvly-1"}, clear=True):
+            self.assertIsInstance(providers.default_provider(), providers.BochaProvider)
+        with patch.dict("os.environ", {"TAVILY_API_KEY": "tvly-1"}, clear=True):
+            self.assertIsInstance(providers.default_provider(), providers.TavilyProvider)
+
+
 if __name__ == "__main__":
     unittest.main()

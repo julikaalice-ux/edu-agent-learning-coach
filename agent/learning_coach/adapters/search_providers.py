@@ -12,7 +12,7 @@ from learning_coach.service.ports import SearchProvider
 MAX_RESPONSE_BYTES = 1_048_576
 HTTP_TIMEOUT = 8
 PROVIDER_TIMEOUT = 20
-PROVIDER_HOSTS = {"zh.wikipedia.org", "en.wikipedia.org", "api.tavily.com"}
+PROVIDER_HOSTS = {"zh.wikipedia.org", "en.wikipedia.org", "api.tavily.com", "api.bocha.cn"}
 
 class RetrievalError(Exception):
     """Safe public code, never a server response or credential."""
@@ -106,7 +106,42 @@ class TavilyProvider:
         return sources
 
 
+class BochaProvider:
+    """BoCha (博查) web search: mainland-reachable and Chinese-first.
+
+    Response is Bing-shaped: data.webPages.value[].name/url/snippet/summary.
+    """
+
+    def __init__(self, api_key: str):
+        self._api_key = api_key
+
+    async def search(self, query: str) -> list[dict]:
+        if not self._api_key:
+            raise RetrievalError("provider_not_configured")
+        body = {"query": query[:200], "summary": False, "freshness": "noLimit", "count": 3}
+        request = Request("https://api.bocha.cn/v1/web-search", data=json.dumps(body).encode(),
+                          headers={"Authorization": f"Bearer {self._api_key}",
+                                   "Content-Type": "application/json"}, method="POST")
+        result = await asyncio.to_thread(_fetch_json, request)
+        if result.get("code") not in (None, 200):
+            # e.g. 403 for an exhausted or unactivated package; degrade like
+            # any other retrieval failure, never with the provider's wording.
+            raise RetrievalError("provider_quota_or_error")
+        pages = ((result.get("data") or {}).get("webPages") or {}).get("value") or []
+        sources = []
+        for item in pages[:3]:
+            if not isinstance(item, dict):
+                continue
+            sources.append({"title": item.get("name") or "", "url": item.get("url") or "",
+                            "excerpt": item.get("snippet") or item.get("summary") or "",
+                            "excerpt_kind": "search_snippet"})
+        return sources
+
+
 def default_provider() -> SearchProvider:
+    bocha = os.environ.get("BOCHA_API_KEY", "").strip()
+    if bocha:
+        return BochaProvider(bocha)
     key = os.environ.get("TAVILY_API_KEY", "").strip()
     return TavilyProvider(key) if key else WikipediaProvider()
 
