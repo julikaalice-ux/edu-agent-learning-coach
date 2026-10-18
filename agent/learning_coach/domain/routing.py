@@ -180,7 +180,7 @@ def recover_practice_route(decision, state, learner_text):
         "research_query": None, "search_queries": None, "visual_request": None, "observe_learning": False,
         "task_summary": task["task_summary"], "pause_task": False, "end_task": False,
         "quiz_action": "continue" if continuing else "start",
-        "quiz_topic": quiz["topic"] if continuing else task["task_summary"].strip() or None,
+        "quiz_topic": quiz["topic"] if continuing else (task.get("task_summary") or "").strip() or None,
         "quiz_total": quiz.get("total", QUIZ_SET_SIZE) if continuing else QUIZ_SET_SIZE,
         "difficulty": quiz.get("difficulty", "简单") if continuing else "简单",
         "participant": quiz.get("participant", "unknown") if continuing else "learner",

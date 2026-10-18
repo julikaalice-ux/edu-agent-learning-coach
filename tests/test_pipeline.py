@@ -560,6 +560,16 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
                                        state=state, turn_id="2")
         self.assertIn("没有顺利完成", output["message"])
 
+    async def test_practice_recovery_never_crashes_on_a_null_task_summary(self):
+        # The coordinator may legally write task_summary=null; the practice
+        # route repair must degrade to asking for a topic, not crash the turn.
+        runner = FakeRunner([plan("C", task_summary=None)])
+        pipeline = self.pipeline(runner)
+        output, state = await pipeline.run(messages("考考我"), session_id="s", turn_id="1")
+        self.assert_protocol(output)
+        self.assertEqual(state["last_execution"]["tools"]["quiz"], "needs_input")
+        self.assertNotIn("quiz", state)  # no quiz starts without a topic
+
     async def test_reused_turn_id_with_different_input_is_rejected(self):
         runner = FakeRunner()
         pipeline = self.pipeline(runner)
