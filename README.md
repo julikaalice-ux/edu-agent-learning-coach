@@ -164,6 +164,8 @@ azd ai agent invoke "请围绕一元一次方程考考我，一次只出一道�
 
 **Hugging Face Space**：运行 `python scripts/build_space.py` 生成 `build/space/`，把其中的文件上传到 Space。Space 的环境变量与 `agent/.env` 相同，在 Space 设置里填写。若模型调用返回 403，运行 [`scripts/fix-permissions.sh`](scripts/fix-permissions.sh) 补回服务主体的权限。
 
+**魔搭 ModelScope 创空间（国内直连演示）**：上传同一份 `build/space/` 内容（gradio 类型，不需要 Dockerfile），并在创空间变量里加 `PORT=7860`（魔搭健康检查固定探 7860 端口）；Azure 凭据放在创空间的保密设置里。
+
 ## 已知限制
 
 - 没有流式输出，每轮返回一段完整文本。
