@@ -7,21 +7,25 @@
 # which the Foundry gateway never forwards.
 # Run it with: sh scripts/setup-artifact-blob.sh
 #
-# Requires: az CLI logged in as a user with owner/contributor rights on the RG
-# and Microsoft.Storage/storageAccounts/listKeys on the account.
+# Requires: az CLI logged in as a user with owner/contributor rights on the
+# RG, azd environment configured, and Microsoft.Storage/storageAccounts/
+# listKeys on the account.
 set -eu
 
-SUBSCRIPTION="<subscription-id>"
-RESOURCE_GROUP="<resource-group>"
-LOCATION="francecentral"
+SUBSCRIPTION="$(azd env get-value AZURE_SUBSCRIPTION_ID)"
+RESOURCE_GROUP="$(azd env get-value AZURE_RESOURCE_GROUP)"
+LOCATION="$(azd env get-value AZURE_LOCATION)"
 # Deterministic globally-unique name: "eduartifacts" + first 8 hex of
-# sha256(SUBSCRIPTION) so azure.yaml can hardcode it and re-runs stay idempotent.
-ACCOUNT="eduartifacts5044621b"
+# sha256(SUBSCRIPTION) so azure.yaml can hardcode it and re-runs stay
+# idempotent. No identifiers in source.
+ACCOUNT="eduartifacts$(printf '%s' "$SUBSCRIPTION" | shasum -a 256 | cut -c1-8)"
 CONTAINER="artifacts"
-# Runtime identities that upload artifacts:
-# - the hosted agent's dedicated Entra identity
-# - the HF Space demo service principal (hf-edu-agent-demo) for local parity
-PRINCIPALS="<agent-identity-principal-id> <demo-sp-object-id>"
+# Runtime identities that upload artifacts, resolved by name:
+# - the hosted agent's dedicated Entra identity (azd env)
+# - the HF Space demo service principal (hf-edu-agent-demo)
+AGENT_IDENTITY="$(azd env get-value AGENT_AGENT-FRAMEWORK-AGENT-WITH-LOCAL-TOOLS-RESPONSES_INSTANCE_IDENTITY_PRINCIPAL_ID)"
+DEMO_SP="$(az ad sp show --id hf-edu-agent-demo --query id -o tsv)"
+PRINCIPALS="$AGENT_IDENTITY $DEMO_SP"
 SCOPE="/subscriptions/$SUBSCRIPTION/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.Storage/storageAccounts/$ACCOUNT"
 # Local artifact TTL is 24h; the lifecycle rule runs at least daily, so 2
 # days here bounds the anonymous-read window without racing local expiry.
