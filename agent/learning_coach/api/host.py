@@ -56,8 +56,7 @@ def platform_learner_id() -> str | None:
     """The platform-injected per-user key (x-agent-user-id), when present.
 
     Non-hosted runs (Space, local demos) have no agentserver package and no
-    request context, and get None, so memory falls back to the browser
-    learner_id or session-scoped keys exactly as before.
+    request context, and get None, so memory falls back to session-scoped keys.
     """
     global _platform_id_logged
     if get_request_context is None:
