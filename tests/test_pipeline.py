@@ -531,6 +531,21 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             problem = self.pipeline(FakeRunner())._respond_problem({"message": text}, {}, False)
             self.assertIsNone(problem, text)
 
+    async def test_pronoun_variants_of_the_correct_choice_are_still_leaks(self):
+        # "它们都属于猫科" and "猫和老虎都属于猫科" name the same answer.
+        def reply(message):
+            return {"schema_version": "1.0", "intent": {"primary": "C", "is_implicit": False},
+                    "message": message, "next_step": None}
+        question = {**QUIZ, "question": "猫和老虎有什么关系？", "choices": ["它们都属于猫科", "它们是同一种动物"],
+                    "answer_index": 0}
+        runner = FakeRunner([plan("C", quiz_action="start", quiz_topic="动物分类")], quiz=[question],
+                            replies=[reply("对，猫和老虎都属于猫科。"), reply("想好了就选一个答案。")])
+        output, _ = await self.pipeline(runner).run(messages("考考我"), session_id="s", turn_id="1")
+        responds = runner.calls_for("coordinator", "respond")
+        self.assertEqual(len(responds), 2)
+        self.assertIn("等待作答题目的正确答案", responds[1]["correction"])
+        self.assertNotIn("都属于猫科", output["message"])
+
     async def test_answer_mode_never_publishes_the_waiting_answer(self):
         runner = FakeRunner([
             plan("C", quiz_action="start", quiz_topic="分数"),

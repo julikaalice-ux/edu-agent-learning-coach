@@ -73,6 +73,19 @@ def correct_choice(question) -> str | None:
     return str(choices[index]).strip()
 
 
+_LEADING_REFERENCE = re.compile(r"^[这那它](?:些|们)?")
+
+
+def _choice_key(choice: str) -> str:
+    """A choice minus leading pronouns and whitespace, for leak matching.
+
+    "它们都属于猫科" and "猫和老虎都属于猫科" name the same answer, so an
+    exact substring check misses the leak; stripping the reference word and
+    whitespace from both sides catches it.
+    """
+    return re.sub(r"\s+", "", _LEADING_REFERENCE.sub("", choice.strip()))
+
+
 def default_participant(state) -> str:
     """Who answers a new question when no plan says so: a companion only when one said so."""
     quiz = state.get("quiz") or {}
@@ -422,10 +435,6 @@ class LearningPipeline:
             self._track_tasks(state, previous_task, previous_quiz, current_turn, text)
             stopping = task["end_task"] or task["pause_task"]
             self._validate_response(output, output["intent"], None, stopping=stopping)
-            if self._respond_problem(output, state, memory_enabled):
-                # A single decide call cannot be redrafted here; failing the turn
-                # is safer than publishing the answer to the waiting question.
-                raise ContractError("answer_visible_before_answer")
             if stopping:
                 output["next_step"] = None
             picture = None
@@ -439,6 +448,12 @@ class LearningPipeline:
             if picture:
                 output["message"] += f"\n\n[{QUIZ_PICTURE_LINK}]({picture['url']})"
             validate(output, self.response_schema)
+            if self._respond_problem(output, state, memory_enabled):
+                # Checked after the check question is drafted, so the waiting
+                # question's answer is known; a single decide call cannot be
+                # redrafted here, so failing the turn is safer than publishing
+                # the answer before the learner answers.
+                raise ContractError("answer_visible_before_answer")
             if picture:
                 self.artifacts.commit(session_id, picture)
             state["last_execution"] = {"mode": "answer", "tools": empty_results(), "context": context_report}
@@ -726,7 +741,7 @@ class LearningPipeline:
         """
         choice = correct_choice((state.get("quiz") or {}).get("awaiting"))
         message = output.get("message", "") if isinstance(output, dict) else ""
-        if choice and choice in message:
+        if choice and _choice_key(choice) and _choice_key(choice) in re.sub(r"\s+", "", message):
             return "回复正文不得出现当前等待作答题目的正确答案；说明和反馈请避开正确选项原句。"
         if not memory_enabled and re.search(r"已(?:记下|记录|保存)|(?:先|马上|替你|帮你)(?:记下|记录|保存)|(?:记下|保存)(?:了|啦|哦)|记住(?:了|啦)|记好(?:了|啦)", message):
             return "学习记录未开启或尚未提交，回复不得声称已记下或已保存。"
@@ -867,9 +882,10 @@ class LearningPipeline:
                 problem = "repeated_question"
             if problem is None:
                 choice = correct_choice(question)
+                explanation = request.get("explanation") or ""
                 # A check question whose answer is verbatim in what the coach
                 # just said is answered by copying, not by understanding.
-                if choice and request.get("explanation") and choice in request["explanation"]:
+                if choice and _choice_key(choice) and _choice_key(choice) in re.sub(r"\s+", "", explanation):
                     problem = "answer_in_explanation"
             if problem is None and question["image"] is not None:
                 if request.get("image_unavailable"):
