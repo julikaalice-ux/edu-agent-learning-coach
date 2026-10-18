@@ -30,14 +30,14 @@ from learning_coach.domain.research_contracts import (MAX_QUERIES, MAX_QUERY_CHA
 from learning_coach.domain.routing import INTENT_PRACTICE
 from learning_coach.domain.teaching_visuals import visual_handoff
 from learning_coach.domain.visual_contracts import VISUAL_SCHEMA
-from learning_coach.domain.visual_quality import needs_explanatory_visual
+from learning_coach.domain.visual_quality import gallery_problem, needs_explanatory_visual
 from learning_coach.service.pipeline import (NOTES_OFFER, PICTURE_TIMEOUT_SECONDS, QUIZ_PICTURE_LINK,
                                              LearningPipeline, default_participant, empty_learning_notes,
                                              render_question)
 from learning_coach.service.ports import (Artifacts, ImageGenerator, LearningMemory, SearchProvider,
                                           SingleAgentPort, StorageError, ToolSpec)
 from learning_coach.service.research import assess_claims, clean_queries, search_sources
-from learning_coach.service.visual_generation import _RENDER_CORRECTIONS
+from learning_coach.service.visual_generation import _RENDER_CORRECTIONS, find_pictures, photo_entry
 
 
 LOG = logging.getLogger(__name__)
@@ -103,10 +103,11 @@ class _Turn:
 class SingleAgentPipeline(LearningPipeline):
     def __init__(self, agent: SingleAgentPort, provider: SearchProvider, store: LearningMemory,
                  artifacts: Artifacts, response_schema: dict, *,
-                 image_generator: ImageGenerator | None = None, onboarding: bool = False,
+                 image_generator: ImageGenerator | None = None, image_finder=None, onboarding: bool = False,
                  demo_stage: str | None = None, budgets=None):
         super().__init__(None, None, store, artifacts, response_schema, image_generator=image_generator,
-                         onboarding=onboarding, demo_stage=demo_stage, budgets=budgets)
+                         image_finder=image_finder, onboarding=onboarding, demo_stage=demo_stage,
+                         budgets=budgets)
         self.agent, self.provider = agent, provider
         self.turn_schema = single_turn_schema(response_schema)
 
@@ -218,8 +219,11 @@ class SingleAgentPipeline(LearningPipeline):
                 validate(spec, VISUAL_SCHEMA)
             except ContractError:
                 return _problem("schema_invalid", "草稿未符合图示协议；请使用给定类型与字段，不输出网页代码或额外字段。")
-            if spec["kind"] == "illustration" and needs_explanatory_visual(goal, learner_text):
+            explanatory = needs_explanatory_visual(goal, learner_text)
+            if spec["kind"] == "illustration" and explanatory:
                 return _problem("interaction_problem", "这个请求需要解释机制或演示变化；静态 AI 配图不能完成，请改用可检查的图解或分步 scene。")
+            if spec["kind"] == "gallery":
+                return await draw_gallery(spec, explanatory)
             try:
                 image = None
                 if spec["kind"] == "illustration":
@@ -240,6 +244,32 @@ class SingleAgentPipeline(LearningPipeline):
             context.update(status="ready", quality={"verdict": "not_reviewed", "review_scope": "none",
                                                     "pixel_reviewed": False, "attempts": turn.visual_drafts})
             context["limitations"].append("图示只经过本地渲染检查，没有独立审阅。")
+            turn.artifact, turn.visual_context = artifact, context
+            return {"ok": True, "visual_context": context, "message": "图的链接由程序附在回复后面，不要自己写链接。"}
+
+        async def draw_gallery(spec, explanatory):
+            # No separate reviewer in this version: each panel takes its first
+            # (best-ranked, Commons first) candidate.
+            if self.image_finder is None:
+                return _problem("gallery_unavailable", "这个环境不能用网络图片，请改用程序画的图。")
+            problem = gallery_problem(spec, explanatory)
+            if problem:
+                return _problem(problem[0]["code"], problem[0]["message"])
+            found = await find_pictures(self.image_finder, spec)
+            photos = [photo_entry(options[0]) if options else None for options in found]
+            if not any(photos):
+                return _problem("no_pictures", "没有找到可用的网络图片；请改用程序画的图。")
+            try:
+                artifact = self.artifacts.prepare(session_id, spec, photos=photos)
+            except ValueError as error:
+                return _problem("render_invalid", "配套图（companion）" + _RENDER_CORRECTIONS.get(
+                    str(error), "无法渲染；检查图形边界、元素标识、连线引用、坐标范围和数值条件。"))
+            except (RuntimeError, OSError, StorageError):
+                return _problem("render_unavailable", "本次图示渲染不可用。")
+            context = visual_handoff(spec)
+            context.update(status="ready", quality={"verdict": "not_reviewed", "review_scope": "none",
+                                                    "pixel_reviewed": False, "attempts": turn.visual_drafts})
+            context["limitations"].append("图片按搜索排序自动选取，没有独立审阅。")
             turn.artifact, turn.visual_context = artifact, context
             return {"ok": True, "visual_context": context, "message": "图的链接由程序附在回复后面，不要自己写链接。"}
 

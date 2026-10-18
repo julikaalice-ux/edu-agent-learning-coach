@@ -23,9 +23,61 @@ VISUAL_REVIEW_SCHEMA = object_schema({
 })
 
 
+GALLERY_REVIEW_SCHEMA = object_schema({
+    **VISUAL_REVIEW_SCHEMA["properties"],
+    # One entry per panel: the candidate picture the reviewer picked, or null.
+    "choices": {"type": "array", "maxItems": 6, "items": object_schema({
+        "panel": {"type": "integer", "minimum": 0, "maximum": 5},
+        "option": {"type": ["string", "null"], "maxLength": 20},
+    })},
+})
+# Kinds that can explain a mechanism or a change; a picture page asked to
+# explain one must carry one of these as its companion.
+EXPLANATORY_KINDS = ("scene", "process", "diagram", "linear_function")
+
+
 def validate_visual_review(review: dict, research: dict | None) -> dict:
     """A declared pass cannot override failed checks or missing evidence."""
     validate(review, VISUAL_REVIEW_SCHEMA)
+    return _consistent(review, research)
+
+
+def validate_gallery_review(review: dict, research: dict | None, options: list[list[str]]) -> dict:
+    """Same consistency rules, plus exactly one choice per panel from that panel's own candidates."""
+    validate(review, GALLERY_REVIEW_SCHEMA)
+    _consistent(review, research)
+    chosen = {}
+    for choice in review["choices"]:
+        panel, option = choice["panel"], choice["option"]
+        if panel >= len(options) or panel in chosen:
+            raise ContractError("gallery_review_bad_panel")
+        if option is not None and option not in options[panel]:
+            raise ContractError("gallery_review_unknown_candidate")
+        chosen[panel] = option
+    if len(chosen) != len(options):
+        raise ContractError("gallery_review_missing_panel")
+    if review["verdict"] == "pass" and not any(chosen.values()):
+        raise ContractError("gallery_review_pass_without_picture")
+    return review
+
+
+def gallery_problem(spec: dict, explanatory: bool) -> list[dict]:
+    """Structure rules the schema cannot express; [] when the page is consistent."""
+    panels = spec["panels"]
+    for number, step in enumerate(spec["steps"], 1):
+        if step["panel"] is not None and step["panel"] >= len(panels):
+            return [{"code": "schema_invalid",
+                     "message": f"讲解第 {number} 步指向第 {step['panel'] + 1} 格，但只有 {len(panels)} 格；panel 从 0 开始编号。"}]
+    if spec["arrange"] == "timeline" and any(not (panel["time"] or "").strip() for panel in panels):
+        return [{"code": "schema_invalid", "message": "时间轴排法要求每一格都填 time（年份或时期）；没有时间就改用 auto。"}]
+    companion = spec["companion"]
+    if explanatory and (companion is None or companion["kind"] not in EXPLANATORY_KINDS):
+        return [{"code": "interaction_problem",
+                 "message": "学习者要看变化、过程或原理；网络图片只能说明外观。请在 companion 放一张程序画的 scene、process、diagram 或 linear_function。"}]
+    return []
+
+
+def _consistent(review: dict, research: dict | None) -> dict:
     if review["verdict"] == "pass":
         if not all(review["checks"].values()) or review["issues"] or review["fact_basis"] == "insufficient":
             raise ContractError("visual_review_inconsistent")

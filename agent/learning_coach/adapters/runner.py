@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 from time import perf_counter
 
-from agent_framework import Agent
+from agent_framework import Agent, Content, Message
 
 from learning_coach.domain.context import count_tokens
 from learning_coach.domain.contracts import ContractError, parse, validate, object_schema
@@ -33,6 +33,12 @@ def native_schema(schema):
 
 
 USAGE_HISTORY = 500  # recent model calls kept for usage reports
+# Visual roles run inside the visual service's own overall deadline, so a timed
+# out draft or review is not started again from scratch: the retry would only
+# run into that deadline and the first call's work would be thrown away. The
+# designer writes the longest outputs and gets more time for its single call.
+ROLE_TIMEOUTS = {"visualizer": 75}
+NO_TIMEOUT_RETRY = frozenset({"visualizer", "verifier"})
 USAGE_KEYS = ("input_token_count", "output_token_count", "cache_read_input_token_count")
 
 
@@ -53,12 +59,14 @@ class StructuredRunner:
     logged with estimated and reported token usage (never content).
     """
 
-    def __init__(self, agents, *, native_json=False, timeout=45, retry_delay=1.0, observer=None):
+    def __init__(self, agents, *, native_json=False, timeout=45, retry_delay=1.0, observer=None,
+                 role_timeouts=None):
         if set(agents) != set(ROLES):
             raise ValueError("agent_roles_mismatch")
         self.agents = agents
         self.native_json = native_json
         self.timeout = timeout
+        self.role_timeouts = dict(ROLE_TIMEOUTS if role_timeouts is None else role_timeouts)
         self.retry_delay = retry_delay
         # Optional per-stage progress callback, called with the same record
         # that gets logged (role, phase, attempt, outcome, elapsed_ms, ...).
@@ -66,7 +74,8 @@ class StructuredRunner:
         # Recent per-call usage, for evaluations and the token comparison.
         self.usage = deque(maxlen=USAGE_HISTORY)
 
-    async def __call__(self, role, payload, schema):
+    async def __call__(self, role, payload, schema, images=None):
+        """images: optional [(label, bytes, media_type)] sent after the JSON request, each with its label."""
         if role not in self.agents:
             raise StageFailure("unknown_role")
         requested_schema = native_schema(schema) if self.native_json else schema
@@ -85,10 +94,16 @@ class StructuredRunner:
             usage = dict.fromkeys(USAGE_KEYS)
             try:
                 options = {"response_format": requested_schema} if self.native_json else {}
+                content = message
+                if images:
+                    parts = [Content.from_text(message)]
+                    for label, data, media_type in images:
+                        parts += [Content.from_text(label), Content.from_data(data=data, media_type=media_type)]
+                    content = Message("user", parts)
                 # Fresh stateless child calls prevent cross-role/session history leaks.
                 response = await asyncio.wait_for(
-                    self.agents[role].run(message, options=options),
-                    timeout=self.timeout,
+                    self.agents[role].run(content, options=options),
+                    timeout=self.role_timeouts.get(role, self.timeout),
                 )
                 usage = usage_of(response)
                 parsed = parse(response.text, requested_schema)
@@ -103,7 +118,8 @@ class StructuredRunner:
                 outcome = "provider_or_timeout_failure"
                 # Never log provider exceptions: they can contain requests or credentials.
                 LOG.warning("agent_stage_failed role=%s error_type=%s", role, type(error).__name__)
-                if attempt == 1 or provider_retried:
+                timed_out = isinstance(error, TimeoutError)
+                if attempt == 1 or provider_retried or (timed_out and role in NO_TIMEOUT_RETRY):
                     raise StageFailure("provider_or_timeout_failure") from None
                 provider_retried = True
                 await asyncio.sleep(self.retry_delay)
@@ -111,6 +127,8 @@ class StructuredRunner:
                 record = {"role": role, "phase": phase, "attempt": attempt + 1, "outcome": outcome,
                           "estimated_input_tokens": count_tokens(message), **usage,
                           "elapsed_ms": round((perf_counter() - started) * 1000)}
+                if images:
+                    record["images"] = len(images)
                 self.usage.append(record)
                 LOG.info("agent_stage %s", " ".join(f"{key}={value}" for key, value in record.items()))
                 if self.observer is not None:

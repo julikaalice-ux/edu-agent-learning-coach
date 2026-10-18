@@ -169,10 +169,14 @@ def _diagram_svg(spec: dict) -> str:
     return "".join(parts)
 
 
-def render_visual(spec: dict, image: bytes | None = None) -> str:
+def render_visual(spec: dict, image: bytes | None = None, photos: list | None = None) -> str:
     """Validate a bounded declarative spec and render a self-contained page."""
     if not isinstance(spec, dict) or not _VALIDATOR.is_valid(spec):
         raise ValueError("invalid_visual_spec")
+    if spec["kind"] == "gallery":
+        from learning_coach.adapters.gallery import render_gallery
+
+        return render_gallery(spec, photos, render_visual)
     if spec["kind"] == "scene":
         from learning_coach.adapters.scenes import render_scene
 

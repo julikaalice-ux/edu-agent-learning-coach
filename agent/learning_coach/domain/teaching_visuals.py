@@ -41,4 +41,40 @@ def visual_handoff(spec: dict) -> dict:
     elif kind == "illustration":
         result.update(description=spec["alt"],
                       limitations=["AI 生成的静态配图，不是实测照片或物理模拟；细节可能不准确。"])
+    elif kind == "gallery":
+        arrange = gallery_arrangement(spec)
+        controls = ["点击图片放大"]
+        if arrange == "timeline":
+            controls += ["点时间点切换", "播放或暂停时间轴"]
+        elif arrange == "tabs":
+            controls += ["切换标签查看各格"]
+        if spec["steps"]:
+            controls += ["上一步", "下一步（分步讲解，会高亮对应的格）"]
+        result.update(
+            description="网络图片讲解页：" + "、".join(
+                (panel["time"] + " " if panel["time"] else "") + panel["label"] for panel in spec["panels"]),
+            controls=controls,
+            observation_question=None,
+            limitations=["图片来自网络（Wikimedia Commons 或网页搜索），由程序检索、审阅模型挑选，"
+                         "只说明外观，不是原理证据；出处和许可证列在页面底部。"],
+        )
+        if spec["companion"] is not None:
+            companion = visual_handoff(spec["companion"])
+            result["companion_kind"] = companion["kind"]
+            result["description"] += f"；页面下方附一张程序画的图（{companion['description']}）"
+            result["controls"] += companion["controls"]
+            result["observation_question"] = companion["observation_question"]
+            result["limitations"] += companion["limitations"]
     return result
+
+
+def gallery_arrangement(spec: dict) -> str:
+    """The layout a gallery page actually uses; "auto" resolves from its content."""
+    if spec["arrange"] != "auto":
+        return spec["arrange"]
+    panels = spec["panels"]
+    if len(panels) >= 3 and all((panel["time"] or "").strip() for panel in panels):
+        return "timeline"
+    if len(panels) in (2, 3):
+        return "side_by_side"
+    return "tabs" if len(panels) >= 4 else "stack"

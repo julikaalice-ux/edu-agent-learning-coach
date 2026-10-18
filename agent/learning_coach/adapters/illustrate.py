@@ -18,6 +18,8 @@ import asyncio
 import base64
 import json
 import os
+import threading
+import time
 import urllib.parse
 import urllib.request
 
@@ -51,8 +53,29 @@ def _flux_url() -> str:
             f"?api-version=preview")
 
 
+_TOKEN_LOCK = threading.Lock()
+_CREDENTIAL = None
+_TOKEN = None
+
+
+def _flux_token() -> str:
+    """One credential and one cached token for every picture.
+
+    Building a new credential per picture walks the whole sign-in chain each
+    time; on a laptop signed in with the Azure CLI that alone took about
+    30 seconds. The token is reused until five minutes before it expires.
+    """
+    global _CREDENTIAL, _TOKEN
+    with _TOKEN_LOCK:
+        if _TOKEN is None or _TOKEN.expires_on - time.time() < 300:
+            if _CREDENTIAL is None:
+                _CREDENTIAL = DefaultAzureCredential()
+            _TOKEN = _CREDENTIAL.get_token(FLUX_SCOPE)
+        return _TOKEN.token
+
+
 def _flux_request(prompt: str, width: int, height: int) -> bytes:
-    token = DefaultAzureCredential().get_token(FLUX_SCOPE).token
+    token = _flux_token()
     body = json.dumps({
         "model": os.environ.get("LEARNING_COACH_FLUX_DEPLOYMENT", DEFAULT_FLUX_DEPLOYMENT),
         "prompt": prompt,

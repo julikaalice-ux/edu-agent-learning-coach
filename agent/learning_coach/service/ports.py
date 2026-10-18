@@ -9,7 +9,8 @@ class StorageError(RuntimeError):
 
 
 class AgentRunner(Protocol):
-    async def __call__(self, role: str, payload: dict, schema: dict) -> dict: ...
+    # images: optional [(label, bytes, media_type)] the role should look at.
+    async def __call__(self, role: str, payload: dict, schema: dict, images: list | None = None) -> dict: ...
 
 
 class ResearchPort(Protocol):
@@ -18,6 +19,16 @@ class ResearchPort(Protocol):
 
 class ImageGenerator(Protocol):
     async def __call__(self, prompt: str) -> bytes: ...
+
+
+class ImageFinder(Protocol):
+    """Finds existing pictures on the web for a gallery panel.
+
+    Returns at most ``limit`` candidates, best first, each
+    {source, title, description, author, license, page_url, data, media_type};
+    ``data`` is the downloaded picture. Raises nothing for "no results".
+    """
+    async def find(self, query_zh: str, query_en: str, *, limit: int = 3) -> list[dict]: ...
 
 
 class LearningMemory(Protocol):
@@ -30,7 +41,9 @@ class LearningMemory(Protocol):
 
 
 class Artifacts(Protocol):
-    def prepare(self, session_id: str, spec: dict, image: bytes | None = None) -> dict: ...
+    # photos: per gallery panel, the chosen picture {data_url, title, author, license, page_url, source} or None.
+    def prepare(self, session_id: str, spec: dict, image: bytes | None = None,
+                photos: list | None = None) -> dict: ...
     def commit(self, session_id: str, artifact: dict) -> None: ...
     def get(self, token: str) -> str | None: ...
     def delete_session(self, session_id: str) -> None: ...
@@ -41,7 +54,7 @@ class SearchProvider(Protocol):
 
 
 class VisualRenderer(Protocol):
-    def __call__(self, spec: dict, image: bytes | None = None) -> str: ...
+    def __call__(self, spec: dict, image: bytes | None = None, photos: list | None = None) -> str: ...
 
 
 @dataclass(frozen=True)

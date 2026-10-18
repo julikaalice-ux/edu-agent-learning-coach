@@ -165,6 +165,8 @@ STAGE_LABELS = {
     ("notes", "specialist"): "正在整理学习笔记…",
     ("visualizer", "specialist"): "正在生成互动图，可能需要半分钟左右…",
     ("verifier", "visual_review"): "正在审阅图示…",
+    ("image_search", "search"): "已找到候选图片，正在挑选…",
+    ("image", "generate"): "配图已生成，正在整理…",
     ("coordinator", "respond"): "正在组织回复…",
 }
 
@@ -194,9 +196,11 @@ PIPELINE = build_pipeline()
 
 def iframe_for(document: str) -> str:
     escaped = document.replace("&", "&amp;").replace('"', "&quot;")
+    # Picture pages (gallery) are taller than a single drawn visual.
+    height = 640 if 'id="gallery"' in document else 460
     return (
         '<iframe srcdoc="' + escaped + '" '
-        'style="width:100%;height:460px;border:1px solid #c7d8e3;border-radius:12px;'
+        f'style="width:100%;height:{height}px;border:1px solid #c7d8e3;border-radius:12px;'
         'background:#fff" sandbox="allow-scripts"></iframe>'
     )
 
@@ -253,7 +257,9 @@ async def respond(user_text, session, device=None, allowed=False):
                 if not document:
                     continue
                 image = DATA_IMAGE.search(document)
-                if image:
+                # A picture page (AI picture, question picture) has no script;
+                # a gallery also carries pictures but is an interactive page.
+                if image and "<script" not in document:
                     # Generated picture (illustration or question picture): inline in chat.
                     text = f"{text}\n\n![配图]({image.group(0)})"
                 else:

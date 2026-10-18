@@ -6,4 +6,7 @@
 {"id": "VISQ-COMPARISON", "prompt": "画一个对比图比较有丝分裂和减数分裂", "note": "comparison 逐项对比"}
 {"id": "VISQ-LINEAR", "prompt": "画一个一次函数的互动图，让我观察斜率和截距变化", "note": "linear_function 参数观察"}
 {"id": "VISQ-FLASH", "prompt": "给我做一组元素周期表前 20 号元素的记忆卡片", "note": "flashcards 翻面自测"}
-{"id": "VISQ-PHOTO", "prompt": "给我一张显微镜下的植物细胞配图", "note": "illustration（走 flux 生图路径）"}
+{"id": "VISQ-PHOTO", "prompt": "给我一张显微镜下的植物细胞配图", "note": "gallery 单格（网络图片；以前走 flux）"}
+{"id": "VISQ-CELLS", "prompt": "找几张图片给我看看动物细胞和植物细胞有什么区别", "note": "gallery 并排 + 对比表"}
+{"id": "VISQ-HISTORY", "prompt": "用图片带我看看中国古代书写材料是怎么从甲骨发展到纸的", "note": "gallery 时间轴"}
+{"id": "VISQ-STORY", "prompt": "画一张图：小明在超市买了 3 个苹果和 2 个橙子", "note": "illustration（题目情境，现实里没有照片，走 flux）"}

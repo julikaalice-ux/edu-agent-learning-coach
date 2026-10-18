@@ -52,8 +52,9 @@ class BlobArtifactStore:
             self._client = ContainerClient.from_container_url(self._blob_url, credential=credential)
         return self._client
 
-    def prepare(self, session_id: str, spec: dict, image=None) -> dict:
-        artifact = self._inner.prepare(session_id, spec, image=image)
+    def prepare(self, session_id: str, spec: dict, image=None, photos=None) -> dict:
+        artifact = (self._inner.prepare(session_id, spec, image=image) if photos is None
+                    else self._inner.prepare(session_id, spec, image=image, photos=photos))
         with self._lock:
             self._prepared[artifact["token"]] = (session_id, artifact)
         return {**artifact, "url": f"{self._blob_url}/{artifact['token']}.html"}

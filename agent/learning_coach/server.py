@@ -8,6 +8,7 @@ import json
 import logging
 import os
 from pathlib import Path
+from time import perf_counter
 
 LOG = logging.getLogger(__name__)
 
@@ -20,6 +21,7 @@ from learning_coach.domain.context import Budgets, encoder
 from learning_coach.service.pipeline import LearningPipeline
 from learning_coach.service.research import ResearchService
 from learning_coach.adapters.search_providers import default_provider
+from learning_coach.adapters.image_search import default_image_finder
 from learning_coach.adapters.runner import ROLES, StructuredRunner, create_agents
 from learning_coach.adapters.single_runner import MAX_ITERATIONS as SINGLE_MAX_ITERATIONS
 from learning_coach.adapters.single_runner import SingleAgentRunner, create_single_agent
@@ -101,6 +103,41 @@ def _artifact_store(directory: Path, public_base_url: str | None, credential):
         return inner
 
 
+def _timed_pictures(generate, finder, observer):
+    """Report picture generation and web picture search to the stage observer, like model calls.
+
+    Records carry only role, phase, outcome, counts and elapsed time.
+    """
+    if observer is None:
+        return generate, finder
+
+    def report(role, phase, outcome, started, **extra):
+        observer({"role": role, "phase": phase, "attempt": 1, "outcome": outcome,
+                  "elapsed_ms": round((perf_counter() - started) * 1000), **extra})
+
+    async def timed_generate(prompt, **options):
+        started, outcome = perf_counter(), "failed"
+        try:
+            image = await generate(prompt, **options)
+            outcome = "ok"
+            return image
+        finally:
+            report("image", "generate", outcome, started)
+
+    class TimedFinder:
+        async def find(self, query_zh, query_en, *, limit=3):
+            started, found = perf_counter(), None
+            try:
+                found = await finder.find(query_zh, query_en, limit=limit)
+                return found
+            finally:
+                report("image_search", "search", "ok" if found is not None else "failed", started,
+                       results=len(found or []))
+
+    return (timed_generate if generate is not None else None,
+            TimedFinder() if finder is not None else None)
+
+
 ARCHITECTURES = ("multi", "single")
 
 
@@ -113,7 +150,8 @@ def architecture_from_env() -> str:
 
 
 def create_pipeline(*, client=None, data_dir=None, public_base_url=None, native_json=None,
-                    image_generator=None, search_provider=None, stage_observer=None, architecture=None):
+                    image_generator=None, search_provider=None, stage_observer=None, architecture=None,
+                    image_finder=None):
     """Build dependencies without launching a server or contacting a model.
 
     architecture: "multi" (default, the product) or "single" (the single-agent
@@ -148,8 +186,12 @@ def create_pipeline(*, client=None, data_dir=None, public_base_url=None, native_
     encoder()  # load the tokenizer once at startup, not inside the first turn
 
     provider = search_provider if search_provider is not None else default_provider()
+    pictures, finder = _timed_pictures(image_generator if image_generator is not None else generate_image,
+                                       image_finder if image_finder is not None else default_image_finder(),
+                                       stage_observer)
     shared = dict(
-        image_generator=image_generator if image_generator is not None else generate_image,
+        image_generator=pictures,
+        image_finder=finder,
         onboarding=os.environ.get("LEARNING_COACH_ONBOARDING", "1") == "1",
         demo_stage=demo_stage_from_env(),
         budgets=Budgets.from_env(),

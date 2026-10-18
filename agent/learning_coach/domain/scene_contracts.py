@@ -31,7 +31,7 @@ ELEMENT_SCHEMA = {"oneOf": [
                       "color": COLOR, "opacity": OPACITY, "label": text(40, True)})
       for shape in ("line", "arrow")],
     element("text", {**BOX, "color": COLOR, "text": text(200)}),
-    element("polyline", {"points": {"type": "array", "minItems": 2, "maxItems": 100,
+    element("polyline", {"points": {"type": "array", "minItems": 2, "maxItems": 40,
         "items": {"type": "array", "items": COORD, "minItems": 2, "maxItems": 2}},
         "color": COLOR, "opacity": OPACITY}),
 ]}
@@ -39,9 +39,11 @@ ELEMENT_SCHEMA = {"oneOf": [
 SCENE_PROPERTIES = {
     "learning_goal": text(300), "interaction_hint": text(200),
     "check_question": text(200), "limitations": text(500),
-    "frames": {"type": "array", "minItems": 2, "maxItems": 6,
+    # Kept small on purpose: the designer writes every element by hand, and
+    # the time to draft a scene grows with its length.
+    "frames": {"type": "array", "minItems": 2, "maxItems": 4,
         "items": obj({"title": text(80), "explanation": text(600),
-            "elements": {"type": "array", "minItems": 1, "maxItems": 32, "items": ELEMENT_SCHEMA}})},
+            "elements": {"type": "array", "minItems": 1, "maxItems": 20, "items": ELEMENT_SCHEMA}})},
 }
 
 

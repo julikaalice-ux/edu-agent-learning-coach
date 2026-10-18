@@ -73,9 +73,10 @@ class ArtifactStore:
             self._prepared = {token: item for token, item in self._prepared.items() if item[4] > now}
 
     @storage_boundary
-    def prepare(self, session_id: str, spec: dict, image: bytes | None = None) -> dict:
+    def prepare(self, session_id: str, spec: dict, image: bytes | None = None, photos: list | None = None) -> dict:
         owner = self._owner(session_id)
-        document = self.renderer(spec, image=image)
+        document = (self.renderer(spec, image=image) if photos is None
+                    else self.renderer(spec, image=image, photos=photos))
         with self._lock:
             for _ in range(10):
                 token = secrets.token_urlsafe(24)

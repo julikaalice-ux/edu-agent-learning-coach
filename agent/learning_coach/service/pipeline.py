@@ -23,7 +23,8 @@ from learning_coach.domain.routing import (EXPLAIN_INTENTS, INTENT_CHAT, INTENT_
                       recover_quiz_route, require_finished, select_tools)
 from learning_coach.service.execution import BUDGET, CALL_RESERVE, CallBudget, StageFailure
 from learning_coach.service.visual_generation import VisualGenerationService
-from learning_coach.service.ports import AgentRunner, ResearchPort, LearningMemory, Artifacts, ImageGenerator, StorageError
+from learning_coach.service.ports import (AgentRunner, ResearchPort, LearningMemory, Artifacts, ImageFinder,
+                                          ImageGenerator, StorageError)
 
 
 LOG = logging.getLogger(__name__)
@@ -117,6 +118,7 @@ class LearningPipeline:
     def __init__(self, runner: AgentRunner, research: ResearchPort, store: LearningMemory,
                  artifacts: Artifacts, response_schema: dict, *,
                  image_generator: ImageGenerator | None = None,
+                 image_finder: ImageFinder | None = None,
                  onboarding: bool = False, demo_stage: str | None = None,
                  budgets: Budgets | None = None):
         self.runner, self.research = runner, research
@@ -128,6 +130,8 @@ class LearningPipeline:
         # abstraction, never on a concrete image backend. Composition roots
         # (server.py / tests) inject pollinations, FLUX, or a fake.
         self.image_generator = image_generator
+        # Finds existing web pictures for gallery pages; None turns them off.
+        self.image_finder = image_finder
         self.decision_schema = decision_schema(response_schema)
         # onboarding: ask who is learning, their stage and record consent before
         # the first lesson. demo_stage: skip those questions with a preset stage
@@ -497,7 +501,8 @@ class LearningPipeline:
                 return None, None
             # A visual of stable knowledge does not wait for, or receive, this turn's research.
             found = await running["research"] if order["visual_waits_research"] else None
-            result = await VisualGenerationService(self.runner, self.artifacts, self.image_generator).generate(
+            result = await VisualGenerationService(self.runner, self.artifacts, self.image_generator,
+                                                   image_finder=self.image_finder).generate(
                 session_id, {
                     "goal": plan["visual_request"], "research": found,
                     "learning_goal": (plan["task_summary"] or "")[:400],
@@ -609,7 +614,11 @@ class LearningPipeline:
                     # A practice set is done: ask once whether to compile notes.
                     output["next_step"] = {"kind": "question", "text": NOTES_OFFER}
                     offer_notes = True
-        if (check and not stopping and primary in EXPLAIN_INTENTS
+        # A step-by-step scene already ends with its own observation question;
+        # a second, graded question after the reply only adds waiting time.
+        scene_asks = artifact is not None and "scene" in (
+            (visual_context or {}).get("kind"), (visual_context or {}).get("companion_kind"))
+        if (check and not stopping and primary in EXPLAIN_INTENTS and not scene_asks
                 and tool_results["quiz"] in ("not_requested", "skipped_policy")):
             picture = await self._add_check_question(output, check, state, session_id, brief, notes_now, sub_window)
             if picture:
@@ -660,6 +669,12 @@ class LearningPipeline:
         require_finished(tool_results)
         state["last_execution"] = {"mode": "tools", "tools": tool_results, "order": order,
                                    "context": context_report}
+        if visual_context:
+            # Outcome codes only (no content), for evaluations and logs.
+            quality, failure = visual_context.get("quality") or {}, visual_context.get("failure") or {}
+            state["last_execution"]["visual"] = {
+                "kind": visual_context.get("kind"), "status": visual_context.get("status"),
+                "drafts": quality.get("attempts", failure.get("attempts")), "failure": failure.get("code")}
         if repair_kind:
             state["last_execution"]["routing_repaired"] = repair_kind
         return output, state
