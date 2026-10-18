@@ -12,7 +12,12 @@ from learning_coach.service.ports import SearchProvider
 MAX_RESPONSE_BYTES = 1_048_576
 HTTP_TIMEOUT = 8
 PROVIDER_TIMEOUT = 20
-PROVIDER_HOSTS = {"zh.wikipedia.org", "en.wikipedia.org", "api.tavily.com", "api.bocha.cn"}
+PROVIDER_HOSTS = {"zh.wikipedia.org", "en.wikipedia.org", "api.tavily.com", "api.bocha.cn",
+                  "open.bigmodel.cn"}
+
+# Knowledge-looking queries go to the knowledge-focused provider; news and
+# current-events queries keep the whole index.
+_EDUCATIONAL = re.compile(r"(公式|定义|是什么|为什么|怎么|原理|定理|概念|区别|起源|性质|规律|证明|推导|成分|结构|分类)")
 
 class RetrievalError(Exception):
     """Safe public code, never a server response or credential."""
@@ -143,10 +148,59 @@ class BochaProvider:
         return sources
 
 
+class ZhipuProvider:
+    """Zhipu (智谱) web search: knowledge-grade retrieval for teaching queries.
+
+    Paid per call (search_pro); the response items carry title/content/link,
+    where content is a provider summary and therefore stays on the
+    conservative search_snippet evidence tier.
+    """
+
+    def __init__(self, api_key: str):
+        self._api_key = api_key
+
+    async def search(self, query: str) -> list[dict]:
+        if not self._api_key:
+            raise RetrievalError("provider_not_configured")
+        body = {"search_query": query[:100], "search_engine": "search_pro",
+                "count": 3, "content_size": "high", "search_recency_filter": "noLimit"}
+        request = Request("https://open.bigmodel.cn/api/paas/v4/web_search", data=json.dumps(body).encode(),
+                          headers={"Authorization": f"Bearer {self._api_key}",
+                                   "Content-Type": "application/json"}, method="POST")
+        result = await asyncio.to_thread(_fetch_json, request)
+        items = result.get("search_result") or []
+        if not isinstance(items, list):
+            raise RetrievalError("provider_invalid_response")
+        sources = []
+        for item in items[:3]:
+            if not isinstance(item, dict):
+                continue
+            sources.append({"title": item.get("title") or "", "url": item.get("link") or "",
+                            "excerpt": item.get("content") or "",
+                            "excerpt_kind": "search_snippet"})
+        return sources
+
+
+class RoutedProvider:
+    """BoCha for news and events; Zhipu for knowledge questions."""
+
+    def __init__(self, bocha: SearchProvider, zhipu: SearchProvider):
+        self._bocha, self._zhipu = bocha, zhipu
+
+    async def search(self, query: str) -> list[dict]:
+        provider = self._zhipu if _EDUCATIONAL.search(query) else self._bocha
+        return await provider.search(query)
+
+
 def default_provider() -> SearchProvider:
     bocha = os.environ.get("BOCHA_API_KEY", "").strip()
+    zhipu = os.environ.get("ZHIPU_API_KEY", "").strip()
+    if bocha and zhipu:
+        return RoutedProvider(BochaProvider(bocha), ZhipuProvider(zhipu))
     if bocha:
         return BochaProvider(bocha)
+    if zhipu:
+        return ZhipuProvider(zhipu)
     key = os.environ.get("TAVILY_API_KEY", "").strip()
     return TavilyProvider(key) if key else WikipediaProvider()
 

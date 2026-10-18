@@ -282,5 +282,41 @@ class ProviderAdapterTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsInstance(providers.default_provider(), providers.TavilyProvider)
 
 
+    async def test_zhipu_results_parse_and_stay_conservative(self):
+        payload = {"id": "t1", "search_result": [
+            {"title": "勾股定理", "link": "https://zhihuedu.example/pythagoras", "content": "直角三角形两直角边平方和等于斜边平方。", "media": "知乎"},
+            {"title": "证明方法", "link": "https://math.example/proof", "content": "面积证法…"},
+            {"title": "历史", "link": "https://math.example/history", "content": "毕达哥拉斯…"},
+            {"title": "多余的第四条", "link": "https://math.example/extra", "content": "…"}]}
+        with patch.object(providers, "_fetch_json", return_value=payload) as fetch:
+            found = await providers.ZhipuProvider("sk-zhipu").search("勾股定理 证明")
+        body = json.loads(fetch.call_args.args[0].data.decode())
+        self.assertEqual((body["search_engine"], body["content_size"], body["count"]),
+                         ("search_pro", "high", 3))
+        self.assertEqual([item["url"] for item in found],
+                         ["https://zhihuedu.example/pythagoras", "https://math.example/proof", "https://math.example/history"])
+        self.assertEqual(found[0]["excerpt_kind"], "search_snippet")
+
+    async def test_routed_provider_sends_knowledge_to_zhipu_and_news_to_bocha(self):
+        class Spy:
+            def __init__(self, name):
+                self.name, self.queries = name, []
+            async def search(self, query):
+                self.queries.append(query)
+                return []
+        bocha, zhipu = Spy("bocha"), Spy("zhipu")
+        routed = providers.RoutedProvider(bocha, zhipu)
+        await routed.search("勾股定理 原理")
+        await routed.search("2026年6月 航天发射事件")
+        self.assertEqual(bocha.queries, ["2026年6月 航天发射事件"])
+        self.assertEqual(zhipu.queries, ["勾股定理 原理"])
+
+    async def test_default_provider_routes_when_both_keys_are_set(self):
+        with patch.dict("os.environ", {"BOCHA_API_KEY": "b", "ZHIPU_API_KEY": "z"}, clear=True):
+            self.assertIsInstance(providers.default_provider(), providers.RoutedProvider)
+        with patch.dict("os.environ", {"ZHIPU_API_KEY": "z"}, clear=True):
+            self.assertIsInstance(providers.default_provider(), providers.ZhipuProvider)
+
+
 if __name__ == "__main__":
     unittest.main()
