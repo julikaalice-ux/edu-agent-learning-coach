@@ -142,12 +142,12 @@ uv run --project agent --locked --group dev python -m unittest discover -s tests
 - 评测用例：[`evals/cases.jsonl`](evals/cases.jsonl)，打分脚本 [`evals/score.py`](evals/score.py)
 - 离线校验真实响应：[`scripts/validate_responses.py`](scripts/validate_responses.py)
 
-**单 agent 与多 agent 对比**：单 agent 对照版（`LEARNING_COACH_ARCHITECTURE=single`）只有一个 agent，用同样的规则、同样的工具和同样的程序检查，自己完成查资料、核对、画图、出题和写回复。
+**单 agent 与多 agent 对比**：单 agent 对照版（`LEARNING_COACH_ARCHITECTURE=single`）只有一个 agent，用同样的规则、同样的工具和同样的程序检查，自己完成查资料、核对、画图、出题和写回复。线上演示（Foundry 主实例和 Space）当前跑 single；多 agent 的修复与对比在评测里继续。
 
 ```bash
 uv run --project agent --locked python evals/compare.py --sample 10   # 先跑 10 条看花费
 uv run --project agent --locked python evals/compare.py               # 49 条全跑
-uv run --project agent --locked python evals/foundry_compare.py       # 31 条单轮用例在 Foundry 里并排评估
+uv run --project agent --locked python evals/foundry_compare.py       # 31 条单轮用例在 Foundry 里并排评估（需要一个 multi 实例，临时去掉 azure.yaml 主实例的 LEARNING_COACH_ARCHITECTURE: single 再部署）
 ```
 
 `compare.py` 在本机用真实模型跑两版，默认所有角色用同一个模型部署；结果（对比表、图表页和原始记录）写在 `runs/`。`foundry_compare.py` 需要先 `azd deploy` 两个托管 agent（`azure.yaml` 里的 `edu-agent-single` 是对照版）。

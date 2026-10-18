@@ -49,6 +49,11 @@ services:
         version: 2.0.0
     env:
       AZURE_AI_MODEL_DEPLOYMENT_NAME: ${AZURE_AI_MODEL_DEPLOYMENT_NAME}
+      # The shared demo runs the single-agent architecture: same rules, tools
+      # and checks, one agent does everything — several times faster and the
+      # eval winner so far. Remove this line to switch back to the multi-agent
+      # coach (its repair work continues in evals/).
+      LEARNING_COACH_ARCHITECTURE: single
       # Scene design and reviews (including source checks) use a stronger
       # model; the coordinator, quiz writer and notes use the default.
       LEARNING_COACH_MODEL_VISUALIZER: gpt-6-luna
