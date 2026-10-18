@@ -469,6 +469,12 @@ def build_app() -> gr.Blocks:
                 option_updates, [session], option_buttons)
         show_notes.click(notes_markdown, [session, allowed], [notes_view])
         demo.load(check_access, None, [allowed, main, locked_note])
+        # Every page load starts a brand-new session. Gradio can re-attach a
+        # reloaded page to its previous server-side session (the browser keeps
+        # the session id); replacing it here drops the old chat, coach state
+        # and learning records so nothing from the previous page-open survives.
+        demo.load(new_session, None, [session, chatbot, panel, input_box]).then(
+            option_updates, [session], option_buttons)
     return demo
 
 
