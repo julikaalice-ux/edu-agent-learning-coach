@@ -62,6 +62,17 @@ def render_question(question) -> str:
     return question["question"] + "\n" + choices
 
 
+def correct_choice(question) -> str | None:
+    """The text of the correct choice, or None when the question has none."""
+    if not isinstance(question, dict):
+        return None
+    choices = question.get("choices")
+    index = question.get("answer_index")
+    if not isinstance(choices, list) or not isinstance(index, int) or not 0 <= index < len(choices):
+        return None
+    return str(choices[index]).strip()
+
+
 def default_participant(state) -> str:
     """Who answers a new question when no plan says so: a companion only when one said so."""
     quiz = state.get("quiz") or {}
@@ -411,6 +422,10 @@ class LearningPipeline:
             self._track_tasks(state, previous_task, previous_quiz, current_turn, text)
             stopping = task["end_task"] or task["pause_task"]
             self._validate_response(output, output["intent"], None, stopping=stopping)
+            if self._respond_problem(output, state, memory_enabled):
+                # A single decide call cannot be redrafted here; failing the turn
+                # is safer than publishing the answer to the waiting question.
+                raise ContractError("answer_visible_before_answer")
             if stopping:
                 output["next_step"] = None
             picture = None
@@ -551,6 +566,13 @@ class LearningPipeline:
         }
         context_report["respond_tokens"] = count_tokens(response_input)
         output = await self.runner("coordinator", response_input, self.response_schema)
+        problem = self._respond_problem(output, state, memory_enabled)
+        if problem:
+            # One corrected redraft; still leaking falls back like other contract errors.
+            response_input = {**response_input, "correction": problem}
+            output = await self.runner("coordinator", response_input, self.response_schema)
+            if self._respond_problem(output, state, memory_enabled):
+                raise ContractError("respond_correction_rejected")
         stopping = plan["end_task"] or plan["pause_task"] or plan["quiz_action"] == "stop"
         self._validate_response(output, plan["intent"], research, stopping=stopping)
         if stopping:
@@ -695,6 +717,21 @@ class LearningPipeline:
                 card["quiz"] = f"{previous_quiz['answered']} 题对 {previous_quiz['correct']} 题"
             context["finished"] = (context.get("finished", []) + [card])[-5:]
 
+    def _respond_problem(self, output, state, memory_enabled) -> str | None:
+        """Deterministic rejections for a respond draft, retried with correction.
+
+        Two rules only: never show the correct choice of the question that is
+        still waiting for an answer, and never claim records were saved when
+        they are off or not yet committed.
+        """
+        choice = correct_choice((state.get("quiz") or {}).get("awaiting"))
+        message = output.get("message", "") if isinstance(output, dict) else ""
+        if choice and choice in message:
+            return "回复正文不得出现当前等待作答题目的正确答案；说明和反馈请避开正确选项原句。"
+        if not memory_enabled and re.search(r"已(?:记下|记录|保存)|(?:先|马上|替你|帮你)(?:记下|记录|保存)|(?:记下|保存)(?:了|啦|哦)|记住(?:了|啦)|记好(?:了|啦)", message):
+            return "学习记录未开启或尚未提交，回复不得声称已记下或已保存。"
+        return None
+
     def _validate_response(self, output, intent, research, *, stopping=False):
         validate(output, self.response_schema)
         if output["intent"] != intent:
@@ -828,6 +865,12 @@ class LearningPipeline:
             problem = check_question(question)
             if problem is None and question["question"].strip().casefold() in known:
                 problem = "repeated_question"
+            if problem is None:
+                choice = correct_choice(question)
+                # A check question whose answer is verbatim in what the coach
+                # just said is answered by copying, not by understanding.
+                if choice and request.get("explanation") and choice in request["explanation"]:
+                    problem = "answer_in_explanation"
             if problem is None and question["image"] is not None:
                 if request.get("image_unavailable"):
                     problem = "picture_not_available_write_text_only"

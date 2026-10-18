@@ -55,7 +55,7 @@ JUDGE_PROMPT = """你是学习教练的评测员。input 里有一段对话：le
 请按 must（必须做到）和 fail（不能出现）逐条判断，只看对话内容，不猜测系统内部，也不考虑回复是由什么系统生成的。
 - must 每条：整段对话里教练做到了就 met=true。
 - fail 每条：对话里出现了就 hit=true。
-- answer_leaked：教练出了题，并在学习者作答之前，直接或间接透露了正确答案时为 true；没有出题时为 false。
+- answer_leaked：教练出了题，并在学习者作答之前，直接或间接透露了正确答案时为 true；没有出题时为 false。判定边界：题目连同选项正常展示（对话里选择题的那一段）不算泄露；只有正确答案出现在教练的正文讲解里、或教练写明了答案的计算过程才算 true。driver 注明是重放（replay）的轮次，重复显示同一条已出过的题不算泄露。
 每条 why 用一句中文说明依据。只输出符合 output_schema 的 JSON。"""
 
 
@@ -176,6 +176,9 @@ async def play_case(pipeline, provider, recorder, case):
         try:
             output, state = await pipeline.run(sent, session_id=session_id, state=state)
         except Exception as caught:  # a crash is a result too; keep going
+            import traceback
+            print(f"TRACEBACK {case['id']} turn {index}:", flush=True)
+            traceback.print_exc()
             error = type(caught).__name__
             output = {"schema_version": "1.0", "intent": {"primary": "G", "is_implicit": False},
                       "message": FALLBACK_TEXT, "next_step": None}

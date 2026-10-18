@@ -105,7 +105,8 @@ class FakeRunner:
                         raise response
                     result = {"mode": "answer", "response": response,
                               "task": {"task_summary": proposed["task_summary"], "pause_task": proposed["pause_task"],
-                                       "end_task": proposed["end_task"] or proposed["quiz_action"] == "stop"}}
+                                       "end_task": proposed["end_task"] or proposed["quiz_action"] == "stop"},
+                              "check_question": proposed.get("check_question")}
                 else:
                     current_text = payload["messages"][-1]["text"]
                     proposed = deepcopy(proposed)
@@ -463,6 +464,86 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         _, fresh = await pipeline.run(messages("新的一页"), session_id="gone", state=None, turn_id="n1")
         self.assertEqual(fresh["revision"], 1)
         self.assertEqual(before["revision"], 1)
+
+    async def test_check_question_with_answer_in_explanation_is_rewritten(self):
+        reply = {"schema_version": "1.0", "intent": {"primary": "A", "is_implicit": False},
+                 "message": "分数表示整体被平均分成几份后取几份；分母表示平均分成的份数。",
+                 "next_step": {"kind": "question", "text": "想接着看比较大小吗？"}}
+        bad = {**QUIZ, "question": "分母表示什么？", "choices": ["平均分成的份数", "取走的份数"], "answer_index": 0}
+        good = {**QUIZ, "question": "一块蛋糕切成 8 份取 3 份，取走了整体的多少？",
+                "choices": ["八分之三", "八分之五"], "answer_index": 0}
+        runner = FakeRunner([plan("A", check_question={"topic": "分数", "difficulty": "简单"})],
+                            replies=[reply], quiz=[bad, good])
+        output, _ = await self.pipeline(runner).run(messages("讲讲分数"), session_id="s", turn_id="1")
+        drafts = runner.calls_for("quizzer")
+        self.assertEqual(len(drafts), 2)
+        self.assertNotIn("correction", drafts[0])
+        self.assertEqual(drafts[1]["correction"], "answer_in_explanation")
+        self.assertEqual(output["next_step"]["text"].count("八分之三"), 1)
+
+    async def test_respond_redrafts_when_message_contains_the_waiting_answer(self):
+        def reply(message):
+            return {"schema_version": "1.0", "intent": {"primary": "C", "is_implicit": False},
+                    "message": message, "next_step": None}
+        runner = FakeRunner([plan("C", quiz_action="start", quiz_topic="分数")], quiz=[QUIZ],
+                            replies=[reply("四分之一就是四分里的一份。"), reply("想好了就选一个答案。")])
+        output, _ = await self.pipeline(runner).run(messages("考考我"), session_id="s", turn_id="1")
+        responds = runner.calls_for("coordinator", "respond")
+        self.assertEqual(len(responds), 2)
+        self.assertIn("等待作答题目的正确答案", responds[1]["correction"])
+        self.assertEqual(output["next_step"]["text"].count(QUIZ["question"]), 1)
+        self.assertNotIn("四分之一", output["message"])
+
+    async def test_respond_falls_back_when_correction_still_leaks(self):
+        def reply(message):
+            return {"schema_version": "1.0", "intent": {"primary": "C", "is_implicit": False},
+                    "message": message, "next_step": None}
+        runner = FakeRunner([plan("C", quiz_action="start", quiz_topic="分数")], quiz=[QUIZ],
+                            replies=[reply("四分之一就是四分里的一份。"), reply("还是四分之一哦。")])
+        output, state = await self.pipeline(runner).run(messages("考考我"), session_id="s", turn_id="1")
+        self.assertIn("没有顺利完成", output["message"])
+        self.assertEqual(len(runner.calls_for("coordinator", "respond")), 2)
+        self.assertEqual(state, {})  # the failed turn commits nothing
+
+    async def test_respond_never_claims_saved_when_memory_off(self):
+        def reply(message):
+            return {"schema_version": "1.0", "intent": {"primary": "C", "is_implicit": False},
+                    "message": message, "next_step": None}
+        runner = FakeRunner([plan("C", quiz_action="start", quiz_topic="分数")], quiz=[QUIZ],
+                            replies=[reply("好的，我先记下这个易错点。"), reply("想好了就选一个答案。")])
+        output, _ = await self.pipeline(runner).run(messages("考考我"), session_id="s", turn_id="1")
+        responds = runner.calls_for("coordinator", "respond")
+        self.assertEqual(len(responds), 2)
+        self.assertIn("不得声称已记下", responds[1]["correction"])
+        self.assertNotIn("记下", output["message"])
+
+    async def test_respond_claims_of_saving_forms_are_all_rejected(self):
+        def reply(message):
+            return {"schema_version": "1.0", "intent": {"primary": "C", "is_implicit": False},
+                    "message": message, "next_step": None}
+        for claim in ("帮你记录这个", "记好了", "保存啦", "已保存"):
+            runner = FakeRunner([plan("C", quiz_action="start", quiz_topic="分数")], quiz=[QUIZ],
+                                replies=[reply(f"好的，{claim}。"), reply("想好了就选一个答案。")])
+            output, _ = await self.pipeline(runner).run(messages("考考我"), session_id="s", turn_id="1")
+            self.assertIn("不得声称已记下", runner.calls_for("coordinator", "respond")[1]["correction"], claim)
+        # Negations and mentions of the feature itself are not claims.
+        for text in ("我不会保存", "默认不保存学习记录"):
+            problem = self.pipeline(FakeRunner())._respond_problem({"message": text}, {}, False)
+            self.assertIsNone(problem, text)
+
+    async def test_answer_mode_never_publishes_the_waiting_answer(self):
+        runner = FakeRunner([
+            plan("C", quiz_action="start", quiz_topic="分数"),
+            plan("A"),
+        ], quiz=[QUIZ], replies=[{"schema_version": "1.0", "intent": {"primary": "C", "is_implicit": False},
+                                  "message": "选一个答案就好。", "next_step": None},
+                                 {"schema_version": "1.0", "intent": {"primary": "A", "is_implicit": False},
+                                  "message": "答案是四分之一。", "next_step": None}])
+        pipeline = self.pipeline(runner)
+        _, state = await pipeline.run(messages("考考我"), session_id="s", turn_id="1")
+        output, _ = await pipeline.run(messages("接着讲", *exchange("考考我")), session_id="s",
+                                       state=state, turn_id="2")
+        self.assertIn("没有顺利完成", output["message"])
 
     async def test_reused_turn_id_with_different_input_is_rejected(self):
         runner = FakeRunner()
