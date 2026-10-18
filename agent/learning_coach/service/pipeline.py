@@ -191,6 +191,18 @@ class LearningPipeline:
                      "intent": output["intent"]}, ensure_ascii=False))
             return output, updated
 
+    def reset_session(self, session_id: str) -> None:
+        """Drop this conversation's in-memory replays so a reopened page starts clean.
+
+        The host calls this when it decides the conversation was closed and
+        reopened: without it, ``_recent`` would hand the fresh turn the old
+        state (its revision is ahead of the empty one) and ``_accepted`` could
+        replay an old response.
+        """
+        self._recent.pop(session_id, None)
+        for key in [key for key in self._accepted if key[0] == session_id]:
+            del self._accepted[key]
+
     async def _execute(self, messages, session_id, state, event_id, memory_key, returning_visitor):
         text = messages[-1]["text"].strip()
         # Plain-language record controls map onto the same program commands.

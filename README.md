@@ -52,6 +52,7 @@ cp agent/.env.example agent/.env   # 填 FOUNDRY_PROJECT_ENDPOINT 和 AZURE_AI_M
 | `LEARNING_COACH_DEMO_MODE` | | 设为 `1` 时跳过首次问答，学段取 `LEARNING_COACH_DEMO_STAGE` |
 | `DEMO_ACCESS_KEY` | | 演示页邀请码，访问链接需带 `?key=` |
 | `DEMO_MAX_TURNS_PER_DAY` / `DEMO_MAX_IMAGES_PER_DAY` | | 演示页每日上限，默认 150 / 20 |
+| `LEARNING_COACH_CONTEXT_TTL_SECONDS` | | 托管入口的会话隔离时限：同一会话链接距上轮超过该秒数（默认 900）重开，或换了一个平台用户打开时，历史与做题进度一律作废，从当前消息重新开始；`0` 关闭时间重置 |
 
 当前模型分工：核对（查证和审图）、画图用 `gpt-6-luna`，主 agent（含写搜索词）、出题、笔记用 `gpt-5.4-mini`，配图 `flux-2-pro`。三处入口要一致：本地看 `agent/.env`，托管看 `azure.yaml`，Space 看它的 Variables。
 
@@ -168,6 +169,7 @@ azd ai agent invoke "请围绕一元一次方程考考我，一次只出一道�
 - 没有流式输出，每轮返回一段完整文本。
 - 托管入口的互动图经公开 blob 容器提供（`LEARNING_COACH_ARTIFACT_BLOB_URL`，由 [`scripts/setup-artifact-blob.sh`](scripts/setup-artifact-blob.sh) 配置）：链接是带 32 位不可猜 token 的匿名能力链接，不可列举，约 2 天后被生命周期规则删除，内容应限于教学材料。演示网页仍直接在页面里显示互动图。
 - 确定性学习记录以 SQLite 为准；托管入口的跨会话连续性由 Foundry Memory 语义层提供（启用 `LEARNING_COACH_MEMORY_STORE` 后按平台用户身份分 scope）。
+- 上下文隔离：演示网页每次打开都是全新会话，对话、做题进度和学习记录都不跨页面保留（浏览器只留一个不含内容的「来过了」标记）；托管入口由会话守卫保证——同一会话链接换人打开、或距上轮超过 `LEARNING_COACH_CONTEXT_TTL_SECONDS`（默认 900 秒）重开时，历史与状态一律作废。
 - 意图分类准确率和教学效果还没有量化评测。
 
 完整的缺口和计划见 [PRD 第六部分](docs/product/Edu-agent-PRD-v3.md)。

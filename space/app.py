@@ -10,11 +10,14 @@ the key is checked on page load and again in every turn. Daily caps
 (DEMO_MAX_TURNS_PER_DAY, DEMO_MAX_IMAGES_PER_DAY; 0 = no cap) protect the
 model budget behind the public URL.
 
-Each conversation is also kept in the visitor's own browser (never on the
-server) so it can be read back later under "历史对话"; "我的笔记" shows the
-learning notes the coach has compiled. Browser storage is encrypted with a
-stable key (LEARNING_COACH_BROWSER_SECRET, or one saved in the data folder)
-so it survives restarts.
+Every page open is a brand-new session: the chat, the learning records and
+the coach's memory all belong to that open page only, and closing it leaves
+nothing the next open can read. The only thing kept in the visitor's own
+browser is a bare "visited before" flag (no learning content) that skips the
+first-meeting questions; it is encrypted with a stable key
+(LEARNING_COACH_BROWSER_SECRET, or one saved in the data folder) so it
+survives restarts. "我的笔记" shows the notes compiled in the current
+session.
 
 Interactive visuals and generated illustrations render inline (iframe /
 markdown image) from the artifact store, so they work on the public URL —
@@ -26,7 +29,6 @@ from __future__ import annotations
 
 import asyncio
 import hmac
-import json
 import logging
 import os
 import re
@@ -132,10 +134,11 @@ DATA_DIR = Path(os.environ.get("LEARNING_COACH_DATA_DIR", "/tmp/learning-coach")
 
 
 def browser_secret(data_dir: Path = DATA_DIR):
-    """A stable key for browser storage, so saved conversations survive restarts.
+    """A stable key for browser storage, so the "visited before" flag survives restarts.
 
-    Without it Gradio picks a new random key on every start and visitors'
-    saved conversations and anonymous ID can no longer be read.
+    Without it Gradio picks a new random key on every start and the flag can
+    no longer be read back; visitors then get the first-meeting questions
+    again, which is harmless.
     """
     configured = os.environ.get("LEARNING_COACH_BROWSER_SECRET", "").strip()
     if configured:
@@ -198,21 +201,16 @@ def iframe_for(document: str) -> str:
     )
 
 
-def ensure_device(device):
-    """Anonymous per-browser identity: a random ID plus a "visited before" flag.
+def seen_before(device) -> bool:
+    """The one thing the browser remembers: that it has met the coach before.
 
-    Kept in the visitor's own browser storage. It holds no personal data and
-    lets learning records (when the learner turns them on) and the
-    first-meeting introduction carry across conversations on this device.
+    A bare flag with no learning content; it only skips the first-meeting
+    questions. Everything else is scoped to the open page's session.
     """
-    if not isinstance(device, dict) or not isinstance(device.get("learner_id"), str) \
-            or not device["learner_id"]:
-        device = {"learner_id": uuid.uuid4().hex, "seen": False}
-    return {"learner_id": device["learner_id"][:200], "seen": device.get("seen") is True}
+    return device is True
 
 
 async def respond(user_text, session, device=None, allowed=False):
-    device = ensure_device(device)
     user_text = (user_text or "").strip()
     if not user_text:
         yield session, session["chat"], session["panel"], "", device
@@ -240,9 +238,11 @@ async def respond(user_text, session, device=None, allowed=False):
         # Await the pipeline while polling the stage observer: each new stage
         # replaces the placeholder so long generations show what is happening.
         STAGE_STATUS.current = None
+        # No learner_id: learning records are keyed by this page's session and
+        # die with it. seen only skips the first-meeting questions.
         task = asyncio.create_task(PIPELINE.run(list(session["history"]), session_id=session["session_id"],
-                                                state=session["state"], learner_id=device["learner_id"],
-                                                returning_visitor=device["seen"]))
+                                                state=session["state"], learner_id=None,
+                                                returning_visitor=seen_before(device)))
         deadline = time.monotonic() + 240
         shown = None
         while True:
@@ -261,7 +261,7 @@ async def respond(user_text, session, device=None, allowed=False):
                         {"role": "assistant", "content": label},
                     ]
                     yield session, thinking, session["panel"], "", device
-        device = {**device, "seen": True}
+        device = True
         session["state"] = new_state
         text = learner_text(output)
         # Keep model context separate from presentation-only markup and image bytes.
@@ -324,83 +324,22 @@ def option_updates(session):
 
 
 def clear_demo(session, device):
-    """Start the demo from a clean slate: drop this browser's records and identity."""
-    device = ensure_device(device)
-    for remove, key in ((PIPELINE.store.clear, device["learner_id"]),
+    """Start the demo from a clean slate: drop this session's records and artifacts."""
+    for remove, key in ((PIPELINE.store.clear, session.get("session_id", "")),
                         (PIPELINE.artifacts.delete_session, session.get("session_id", ""))):
         try:
             remove(key)
         except Exception:
             pass
     fresh = new_session()
-    # The saved conversations in this browser go too.
-    return (*fresh, {"learner_id": uuid.uuid4().hex, "seen": False}, [])
+    # The bare "visited before" flag is the only thing kept in the browser.
+    return (*fresh, device)
 
 
 def new_session():
     session = {"session_id": uuid.uuid4().hex, "state": None, "history": [],
-               "chat": [], "panel": "", "locked": False,
-               "started": datetime.now(CHINA_TIME).strftime("%m-%d %H:%M")}
+               "chat": [], "panel": "", "locked": False}
     return session, [], "", ""
-
-
-# ---------------------------------------------------------------- saved conversations (browser only)
-
-MAX_SAVED_CONVERSATIONS = 20
-MAX_SAVED_MESSAGES = 300
-MAX_SAVED_CHARS = 1_500_000
-IMAGE_MARKDOWN = re.compile(r"!\[[^\]]*\]\(data:image/[^)]+\)")
-
-
-def saved_copy(chat) -> list[dict]:
-    """Text of the conversation; picture bytes are replaced by a short marker."""
-    kept = []
-    for item in (chat or [])[-MAX_SAVED_MESSAGES:]:
-        content = item.get("content") if isinstance(item, dict) else None
-        if item.get("role") in ("user", "assistant") and isinstance(content, str):
-            kept.append({"role": item["role"], "content": IMAGE_MARKDOWN.sub("（配图）", content)[:20000]})
-    return kept
-
-
-def remember(session, saved):
-    """After each turn, keep this conversation in the visitor's browser."""
-    saved = [item for item in (saved if isinstance(saved, list) else [])
-             if isinstance(item, dict) and isinstance(item.get("id"), str)]
-    messages = saved_copy(session.get("chat"))
-    if not messages:
-        return saved
-    first = next((m["content"] for m in messages if m["role"] == "user"), "")
-    entry = {"id": session["session_id"], "started": session.get("started", ""),
-             "title": re.sub(r"\s+", " ", first).strip()[:30], "messages": messages}
-    saved = ([item for item in saved if item["id"] != entry["id"]] + [entry])[-MAX_SAVED_CONVERSATIONS:]
-    # Browser storage holds a few MB: drop the oldest conversations, then the
-    # oldest messages of the current one, until it fits.
-    while len(json.dumps(saved, ensure_ascii=False)) > MAX_SAVED_CHARS:
-        if len(saved) > 1:
-            saved.pop(0)
-        elif len(entry["messages"]) > 2:
-            entry["messages"] = entry["messages"][2:]
-        else:
-            break
-    return saved
-
-
-def history_choices(saved):
-    choices = [(f"{item.get('started', '')}  {item.get('title', '')}".strip(), item["id"])
-               for item in reversed(saved if isinstance(saved, list) else [])
-               if isinstance(item, dict) and isinstance(item.get("id"), str)]
-    return gr.update(choices=choices, value=None)
-
-
-def show_saved(chosen, saved):
-    for item in saved if isinstance(saved, list) else []:
-        if isinstance(item, dict) and item.get("id") == chosen:
-            return saved_copy(item.get("messages"))
-    return []
-
-
-def forget_saved():
-    return [], gr.update(choices=[], value=None), []
 
 
 # ---------------------------------------------------------------- learning notes view
@@ -447,15 +386,14 @@ def render_notes(notes) -> str:
     return "\n".join(lines).strip()
 
 
-def notes_markdown(device, allowed=False) -> str:
-    """The learning notes kept for this browser's anonymous learner ID."""
+def notes_markdown(session, allowed=False) -> str:
+    """The learning notes compiled in this open session; they die with it."""
     if not allowed:
         return LOCKED_TEXT
-    device = ensure_device(device)
     try:
-        if not PIPELINE.store.is_enabled(device["learner_id"]):
+        if not PIPELINE.store.is_enabled(session.get("session_id", "")):
             return "还没有开启学习记录，所以没有笔记。想保存，可以在对话里说“开启记录”。"
-        return render_notes(PIPELINE.store.snapshot(device["learner_id"]))
+        return render_notes(PIPELINE.store.snapshot(session.get("session_id", "")))
     except Exception:
         return "笔记暂时读取不了，请稍后再试。"
 
@@ -494,21 +432,16 @@ def build_app() -> gr.Blocks:
                     clear = gr.Button("清空演示数据")
                     gr.Markdown(f"**演示模式**：跳过了年龄和学习记录的询问，预设学段“{DEMO_STAGE}”，学习记录已开启。")
                 else:
-                    gr.Markdown("第一次使用时会问学段和是否保存学习记录；之后随时可以说“开启记录”“关闭记录”“删除记录”。"
-                                "学习记录只和这台设备上的浏览器关联。")
+                    gr.Markdown("每次打开页面都是一个新会话，不会保留之前的对话；本页开启的学习记录也只到本页关闭为止。"
+                                "第一次使用时会问学段和是否保存学习记录；之后随时可以说“开启记录”“关闭记录”“删除记录”。")
             with gr.Accordion("我的笔记", open=False):
                 show_notes = gr.Button("查看最新笔记", size="sm")
                 notes_view = gr.Markdown("")
-            with gr.Accordion("历史对话", open=False):
-                gr.Markdown("对话记录只保存在这台设备的浏览器里，不会上传。")
-                past = gr.Dropdown(label="选一次对话查看", choices=[], interactive=True)
-                past_chat = gr.Chatbot(label="对话记录", height=360)
-                forget_history = gr.Button("删除这台设备上的对话记录", size="sm")
         session = gr.State(new_session()[0])
-        # Lives in this visitor's browser storage, so it survives "新会话" and reloads.
+        # The only thing kept in this visitor's browser storage is a bare
+        # "visited before" flag; it survives "新会话" and reloads.
         key = browser_secret()
-        device = gr.BrowserState({"learner_id": "", "seen": False}, storage_key="edu-agent-device", secret=key)
-        saved = gr.BrowserState([], storage_key="edu-agent-conversations", secret=key)
+        device = gr.BrowserState(False, storage_key="edu-agent-seen", secret=key)
         # Server-side per-visitor flag; set from the link on page load.
         allowed = gr.State(not ACCESS_KEY)
 
@@ -521,9 +454,8 @@ def build_app() -> gr.Blocks:
         outputs = [session, chatbot, panel, input_box, device]
 
         def after_turn(event):
-            # Show the answer's choices, then keep the conversation in the browser.
-            event.then(option_updates, [session], option_buttons).then(
-                remember, [session, saved], [saved]).then(history_choices, [saved], [past])
+            # Show the answer's numbered choices as buttons.
+            event.then(option_updates, [session], option_buttons)
 
         after_turn(send.click(on_send, [input_box, session, device, allowed], outputs))
         after_turn(input_box.submit(on_send, [input_box, session, device, allowed], outputs))
@@ -533,13 +465,10 @@ def build_app() -> gr.Blocks:
         reset.click(new_session, None, [session, chatbot, panel, input_box]).then(
             option_updates, [session], option_buttons)
         if DEMO_STAGE:
-            clear.click(clear_demo, [session, device], [session, chatbot, panel, input_box, device, saved]).then(
-                option_updates, [session], option_buttons).then(history_choices, [saved], [past])
-        show_notes.click(notes_markdown, [device, allowed], [notes_view])
-        past.change(show_saved, [past, saved], [past_chat])
-        forget_history.click(forget_saved, None, [saved, past, past_chat])
+            clear.click(clear_demo, [session, device], [session, chatbot, panel, input_box, device]).then(
+                option_updates, [session], option_buttons)
+        show_notes.click(notes_markdown, [session, allowed], [notes_view])
         demo.load(check_access, None, [allowed, main, locked_note])
-        demo.load(history_choices, [saved], [past])
     return demo
 
 

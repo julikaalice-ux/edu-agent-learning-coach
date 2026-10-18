@@ -56,6 +56,9 @@ services:
       # Foundry evaluations send each case as a new conversation; skip the
       # first-meeting questions so the reply answers the case itself.
       LEARNING_COACH_ONBOARDING: '0'
+      # Context isolation: a reopened conversation link (other platform user,
+      # or older than this many seconds) starts fresh, dropping history and state.
+      LEARNING_COACH_CONTEXT_TTL_SECONDS: '900'
       # The hosted container's app directory is read-only; keep session data
       # (learning notes, visual artifacts, artifact index) on the writable tmpfs.
       LEARNING_COACH_DATA_DIR: /tmp/.learning-coach

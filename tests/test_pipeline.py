@@ -448,6 +448,22 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(runner.calls), count)
         self.assertEqual(after["quiz"]["answered"], state["quiz"]["answered"])
 
+    async def test_reset_session_drops_replay_caches_without_touching_other_sessions(self):
+        pipeline = self.pipeline(FakeRunner())
+        _, before = await pipeline.run(messages("先学分数"), session_id="gone", turn_id="g1")
+        _, kept = await pipeline.run(messages("另一个会话"), session_id="kept", turn_id="k1")
+        pipeline.reset_session("gone")
+        self.assertNotIn("gone", pipeline._recent)
+        self.assertIn("kept", pipeline._recent)
+        self.assertEqual([key for key in pipeline._accepted if key[0] == "gone"], [])
+        self.assertTrue([key for key in pipeline._accepted if key[0] == "kept"])
+        # Without reset_session, the cached revision (1) would beat the fresh
+        # turn's empty state (0) and resurrect the old state (pipeline.run's
+        # _recent lookup). With it, the reopened session restarts at revision 1.
+        _, fresh = await pipeline.run(messages("新的一页"), session_id="gone", state=None, turn_id="n1")
+        self.assertEqual(fresh["revision"], 1)
+        self.assertEqual(before["revision"], 1)
+
     async def test_reused_turn_id_with_different_input_is_rejected(self):
         runner = FakeRunner()
         pipeline = self.pipeline(runner)

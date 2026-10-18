@@ -3,9 +3,6 @@
 from collections import deque
 from datetime import date
 import importlib.util
-import json
-import os
-import tempfile
 from pathlib import Path
 import sys
 from types import ModuleType, SimpleNamespace
@@ -76,19 +73,31 @@ class SpaceVisualStateTests(SpaceTestBase):
         self.assertEqual([event[2] for event in second], [panel, panel])
         self.assertEqual(self.session["panel"], panel)
 
-    async def test_device_marker_survives_new_conversation(self):
+    async def test_seen_marker_survives_but_learning_is_session_scoped(self):
         self.pipeline.responses.extend([response("你好，我是学习教练。"), response("欢迎回来。")])
         first = [event async for event in self.app.respond("你好", self.session, None, True)]
         device = first[-1][4]
-        self.assertTrue(device["learner_id"])
-        self.assertIs(device["seen"], True)
+        self.assertIs(device, True)
         self.assertIs(self.pipeline.options[0]["returning_visitor"], False)
-        # "新会话" starts a new conversation; the browser keeps the device marker.
+        self.assertIsNone(self.pipeline.options[0]["learner_id"])
+        # "新会话" starts a new conversation; only the bare seen marker survives.
         self.session = self.app.new_session()[0]
         [event async for event in self.app.respond("在吗", self.session, device, True)]
         self.assertIs(self.pipeline.options[1]["returning_visitor"], True)
-        self.assertEqual(self.pipeline.options[1]["learner_id"], device["learner_id"])
+        self.assertIsNone(self.pipeline.options[1]["learner_id"])
         self.assertNotEqual(self.pipeline.options[1]["session_id"], self.pipeline.options[0]["session_id"])
+
+    async def test_reopening_starts_a_fresh_session_without_previous_context(self):
+        self.pipeline.responses.extend([response("第一句回答。"), response("第二句回答。")])
+        await self.send("讲讲分数")
+        await self.send("继续")
+        self.assertEqual(len(self.pipeline.calls[-1]), 3)  # one open page: history accumulates
+        # Close and reopen: a brand-new session knows nothing of the previous one.
+        self.session = self.app.new_session()[0]
+        [event async for event in self.app.respond("讲讲分数", self.session, None, True)]
+        self.assertEqual(self.pipeline.calls[-1], [{"role": "user", "text": "讲讲分数"}])
+        self.assertIsNone(self.pipeline.options[-1]["learner_id"])
+        self.assertIs(self.pipeline.options[-1]["returning_visitor"], False)
 
     async def test_numbered_choices_become_buttons_including_skip(self):
         question = {"schema_version": "1.0", "intent": {"primary": "G", "is_implicit": False},
@@ -165,45 +174,8 @@ class SpaceAccessTests(SpaceTestBase):
 
 
 
-class SavedConversationTests(SpaceTestBase):
-    """Conversations are kept in the visitor's browser; notes can be read back."""
-
-    async def test_turn_is_saved_without_picture_bytes_and_replaces_its_own_entry(self):
-        self.pipeline.responses.extend([response("第一句回答"), response("第二句回答")])
-        await self.send("讲讲   分数")
-        saved = self.app.remember(self.session, [])
-        await self.send("继续")
-        self.session["chat"].append({"role": "assistant", "content": "看图 ![配图](data:image/png;base64,aGVsbG8=)"})
-        saved = self.app.remember(self.session, saved)
-        self.assertEqual(len(saved), 1)
-        entry = saved[0]
-        self.assertEqual((entry["id"], entry["title"]), (self.session["session_id"], "讲讲 分数"))
-        self.assertEqual(entry["messages"][-1]["content"], "看图 （配图）")
-        self.assertNotIn("base64", str(saved))
-        self.assertEqual(self.app.show_saved(entry["id"], saved), entry["messages"])
-        self.assertEqual(self.app.show_saved("missing", saved), [])
-
-    async def test_only_the_newest_conversations_are_kept(self):
-        saved = []
-        for number in range(25):
-            session = self.app.new_session()[0]
-            session["chat"] = [{"role": "user", "content": f"问题{number}"}]
-            saved = self.app.remember(session, saved)
-        self.assertEqual(len(saved), self.app.MAX_SAVED_CONVERSATIONS)
-        self.assertEqual(saved[-1]["title"], "问题24")
-        choices = self.app.history_choices(saved)["choices"]
-        self.assertTrue(choices[0][0].endswith("问题24"))
-        self.assertEqual(self.app.remember(self.app.new_session()[0], saved), saved)  # nothing said yet
-        self.assertEqual(self.app.forget_saved()[0], [])
-
-    async def test_saved_conversations_fit_in_browser_storage(self):
-        saved = []
-        for number in range(6):
-            session = self.app.new_session()[0]
-            session["chat"] = [{"role": "user", "content": f"问题{number}" + "长" * 19000}] * 20
-            saved = self.app.remember(session, saved)
-        self.assertLessEqual(len(json.dumps(saved, ensure_ascii=False)), self.app.MAX_SAVED_CHARS)
-        self.assertTrue(saved[-1]["title"].startswith("问题5"))
+class SessionNotesTests(SpaceTestBase):
+    """Learning notes belong to the open page session only; nothing persists across opens."""
 
     async def test_notes_are_shown_in_plain_words_and_only_with_access(self):
         notes = {"profile": {"learning_stage": {"value": "初中", "origin": "self_report"}},
@@ -221,26 +193,24 @@ class SavedConversationTests(SpaceTestBase):
         class Store:
             enabled = False
 
-            def is_enabled(self, learner):
+            def __init__(self):
+                self.seen_keys = []
+
+            def is_enabled(self, key):
+                self.seen_keys.append(key)
                 return self.enabled
 
-            def snapshot(self, learner):
+            def snapshot(self, key):
+                self.seen_keys.append(key)
                 return notes
 
         self.pipeline.store = Store()
-        device = {"learner_id": "abc", "seen": True}
-        self.assertEqual(self.app.notes_markdown(device, False), self.app.LOCKED_TEXT)
-        self.assertIn("还没有开启学习记录", self.app.notes_markdown(device, True))
+        session = self.app.new_session()[0]
+        self.assertEqual(self.app.notes_markdown(session, False), self.app.LOCKED_TEXT)
+        self.assertIn("还没有开启学习记录", self.app.notes_markdown(session, True))
         self.pipeline.store.enabled = True
-        self.assertIn("分数的意义", self.app.notes_markdown(device, True))
-
-    async def test_browser_key_is_stable_across_restarts(self):
-        with tempfile.TemporaryDirectory() as folder, patch.dict("os.environ", {}, clear=False):
-            os.environ.pop("LEARNING_COACH_BROWSER_SECRET", None)
-            first = self.app.browser_secret(Path(folder))
-            self.assertEqual(self.app.browser_secret(Path(folder)), first)
-            os.environ["LEARNING_COACH_BROWSER_SECRET"] = "configured"
-            self.assertEqual(self.app.browser_secret(Path(folder)), "configured")
+        self.assertIn("分数的意义", self.app.notes_markdown(session, True))
+        self.assertEqual(set(self.pipeline.store.seen_keys), {session["session_id"]})
 
 
 if __name__ == "__main__":

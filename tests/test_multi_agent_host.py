@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import re
 import sys
+import time
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
@@ -22,7 +23,7 @@ if SDK_AVAILABLE:
     from azure.ai.agentserver.responses import InMemoryResponseProvider
     from starlette.requests import Request
     from learning_coach.domain.contracts import validate
-    from learning_coach.api.host import LearningCoachAgent
+    from learning_coach.api.host import GUARD_KEY, LearningCoachAgent
     from learning_coach.db.memory import LearningStore
     from learning_coach.service.pipeline import LearningPipeline
     from learning_coach.service.research import ResearchService
@@ -67,7 +68,11 @@ class FakeChatClient:
 class FakePipeline:
     def __init__(self):
         self.calls = []
+        self.resets = []
         self.artifacts = SimpleNamespace(get=lambda token: "<!doctype html><p>教学图</p>" if token == "valid" else None)
+
+    def reset_session(self, session_id):
+        self.resets.append(session_id)
 
     async def run(self, inputs, *, session_id, state, learner_id=None):
         self.calls.append((deepcopy(inputs), session_id, deepcopy(state), learner_id))
@@ -290,7 +295,7 @@ class LearningCoachHostTests(unittest.IsolatedAsyncioTestCase):
     async def test_pipeline_failure_does_not_mutate_session_or_emit_update(self):
         class FailingPipeline:
             async def run(self, inputs, *, session_id, state, learner_id=None):
-                state["seen"].append("uncommitted")
+                state.setdefault("seen", []).append("uncommitted")
                 raise RuntimeError("failed before final result")
         agent = LearningCoachAgent(FailingPipeline())
         session = agent.create_session()
@@ -305,7 +310,10 @@ class LearningCoachHostTests(unittest.IsolatedAsyncioTestCase):
     async def test_message_objects_preserve_roles_and_text(self):
         pipeline = FakePipeline()
         agent = LearningCoachAgent(pipeline)
-        await agent.run([Message("assistant", ["prior"]), Message("user", ["current"])])
+        session = agent.create_session()
+        # A continuing thread: the guard is recent, so the full history passes through.
+        session.state[GUARD_KEY] = {"owner": None, "last_turn_at": time.time(), "skip": 0}
+        await agent.run([Message("assistant", ["prior"]), Message("user", ["current"])], session=session)
         self.assertEqual(pipeline.calls[0][0], [{"role": "assistant", "text": "prior"},
                                                {"role": "user", "text": "current"}])
 
@@ -332,6 +340,79 @@ class LearningCoachHostTests(unittest.IsolatedAsyncioTestCase):
                    side_effect=RuntimeError("no request context")):
             await agent.run("你好", session=AgentSession())
         self.assertEqual([call[3] for call in pipeline.calls], [None, None])
+
+    async def test_first_turn_has_no_guard_and_starts_fresh(self):
+        # A brand-new session carries nothing, so even a replayed history is ignored.
+        pipeline = FakePipeline()
+        agent = LearningCoachAgent(pipeline)
+        session = agent.create_session()
+        await agent.run([Message("user", ["old"]), Message("user", ["current"])], session=session)
+        self.assertEqual(pipeline.calls[0][0], [{"role": "user", "text": "current"}])
+        self.assertEqual(pipeline.calls[0][2], {})
+        self.assertEqual(pipeline.resets, [session.session_id])
+        self.assertEqual(session.state[GUARD_KEY]["skip"], 1)
+
+    async def test_owner_change_resets_context_and_keeps_old_thread_out_of_later_turns(self):
+        pipeline = FakePipeline()
+        agent = LearningCoachAgent(pipeline)
+        session = agent.create_session()
+        with patch("learning_coach.api.host.get_request_context", return_value=SimpleNamespace(user_id="user-a")):
+            await agent.run([Message("user", ["a1"])], session=session)
+            await agent.run([Message("user", ["a1"]), Message("assistant", ["a2"]), Message("user", ["a3"])],
+                            session=session)
+        self.assertEqual(len(pipeline.calls[1][0]), 3)
+        # Someone else opens the same conversation link.
+        with patch("learning_coach.api.host.get_request_context", return_value=SimpleNamespace(user_id="user-b")):
+            await agent.run([Message("user", ["a1"]), Message("assistant", ["a2"]), Message("user", ["a3"]),
+                             Message("assistant", ["a4"]), Message("user", ["b1"])], session=session)
+        self.assertEqual(pipeline.calls[2][0], [{"role": "user", "text": "b1"}])
+        self.assertEqual(pipeline.calls[2][2], {})
+        self.assertEqual(pipeline.resets, [session.session_id] * 2)  # first turn + owner change
+        self.assertEqual(pipeline.calls[2][3], "user-b")
+        self.assertEqual(session.state[GUARD_KEY]["owner"], "user-b")
+        # The next turn in the new owner's page-open keeps only the post-reset
+        # messages; the old owner's part of the thread never comes back.
+        with patch("learning_coach.api.host.get_request_context", return_value=SimpleNamespace(user_id="user-b")):
+            await agent.run([Message("user", ["a1"]), Message("assistant", ["a2"]), Message("user", ["a3"]),
+                             Message("assistant", ["a4"]), Message("user", ["b1"]),
+                             Message("assistant", ["b2"]), Message("user", ["b3"])], session=session)
+        self.assertEqual([item["text"] for item in pipeline.calls[3][0]], ["b1", "b2", "b3"])
+        self.assertNotIn("a", " ".join(item["text"] for item in pipeline.calls[3][0]))
+
+    async def test_ttl_expiry_resets_context_and_zero_disables_time_reset(self):
+        pipeline = FakePipeline()
+        agent = LearningCoachAgent(pipeline)
+        session = agent.create_session()
+        t0 = time.time()
+        with patch("learning_coach.api.host.get_request_context", return_value=SimpleNamespace(user_id="user-a")), \
+             patch("learning_coach.api.host.time.time", return_value=t0):
+            await agent.run([Message("user", ["hello"])], session=session)
+        with patch("learning_coach.api.host.get_request_context", return_value=SimpleNamespace(user_id="user-a")), \
+             patch("learning_coach.api.host.time.time", return_value=t0 + 901):
+            await agent.run([Message("user", ["hello"]), Message("assistant", ["hi"]),
+                             Message("user", ["again"])], session=session)
+        self.assertEqual(pipeline.calls[1][0], [{"role": "user", "text": "again"}])
+        self.assertEqual(pipeline.calls[1][2], {})
+        self.assertEqual(len(pipeline.resets), 2)  # first turn + TTL expiry
+        # TTL 0 turns time-based reset off: the same owner continues.
+        with patch("learning_coach.api.host._context_ttl_seconds", return_value=0.0), \
+             patch("learning_coach.api.host.get_request_context", return_value=SimpleNamespace(user_id="user-a")), \
+             patch("learning_coach.api.host.time.time", return_value=t0 + 3600):
+            await agent.run([Message("user", ["hello"]), Message("assistant", ["hi"]),
+                             Message("user", ["again"]), Message("assistant", ["ok"]),
+                             Message("user", ["more"])], session=session)
+        self.assertEqual([item["text"] for item in pipeline.calls[2][0]], ["again", "ok", "more"])
+        self.assertEqual(len(pipeline.resets), 2)  # TTL 0 adds no further reset
+
+    async def test_guard_stays_out_of_pipeline_state(self):
+        pipeline = FakePipeline()
+        agent = LearningCoachAgent(pipeline)
+        session = agent.create_session()
+        session.state["learning_coach"] = {"earlier": "must not reach a fresh turn"}
+        with patch("learning_coach.api.host.get_request_context", return_value=SimpleNamespace(user_id="user-a")):
+            await agent.run("你好", session=session)
+        self.assertEqual(pipeline.calls[0][2], {})
+        self.assertEqual(session.state[GUARD_KEY]["owner"], "user-a")
 
 
 @unittest.skipUnless(SDK_AVAILABLE, "Run with the project's locked SDK environment")
