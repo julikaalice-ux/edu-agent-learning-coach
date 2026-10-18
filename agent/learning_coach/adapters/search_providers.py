@@ -110,6 +110,11 @@ class BochaProvider:
     """BoCha (博查) web search: mainland-reachable and Chinese-first.
 
     Response is Bing-shaped: data.webPages.value[].name/url/snippet/summary.
+    ``summary: true`` asks for a page-length summary instead of a short
+    snippet; BoCha's raw snippets are too thin for claim checking, and its
+    site filter is unreliable, so long summaries carry the verification.
+    The summary is provider-generated prose, not the page's own words, so
+    excerpts stay ``search_snippet`` (conservative evidence tier).
     """
 
     def __init__(self, api_key: str):
@@ -118,7 +123,7 @@ class BochaProvider:
     async def search(self, query: str) -> list[dict]:
         if not self._api_key:
             raise RetrievalError("provider_not_configured")
-        body = {"query": query[:200], "summary": False, "freshness": "noLimit", "count": 3}
+        body = {"query": query[:200], "summary": True, "freshness": "noLimit", "count": 3}
         request = Request("https://api.bocha.cn/v1/web-search", data=json.dumps(body).encode(),
                           headers={"Authorization": f"Bearer {self._api_key}",
                                    "Content-Type": "application/json"}, method="POST")
@@ -133,7 +138,7 @@ class BochaProvider:
             if not isinstance(item, dict):
                 continue
             sources.append({"title": item.get("name") or "", "url": item.get("url") or "",
-                            "excerpt": item.get("snippet") or item.get("summary") or "",
+                            "excerpt": item.get("summary") or item.get("snippet") or "",
                             "excerpt_kind": "search_snippet"})
         return sources
 

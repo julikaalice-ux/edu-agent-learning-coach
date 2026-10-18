@@ -254,10 +254,19 @@ class ProviderAdapterTests(unittest.IsolatedAsyncioTestCase):
             found = await providers.BochaProvider("sk-test").search("一元二次方程 求根公式")
         body = json.loads(fetch.call_args.args[0].data.decode())
         self.assertEqual((body["query"], body["count"], body["freshness"], body["summary"]),
-                         ("一元二次方程 求根公式", 3, "noLimit", False))
+                         ("一元二次方程 求根公式", 3, "noLimit", True))
         self.assertEqual([item["url"] for item in found], ["https://example.com/eq", "https://other.cn/derivation", "https://example.com/history"])
         self.assertEqual(found[0]["excerpt_kind"], "search_snippet")
         self.assertEqual(found[0]["title"], "一元二次方程")
+
+    async def test_bocha_long_summary_wins_over_the_short_snippet(self):
+        payload = {"code": 200, "data": {"webPages": {"value": [
+            {"name": "光合作用", "url": "https://example.com/photo", "snippet": "短句",
+             "summary": "光反应与暗反应的长摘要。"}]}}}
+        with patch.object(providers, "_fetch_json", return_value=payload):
+            found = await providers.BochaProvider("sk-test").search("光合作用 原理")
+        self.assertEqual(found[0]["excerpt"], "光反应与暗反应的长摘要。")
+        self.assertEqual(found[0]["excerpt_kind"], "search_snippet")
 
     async def test_bocha_quota_error_degrades_safely(self):
         with patch.object(providers, "_fetch_json", return_value={"code": 403, "message": "quota"}):
