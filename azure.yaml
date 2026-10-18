@@ -54,8 +54,10 @@ services:
       # eval winner so far. Remove this line to switch back to the multi-agent
       # coach (its repair work continues in evals/).
       LEARNING_COACH_ARCHITECTURE: single
-      # BoCha web search (mainland reachable, Chinese-first); unset = Wikipedia.
+      # BoCha web search (news and events) with Zhipu routing for knowledge
+      # queries; unset = Wikipedia.
       BOCHA_API_KEY: ${BOCHA_API_KEY}
+      ZHIPU_API_KEY: ${ZHIPU_API_KEY}
       # Scene design and reviews (including source checks) use a stronger
       # model; the coordinator, quiz writer and notes use the default.
       LEARNING_COACH_MODEL_VISUALIZER: gpt-6-luna
@@ -109,6 +111,7 @@ services:
       LEARNING_COACH_ONBOARDING: '0'
       LEARNING_COACH_DATA_DIR: /tmp/.learning-coach
       BOCHA_API_KEY: ${BOCHA_API_KEY}
+      ZHIPU_API_KEY: ${ZHIPU_API_KEY}
     container:
       resources:
         cpu: '0.5'
