@@ -40,6 +40,9 @@ LINK = re.compile(r"\[(?:打开互动图|看题目配图)\]\([^)]*?/artifacts/([
 FALLBACK_TEXT = "这次处理没有顺利完成"
 VISUAL_ROLES = {"visualizer", "verifier"}
 STAGES = {"visualizer": "画图", "verifier": "审图", "image": "生成图片", "image_search": "找网络图片"}
+# Everything else in the turn, so time outside the visual can be explained too.
+OTHER_STAGES = {("coordinator", "decide"): "理解问题", ("coordinator", "respond"): "写回复",
+                ("quizzer", "quiz"): "出题"}
 
 
 def percentile(values, share):
@@ -113,7 +116,16 @@ async def run_case(pipeline, recorder, case, runs):
             "error": error, "fallback": FALLBACK_TEXT in output["message"],
             "coach_text": output["message"],
         })
-        shares = "，".join(f"{name} {ms / 1000:.1f}s" for name, ms in stages.items() if ms)
+        others = {}
+        for record in records:
+            name = OTHER_STAGES.get((record.get("role"), record.get("phase")))
+            if name:
+                others[name] = others.get(name, 0) + record.get("elapsed_ms", 0)
+        rows[-1]["other_ms"] = others
+        # Only codes and timings, never content: enough to see where a slow turn went.
+        rows[-1]["calls"] = [{key: record.get(key) for key in ("role", "phase", "attempt", "outcome", "elapsed_ms")}
+                             for record in records]
+        shares = "，".join(f"{name} {ms / 1000:.1f}s" for name, ms in {**stages, **others}.items() if ms)
         print(f"{case['id']} run={run}: {'OK' if rows[-1]['success'] else 'FAIL'} "
               f"({elapsed_ms / 1000:.1f}s；{shares or '没有画图'}；{attempts} 稿；"
               f"{visual.get('kind') or '-'}{'，失败：' + visual['failure'] if visual.get('failure') else ''})",
