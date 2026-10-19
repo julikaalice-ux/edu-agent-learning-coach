@@ -32,7 +32,7 @@ export interface SessionSettings {
 export interface Session {
   conversation: string | null; // 托管 agent 会话 id（本次页面内使用）
   messages: ChatMessage[];
-  options: string[]; // 教练最新一轮的编号选项
+  options: OptionCard[]; // 教练最新一轮的选项卡片
   mistakes: Mistake[];
   notes: SessionNotes;
   settings: SessionSettings;
@@ -49,6 +49,11 @@ export function emptySession(): Session {
   };
 }
 
+export interface OptionCard {
+  key: string; // A/B/C/D 或编号；「跳过」为空
+  text: string;
+}
+
 export interface TurnRequest {
   conversation: string | null;
   input: string;
@@ -57,7 +62,7 @@ export interface TurnRequest {
 export interface TurnResponse {
   conversation: string;
   text: string;
-  options: string[];
+  options: OptionCard[];
 }
 
 /** 经 Vite 代理转发到本地 proxy（backend/proxy.py → 托管 agent）。 */

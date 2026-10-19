@@ -1,12 +1,12 @@
 import { useState } from "react";
-import type { ChatMessage, Mistake, SessionNotes, SessionSettings } from "../lib/api";
+import type { ChatMessage, Mistake, OptionCard, SessionNotes, SessionSettings } from "../lib/api";
 import { STAGE_OPTIONS, WHO_OPTIONS } from "../lib/api";
 
 export type MenuKey = "workbench" | "mistakes" | "notes" | "settings";
 
 interface ChatSceneProps {
   messages: ChatMessage[];
-  options: string[];
+  options: OptionCard[];
   mistakes: Mistake[];
   notes: SessionNotes;
   settings: SessionSettings;
@@ -93,14 +93,19 @@ function Workbench({ messages, options, thinking, input, onInput, onSend }: Chat
           </div>
         )}
         {!thinking && options.length > 0 && (
-          <div className="flex flex-wrap gap-2">
-            {options.map((label) => (
+          <div className="grid gap-3 sm:grid-cols-2">
+            {options.map((option) => (
               <button
-                key={label}
-                onClick={() => onSend(label)}
-                className="rounded-md bg-sage px-3 py-1.5 text-sm text-moss transition-colors hover:bg-sage-deep"
+                key={`${option.key}-${option.text}`}
+                onClick={() => onSend(option.text)}
+                className="group flex items-center gap-3 rounded-xl border border-line bg-white px-4 py-3 text-left shadow-sm transition-all hover:-translate-y-0.5 hover:border-moss/50 hover:shadow-md"
               >
-                {label}
+                {option.key && (
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-sage font-display text-sm text-moss">
+                    {option.key}
+                  </span>
+                )}
+                <span className="text-sm leading-relaxed text-ink">{option.text}</span>
               </button>
             ))}
           </div>

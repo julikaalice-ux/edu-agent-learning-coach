@@ -28,7 +28,7 @@ ENDPOINT = os.environ.get("AGENT_ENDPOINT", DEFAULT_ENDPOINT)
 TOKEN_LOCK = threading.Lock()
 _TOKEN = {"value": None, "expires": 0}
 
-OPTION_LINE = re.compile(r"^\s*(?:[A-D]|\d+)\.\s*(.+?)\s*$", re.MULTILINE)
+OPTION_LINE = re.compile(r"^\s*([A-D]|\d+)\.\s*(.+?)\s*$", re.MULTILINE)
 QUESTION_LINES = re.compile(r"(A|B|C|D)\.\s", re.MULTILINE)
 
 
@@ -124,13 +124,13 @@ def extract_text(payload: dict) -> str:
     return "\n\n".join(text).strip()
 
 
-def extract_options(text: str) -> list[str]:
-    """教练 next_step 里的编号选项变成前端胶囊按钮。"""
+def extract_options(text: str) -> list[dict]:
+    """教练回复里的选项变成前端卡片：{"key": 字母/编号, "text": 选项文字}。"""
     if not QUESTION_LINES.search(text):
         return []
-    found = OPTION_LINE.findall(text)
-    if "跳过" in text and "跳过" not in found:
-        found.append("跳过")
+    found = [{"key": key, "text": value} for key, value in OPTION_LINE.findall(text)]
+    if "跳过" in text and not any(item["text"] == "跳过" for item in found):
+        found.append({"key": "", "text": "跳过"})
     return found[:8]
 
 
