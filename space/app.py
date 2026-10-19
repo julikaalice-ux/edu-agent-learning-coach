@@ -649,6 +649,18 @@ def build_app() -> gr.Blocks:
     return demo
 
 
+PROXY_CODE = re.compile(r"[a-z][a-z0-9_]{2,60}")
+
+
+def proxy_error(error) -> str:
+    """What the page may show about a failed turn: the proxy's own code
+    (e.g. service_principal_token_http_401, agent_http_403) or else the error
+    type; never an error message, which can carry request details."""
+    if isinstance(error, RuntimeError) and PROXY_CODE.fullmatch(str(error)):
+        return str(error)
+    return type(error).__name__
+
+
 def run_combined(port: int) -> None:
     """同一容器服务三样：新前端（根路径静态）、/turn 代理、原 Gradio（/legacy 备用）。
 
@@ -683,7 +695,7 @@ def run_combined(port: int) -> None:
             try:
                 conversation = space_proxy.call("conversations", {}).get("id")
             except Exception as error:
-                return JSONResponse(status_code=502, content={"error": type(error).__name__})
+                return JSONResponse(status_code=502, content={"error": proxy_error(error)})
             if not conversation:
                 return JSONResponse(status_code=502, content={"error": "conversation_create_failed"})
         try:
@@ -706,7 +718,7 @@ def run_combined(port: int) -> None:
                 "conversation": conversation, "text": text,
                 "options": space_proxy.extract_options(text)})
         except Exception as error:
-            return JSONResponse(status_code=502, content={"error": type(error).__name__})
+            return JSONResponse(status_code=502, content={"error": proxy_error(error)})
 
     @fastapi_app.get("/artifact/{token}")
     async def artifact(token: str):

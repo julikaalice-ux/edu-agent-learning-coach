@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import threading
 import urllib.error
@@ -54,14 +55,26 @@ def get_token() -> str:
             request = urllib.request.Request(
                 f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token",
                 data=data, method="POST")
+            failure = "service_principal_token_failed"
             try:
                 with urllib.request.urlopen(request, timeout=30) as response:
                     payload = json.loads(response.read())
-                _TOKEN["value"] = payload["accessToken"]
+                # The OAuth token endpoint answers in snake_case (access_token,
+                # expires_in); only the Azure CLI uses accessToken / expires_on.
+                _TOKEN["value"] = payload["access_token"]
                 _TOKEN["expires"] = int(time.time()) + int(payload.get("expires_in", 3600))
                 return _TOKEN["value"]
+            except urllib.error.HTTPError as error:
+                failure = f"service_principal_token_http_{error.code}"
             except (urllib.error.URLError, KeyError, ValueError):
-                pass  # 服务主体失败时回退到 CLI
+                pass
+        else:
+            failure = "service_principal_not_configured"
+        # Fall back to the Azure CLI (local use). In a container without it,
+        # report why the service principal did not work instead of a bare
+        # FileNotFoundError for the missing az command.
+        if shutil.which("az") is None:
+            raise RuntimeError(failure)
         result = subprocess.run(
             ["az", "account", "get-access-token", "--scope", SCOPE, "--output", "json"],
             capture_output=True, text=True, check=False, timeout=60)
