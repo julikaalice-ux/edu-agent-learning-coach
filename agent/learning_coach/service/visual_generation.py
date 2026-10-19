@@ -8,7 +8,7 @@ from learning_coach.domain.contracts import ContractError, validate
 from learning_coach.domain.teaching_visuals import visual_handoff
 from learning_coach.domain.visual_contracts import VISUAL_SCHEMA
 from learning_coach.domain.visual_quality import (GALLERY_REVIEW_SCHEMA, VISUAL_REVIEW_SCHEMA,
-                                                  gallery_problem, needs_explanatory_visual,
+                                                  gallery_problem, needs_explanatory_visual, repair_gallery,
                                                   validate_gallery_review, validate_visual_review)
 from learning_coach.service.execution import StageFailure
 from learning_coach.service.ports import AgentRunner, Artifacts, ImageFinder, ImageGenerator, StorageError
@@ -96,12 +96,20 @@ class VisualGenerationService:
     async def generate(self, session_id: str, payload: dict, *, learner_text: str):
         # One deadline covers design, rendering, review and the optional redraw;
         # a slow optional visual must leave the main task able to return feedback.
+        self.history = []
         try:
-            return await asyncio.wait_for(
+            artifact, context = await asyncio.wait_for(
                 self._generate(session_id, payload, learner_text=learner_text), timeout=self.timeout)
         except TimeoutError:
-            return None, unavailable_visual("visual_timeout", _issue(
+            artifact, context = None, unavailable_visual("visual_timeout", _issue(
                 "render_invalid", "图示生成与审阅超过本轮时间上限，未发布产物；可继续当前学习任务。"), self.drafts)
+        if artifact is None and context and "failure" in context:
+            # Why each draft was sent back, for logs and evaluations (codes and review text only).
+            context["failure"]["history"] = list(self.history)
+        return artifact, context
+
+    def _note(self, attempt, issues):
+        self.history += [f"第 {attempt} 稿 {issue['code']}：{issue['message'][:160]}" for issue in issues[:3]]
 
     async def _generate(self, session_id: str, payload: dict, *, learner_text: str):
         research = payload.get("research")
@@ -142,14 +150,17 @@ class VisualGenerationService:
             except ContractError:
                 previous_spec = None
                 issues = _issue("schema_invalid", "草稿未符合图示协议；请使用给定类型与字段，不输出网页代码或额外字段。")
+                self._note(attempt, issues)
                 continue
             previous_spec = deepcopy(spec)
             if spec["kind"] == "illustration" and explanatory:
                 issues = _issue("interaction_problem", "当前请求需要解释机制或演示变化；未经像素核验的静态 AI 配图不能完成此任务。请改用可检查的图解或分步 scene。")
+                self._note(attempt, issues)
                 continue
             if spec["kind"] == "gallery":
                 if not gallery_allowed:
                     issues = _issue("request_mismatch", "本轮不能使用网络图片（gallery）；请改用程序画的图。")
+                    self._note(attempt, issues)
                     continue
                 result = await self._gallery(session_id, payload, spec, research, learner_text, explanatory,
                                              attempt, issues)
@@ -161,6 +172,7 @@ class VisualGenerationService:
             if outcome == "no_pictures":
                 gallery_allowed = False
             issues = value
+            self._note(attempt, issues)
         return None, unavailable_visual("quality_not_accepted", issues, 2)
 
     async def _drawn(self, session_id, payload, spec, research, learner_text, attempt, previous_issues):
@@ -233,6 +245,8 @@ class VisualGenerationService:
 
     async def _gallery(self, session_id, payload, spec, research, learner_text, explanatory, attempt,
                        previous_issues):
+        # Small structure slips are fixed here rather than costing a whole redraw.
+        spec = repair_gallery(spec)
         problem = gallery_problem(spec, explanatory)
         if problem:
             return "retry", problem

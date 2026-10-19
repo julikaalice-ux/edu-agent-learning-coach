@@ -172,21 +172,31 @@ def bocha_candidates(api_key: str, query: str, limit: int) -> list[dict]:
     return found
 
 
+# A source that cannot be reached is skipped for a while instead of making
+# every panel wait for its timeout again.
+SOURCE_PAUSE_SECONDS = 600
+
+
 class WebImageFinder:
     """Commons (by the English query) and BoCha (by the Chinese query) in parallel; Commons first."""
 
     def __init__(self, bocha_api_key: str = ""):
         self._bocha_api_key = bocha_api_key
+        self._paused_until = {}
 
     async def find(self, query_zh: str, query_en: str, *, limit: int = 3) -> list[dict]:
-        async def safely(function, *args):
+        async def safely(name, function, *args):
+            if self._paused_until.get(name, 0) > time.monotonic():
+                return []
             try:
                 return await asyncio.to_thread(function, *args)
-            except (OSError, ValueError, RetrievalError):
+            except (OSError, ValueError, RetrievalError) as error:
+                if isinstance(error, OSError):  # unreachable (DNS, TLS, refused, timeout), not "no results"
+                    self._paused_until[name] = time.monotonic() + SOURCE_PAUSE_SECONDS
                 return []
-        lookups = [safely(commons_candidates, query_en or query_zh, limit)]
+        lookups = [safely("commons", commons_candidates, query_en or query_zh, limit)]
         if self._bocha_api_key:
-            lookups.append(safely(bocha_candidates, self._bocha_api_key, query_zh or query_en, limit))
+            lookups.append(safely("bocha", bocha_candidates, self._bocha_api_key, query_zh or query_en, limit))
         listed = [item for found in await asyncio.gather(*lookups) for item in found][:limit + 2]
 
         async def fetch(item):

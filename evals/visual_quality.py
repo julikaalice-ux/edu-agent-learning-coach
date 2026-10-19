@@ -127,8 +127,10 @@ async def run_case(pipeline, recorder, case, runs):
                 others[name] = others.get(name, 0) + record.get("elapsed_ms", 0)
         rows[-1]["other_ms"] = others
         # Only codes and timings, never content: enough to see where a slow turn went.
-        rows[-1]["calls"] = [{key: record.get(key) for key in ("role", "phase", "attempt", "outcome", "elapsed_ms")}
+        rows[-1]["calls"] = [{key: record.get(key) for key in ("role", "phase", "attempt", "outcome", "elapsed_ms",
+                                                              "input_token_count", "output_token_count")}
                              for record in records]
+        rows[-1]["visual_history"] = visual.get("history") or []
         shares = "，".join(f"{name} {ms / 1000:.1f}s" for name, ms in {**stages, **others}.items() if ms)
         if rows[-1]["routing_repaired"]:
             shares += f"；路由被程序改过（{rows[-1]['routing_repaired']}）"
@@ -136,8 +138,8 @@ async def run_case(pipeline, recorder, case, runs):
               f"({elapsed_ms / 1000:.1f}s；{shares or '没有画图'}；{attempts} 稿；"
               f"{visual.get('kind') or '-'}{'，失败：' + visual['failure'] if visual.get('failure') else ''})",
               flush=True)
-        for issue in rows[-1]["visual_issues"]:
-            print(f"    问题：{issue[:200]}", flush=True)
+        for issue in rows[-1]["visual_history"] or rows[-1]["visual_issues"]:
+            print(f"    退回：{issue[:200]}", flush=True)
     return rows
 
 

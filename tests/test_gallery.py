@@ -100,6 +100,16 @@ class GalleryContractTests(unittest.TestCase):
         self.assertEqual(gallery_problem(gallery("a", companion=VISUAL), True)[0]["code"], "interaction_problem")
         self.assertEqual(gallery_problem(gallery("a", companion=scene()), True), [])
 
+    def test_small_slips_are_repaired_without_a_redraw(self):
+        from learning_coach.domain.visual_quality import repair_gallery
+        slipped = gallery("甲骨", "纸", arrange="timeline", times={"甲骨": "商代"},
+                          steps=[{"panel": 4, "text": "看第五格"}])
+        fixed = repair_gallery(slipped)
+        self.assertEqual(fixed["arrange"], "auto")
+        self.assertIsNone(fixed["steps"][0]["panel"])
+        self.assertEqual(gallery_problem(fixed, False), [])
+        self.assertEqual(slipped["arrange"], "timeline")  # the draft itself is left as it was
+
     def test_arrangement_resolves_from_content(self):
         self.assertEqual(gallery_arrangement(gallery("a")), "stack")
         self.assertEqual(gallery_arrangement(gallery("a", "b")), "side_by_side")
@@ -254,6 +264,17 @@ class FasterVisualFlowTests(unittest.IsolatedAsyncioTestCase):
         finally:
             temp.cleanup()
 
+    async def test_a_failed_visual_keeps_why_each_draft_was_sent_back(self):
+        runner = FakeRunner(visuals=[VISUAL, VISUAL], visual_reviews=[review("revise", message="第一稿的问题"),
+                                                                      review("revise", message="第二稿的问题")])
+        artifact, context = await VisualGenerationService(runner, FakeArtifacts()).generate(
+            "s", {"goal": "对照", "research": None}, learner_text="画个对比图")
+        self.assertIsNone(artifact)
+        history = context["failure"]["history"]
+        self.assertEqual(len(history), 2)
+        self.assertIn("第 1 稿", history[0])
+        self.assertIn("第二稿的问题", history[1])
+
     async def test_ai_picture_is_generated_only_after_its_review_passes(self):
         picture_spec = {"kind": "illustration", "title": "超市", "prompt": "a supermarket", "alt": "超市"}
         calls = []
@@ -377,6 +398,19 @@ class ImageSearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(image_search._public_host("localhost"))
         with self.assertRaisesRegex(image_search.RetrievalError, "host_rejected"):
             image_search.download_image("https://127.0.0.1/a.png")
+
+    async def test_an_unreachable_source_is_skipped_for_a_while(self):
+        calls = []
+
+        def bocha(*args):
+            calls.append(1)
+            raise OSError("unreachable")
+        with mock.patch.object(image_search, "commons_candidates", return_value=[]), \
+                mock.patch.object(image_search, "bocha_candidates", side_effect=bocha):
+            finder = image_search.WebImageFinder("key")
+            await finder.find("细胞", "cell")
+            await finder.find("细胞", "cell")
+        self.assertEqual(len(calls), 1)
 
     async def test_commons_pictures_come_before_bocha_and_failed_downloads_are_skipped(self):
         commons = [{"source": "commons", "title": t, "description": "", "author": "", "license": "CC0",

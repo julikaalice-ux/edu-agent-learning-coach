@@ -680,7 +680,8 @@ class LearningPipeline:
                 "kind": visual_context.get("kind"), "status": visual_context.get("status"),
                 "drafts": quality.get("attempts", failure.get("attempts")), "failure": failure.get("code"),
                 # Reviewer/program issues behind a failure (model-written review text, no learner content).
-                "issues": [f"{issue['code']}: {issue['message']}" for issue in failure.get("issues", [])][:6]}
+                "issues": [f"{issue['code']}: {issue['message']}" for issue in failure.get("issues", [])][:6],
+                "history": failure.get("history", [])}
         if repair_kind:
             state["last_execution"]["routing_repaired"] = repair_kind
         return output, state

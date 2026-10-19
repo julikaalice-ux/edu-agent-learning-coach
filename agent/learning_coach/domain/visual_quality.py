@@ -1,5 +1,6 @@
 """Consistency rules for an independent, bounded visual specification review."""
 
+from copy import deepcopy
 import re
 
 from learning_coach.domain.contracts import ContractError, object_schema, validate
@@ -59,6 +60,18 @@ def validate_gallery_review(review: dict, research: dict | None, options: list[l
     if review["verdict"] == "pass" and not any(chosen.values()):
         raise ContractError("gallery_review_pass_without_picture")
     return review
+
+
+def repair_gallery(spec: dict) -> dict:
+    """Fix slips that need no new content: a step pointing past the last panel
+    points at no panel; a timeline missing a year falls back to the automatic layout."""
+    fixed = deepcopy(spec)
+    for step in fixed["steps"]:
+        if step["panel"] is not None and step["panel"] >= len(fixed["panels"]):
+            step["panel"] = None
+    if fixed["arrange"] == "timeline" and any(not (panel["time"] or "").strip() for panel in fixed["panels"]):
+        fixed["arrange"] = "auto"
+    return fixed
 
 
 def gallery_problem(spec: dict, explanatory: bool) -> list[dict]:
