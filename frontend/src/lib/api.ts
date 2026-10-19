@@ -4,6 +4,7 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   at: number;
+  kind?: "intro"; // 功能讲解对话框（教练首次回复时展示能力清单）
 }
 
 export interface Mistake {

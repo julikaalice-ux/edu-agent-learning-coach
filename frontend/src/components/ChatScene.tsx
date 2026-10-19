@@ -129,19 +129,29 @@ function Workbench({ messages, options, thinking, input, onInput, onSend }: Chat
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-4 overflow-y-auto px-6 py-6">
-        {messages.map((turn, index) => (
-          <div key={index} className={`flex ${turn.role === "user" ? "justify-end" : "justify-start"}`}>
-            <div
-              className={`max-w-[80%] rounded-xl px-4 py-2.5 leading-relaxed ${
-                turn.role === "user"
-                  ? "rounded-br-md bg-gradient-to-br from-moss to-moss-deep text-white"
-                  : "rounded-bl-md border border-line bg-white text-ink"
-              }`}
-            >
-              <MessageContent text={turn.content} />
+        {messages.map((turn, index) =>
+          turn.kind === "intro" ? (
+            <div key={index} className="flex justify-start">
+              <div className="max-w-[85%] rounded-xl rounded-bl-md border border-sage bg-sage/60 px-4 py-3">
+                <div className="text-xs font-semibold tracking-widest text-moss">功能讲解</div>
+                <p className="mt-1 text-sm leading-relaxed text-ink">{turn.content}</p>
+                <p className="mt-1 text-xs text-muted">学习记录只在本次会话有效，页面关闭即消失。</p>
+              </div>
             </div>
-          </div>
-        ))}
+          ) : (
+            <div key={index} className={`flex ${turn.role === "user" ? "justify-end" : "justify-start"}`}>
+              <div
+                className={`max-w-[80%] rounded-xl px-4 py-2.5 leading-relaxed ${
+                  turn.role === "user"
+                    ? "rounded-br-md bg-gradient-to-br from-moss to-moss-deep text-white"
+                    : "rounded-bl-md border border-line bg-white text-ink"
+                }`}
+              >
+                <MessageContent text={turn.content} />
+              </div>
+            </div>
+          ),
+        )}
         {thinking && (
           <div className="flex justify-start" aria-live="polite">
             <div className="rounded-bl-md rounded-xl border border-line bg-white px-4 py-2.5 text-muted">

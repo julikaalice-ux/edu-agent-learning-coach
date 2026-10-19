@@ -37,6 +37,27 @@ const WELCOME: ChatMessage = {
   at: Date.now(),
 };
 
+// 第一次见面就提问时，教练回复的开头是程序固定的自我介绍（以这句开头），
+// 和回答之间空一行。页面把它拆出来，单独放进「功能讲解」对话框。
+const INTRO_START = "你好，我是你的学习教练";
+
+/** 一轮回复对应的对话框：有自我介绍时是「功能讲解」+ 回答两个，否则一个。 */
+function replyMessages(text: string): ChatMessage[] {
+  const at = Date.now();
+  const cut = text.indexOf("\n\n");
+  if (!text.startsWith(INTRO_START) || cut < 0) return [{ role: "assistant", content: text, at }];
+  return [
+    { role: "assistant", kind: "intro", content: text.slice(0, cut), at },
+    { role: "assistant", content: text.slice(cut + 2), at },
+  ];
+}
+
+/** 用这一轮的回复替换最后一条用户消息之后的对话框（边写边显示时反复调用）。 */
+function withReply(messages: ChatMessage[], text: string): ChatMessage[] {
+  const lastUser = messages.map((item) => item.role).lastIndexOf("user");
+  return [...messages.slice(0, lastUser + 1), ...replyMessages(text)];
+}
+
 /**
  * 单页两场景：问候（视频开场，只播一次）→ 镜头推入 → 对话（纯色）。
  * 点「学习教练」回到问候页；滚轮/上滑在问候页推入对话，之后只滚聊天区。
@@ -110,22 +131,18 @@ export default function App() {
       ],
     }));
     try {
+      let streamed = "";
       const reply = await streamTurn(
         { conversation: session.conversation, input: text },
         (delta) => {
-          setSession((prev) => {
-            const messages = [...prev.messages];
-            const last = messages[messages.length - 1];
-            messages[messages.length - 1] = { ...last, content: last.content + delta };
-            return { ...prev, messages };
-          });
+          streamed += delta;
+          const shown = streamed;
+          setSession((prev) => ({ ...prev, messages: withReply(prev.messages, shown) }));
         },
       );
       const { mistakes, noteLabel } = extractLearning(reply.text, session.messages);
       setSession((prev) => {
-        const messages = [...prev.messages];
-        const last = messages[messages.length - 1];
-        messages[messages.length - 1] = { ...last, content: reply.text };
+        const messages = withReply(prev.messages, reply.text);
         const notes = noteLabel
           ? { ...prev.notes, concepts: [...prev.notes.concepts, { label: noteLabel, status: "刚整理" }] }
           : prev.notes;
