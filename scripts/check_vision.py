@@ -63,6 +63,26 @@ def saw_it(text: str) -> bool:
 TEXT_QUESTION = '只返回 JSON：{"answer": <3 加 4 的结果>}，不加围栏。'
 
 
+def describe(error) -> str:
+    """The error chain as type names plus HTTP status and error code only.
+
+    Messages are not printed: provider errors can carry request details.
+    """
+    parts, seen = [], set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        part = type(error).__name__
+        status = getattr(error, "status_code", None) or getattr(getattr(error, "response", None), "status_code", None)
+        code = getattr(error, "code", None)
+        if status:
+            part += f" 状态码 {status}"
+        if isinstance(code, str) and len(code) < 60:
+            part += f" 错误码 {code}"
+        parts.append(part)
+        error = error.__cause__ or error.__context__
+    return " ← ".join(parts)
+
+
 async def timed(agent, message, options):
     started = perf_counter()
     response = await asyncio.wait_for(agent.run(message, options=options), timeout=120)
@@ -88,8 +108,8 @@ async def check(model, client, image, effort):
                                      Content.from_data(data=image, media_type="image/png")]))):
         try:
             response, numbers = await timed(agent, message, options)
-        except Exception as error:  # report the type only; provider errors can carry request details
-            print(f"  {label}：调用失败（{type(error).__name__}）")
+        except Exception as error:
+            print(f"  {label}：调用失败（{describe(error)}）")
             continue
         if label == "带图片":
             label += "，能看图" if saw_it(response.text) else "，回答不对，需要人工看一下"
