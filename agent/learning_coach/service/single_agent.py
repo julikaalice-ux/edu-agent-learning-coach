@@ -36,8 +36,9 @@ from learning_coach.service.execution import EXTERNAL_DECLINED, Capability, exte
 from learning_coach.service.pipeline import LearningPipeline, permissions
 from learning_coach.service.pipeline.checks import validate_response
 from learning_coach.service.pipeline.quiz import CHECK_QUESTIONS, PICTURE_TIMEOUT_SECONDS, new_quiz, recent_questions
-from learning_coach.service.pipeline.state import (Key, Mode, apply_task, default_participant, mark_evidence,
-                                                   model_view, read_memory, record_quiz_result, track_tasks)
+from learning_coach.service.pipeline.state import (Key, Mode, apply_task, default_participant, is_first_meeting,
+                                                   mark_evidence, model_view, read_memory, record_quiz_result,
+                                                   track_tasks)
 from learning_coach.service.pipeline.teach import attach_links, offer_notes_after_practice
 from learning_coach.service.pipeline.texts import question as ask, render_question
 from learning_coach.service.ports import (Artifacts, ImageGenerator, LearningMemory, SearchProvider,
@@ -362,9 +363,7 @@ class SingleAgentPipeline(LearningPipeline):
         current_turn = numbered[-1]["turn"]
         context = state.setdefault(Key.CONTEXT, {})
         memory = read_memory(state, self.store, turn.memory_key)
-        first_meeting = (not turn.returning_visitor and Key.ONBOARDING not in state
-                         and not any(item["role"] == "assistant" for item in turn.messages)
-                         and not (memory.snapshot.get("profile") or memory.snapshot.get("concepts")))
+        first_meeting = is_first_meeting(turn, memory) and not turn.introduced
         previous_task, previous_quiz = state.get(Key.ACTIVE_TASK), deepcopy(state.get(Key.QUIZ))
         quiz_feedback, quiz_evidence = self._grade_waiting(text, state)
 

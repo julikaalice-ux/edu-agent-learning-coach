@@ -21,7 +21,7 @@ from typing import Callable
 from learning_coach.domain.contracts import ContractError, validate
 from learning_coach.service.execution import (BUDGET, CallBudget, StageFailure, EXTERNAL_CAPABILITIES,
                                               EXTERNAL_PERMISSIONS, EXTERNAL_DECLINED, EXPLANATION_SINK)
-from learning_coach.service.pipeline.state import Key
+from learning_coach.service.pipeline.state import ASSISTANT, USER, Key
 from learning_coach.service.pipeline.texts import question, reply
 from learning_coach.service.ports import StorageError
 
@@ -36,7 +36,6 @@ TURN_TIMEOUT_SECONDS = 180      # a whole turn, all agents included
 REPLAY_CACHE_SIZE = 2048        # accepted turns kept for transport replays
 SESSION_CACHE_SIZE = 512        # recent session states kept in memory
 
-USER, ASSISTANT = "user", "assistant"   # the two message roles kept in the history
 TURN_FAILED = "这次处理没有顺利完成，学习记录和进度没有继续推进。"
 # Errors a turn may end with; anything else is a bug and propagates.
 TURN_ERRORS = (StageFailure, ContractError, TimeoutError, OSError, ValueError, StorageError)
@@ -56,8 +55,11 @@ class Turn:
     memory_key: str
     returning_visitor: bool = False
     on_delta: Callable | None = None
-    # Onboarding's closing words, put in front of this turn's reply.
+    # Program-written words put in front of this turn's reply: onboarding's
+    # closing words, or the first-meeting introduction.
     prefix: str | None = None
+    # The program has already introduced the coach this turn.
+    introduced: bool = False
 
     @property
     def text(self) -> str:

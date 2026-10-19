@@ -100,13 +100,15 @@ class TeachingDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.temp.cleanup()
 
     def pipeline(self, runner, research=None):
+        # Turns here run as returning visitors: a first question would get the
+        # program's introduction in front, which these delivery tests do not test.
         return LearningPipeline(runner, research or self.research, self.store,
                                 self.artifacts, RESPONSE_SCHEMA)
 
     async def test_ordinary_answer_stays_one_call_without_explanation_events(self):
         runner = FakeRunner([plan()], replies=[answer(INITIAL, None)])
         pipeline = self.pipeline(runner)
-        events = [event async for event in pipeline.run_stream(messages(USER), session_id="plain")]
+        events = [event async for event in pipeline.run_stream(messages(USER), session_id="plain", returning_visitor=True)]
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["output"], answer(INITIAL, None))
         self.assertEqual(len(runner.calls), 1)
@@ -116,7 +118,7 @@ class TeachingDeliveryTests(unittest.IsolatedAsyncioTestCase):
     async def test_explanation_arrives_before_visual_and_final_contains_it_once(self):
         runner = BlockedVisualRunner([visual_decision()], replies=[answer()])
         pipeline = self.pipeline(runner)
-        stream = pipeline.run_stream(messages(USER), session_id="early")
+        stream = pipeline.run_stream(messages(USER), session_id="early", returning_visitor=True)
         try:
             first = await asyncio.wait_for(anext(stream), 2)
             self.assertEqual(first, {"explanation": INITIAL})
@@ -160,7 +162,7 @@ class TeachingDeliveryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_repeated_exact_explanation_is_not_duplicated_in_final(self):
         runner = FakeRunner([visual_decision()], replies=[answer(INITIAL + "\n\n" + SUPPLEMENT)])
-        events = [event async for event in self.pipeline(runner).run_stream(messages(USER), session_id="dedup")]
+        events = [event async for event in self.pipeline(runner).run_stream(messages(USER), session_id="dedup", returning_visitor=True)]
         self.assertEqual(events[0], {"explanation": INITIAL})
         self.assertEqual(events[-1]["output"]["message"].count(INITIAL), 1)
         self.assertEqual(events[-1]["output"]["message"].count(SUPPLEMENT), 1)
@@ -168,7 +170,7 @@ class TeachingDeliveryTests(unittest.IsolatedAsyncioTestCase):
     async def test_visual_failure_keeps_initial_explanation_and_reports_no_image(self):
         runner = FakeRunner([visual_decision()], visuals=[StageFailure("visualizer_unavailable")],
                             replies=[answer("图示这次没有生成，可以先按上述两种数量理解。")])
-        events = [event async for event in self.pipeline(runner).run_stream(messages(USER), session_id="visual-fail")]
+        events = [event async for event in self.pipeline(runner).run_stream(messages(USER), session_id="visual-fail", returning_visitor=True)]
         self.assertEqual(events[0], {"explanation": INITIAL})
         output = events[-1]["output"]
         self.assertTrue(output["message"].startswith(INITIAL + "\n\n"))
@@ -182,7 +184,7 @@ class TeachingDeliveryTests(unittest.IsolatedAsyncioTestCase):
         runner = FakeRunner([visual_decision()], replies=[StageFailure("respond_unavailable")])
         with self.assertLogs("learning_coach.service.pipeline", level="WARNING"):
             events = [event async for event in self.pipeline(runner).run_stream(
-                messages(USER), session_id="respond-fail", state=baseline)]
+                messages(USER), session_id="respond-fail", returning_visitor=True, state=baseline)]
         self.assertEqual(events[0], {"explanation": INITIAL})
         self.assertTrue(events[-1]["output"]["message"].startswith(INITIAL + "\n\n"))
         self.assertIn("后续图示未能完成", events[-1]["output"]["message"])
@@ -239,7 +241,7 @@ class TeachingDeliveryTests(unittest.IsolatedAsyncioTestCase):
         runner.delay_cleanup = True
         pipeline = self.pipeline(runner)
         baseline = {"revision": 2}
-        stream = pipeline.run_stream(messages(USER), session_id="cancel", state=baseline, turn_id="turn")
+        stream = pipeline.run_stream(messages(USER), session_id="cancel", returning_visitor=True, state=baseline, turn_id="turn")
         closing = None
         try:
             self.assertEqual(await asyncio.wait_for(anext(stream), 2), {"explanation": INITIAL})

@@ -29,6 +29,7 @@ if SDK_AVAILABLE:
     from learning_coach.service.research import ResearchService
     from learning_coach.adapters.runner import BUDGET, ROLES, StageFailure, StructuredRunner, create_agents
     from learning_coach.service.execution import CallBudget
+    from learning_coach.service.pipeline.texts import INTRO, INTRO_RECORDS_OFF
     from learning_coach.adapters.visuals import VISUAL_SCHEMA, render_visual
     from learning_coach.db.artifacts import ArtifactStore
 
@@ -485,8 +486,11 @@ class FiveRoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     session = host.create_session()
                     with patch.object(artifacts, "prepare", side_effect=AssertionError("direct answer must not create a visual")):
                         response = await host.run("分数是什么意思？", session=session)
-                    self.assertEqual(response.text, FINAL["message"] + "\n\n" + FINAL["next_step"]["text"])
-                    self.assertEqual(session.state["learning_coach"]["last_response"], FINAL)
+                    # A first question: the program's introduction comes before the coordinator's answer.
+                    intro = INTRO + INTRO_RECORDS_OFF + "\n\n"
+                    self.assertEqual(response.text, intro + FINAL["message"] + "\n\n" + FINAL["next_step"]["text"])
+                    self.assertEqual(session.state["learning_coach"]["last_response"],
+                                     {**FINAL, "message": intro + FINAL["message"]})
                     self.assertEqual(len(client.calls), 1)
                     request = json.loads(client.calls[0][0][-1].text)
                     self.assertEqual(request["input"]["phase"], "decide")

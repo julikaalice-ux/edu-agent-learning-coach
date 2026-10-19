@@ -179,9 +179,10 @@ class LearningPipeline:
         answered = self.commands.first_meeting(turn)
         if answered is not None:
             return answered, state
+        self.commands.introduce(turn)
         if turn.prefix is not None:
-            # The question asked before the first-meeting questions is taught now.
-            return await self._teach_after_first_meeting(turn)
+            # The first question is taught now, after the program's own words.
+            return await self._teach_with_prefix(turn)
 
         action = router.next_action(turn.text, router.phases(state, offers))
         if action is Action.COMPILE_NOTES:
@@ -203,8 +204,8 @@ class LearningPipeline:
             return self.commands.forget(turn)
         return self.commands.set_records(turn, command is Command.RECORDS_ON)
 
-    async def _teach_after_first_meeting(self, turn):
-        """Teach the arrival question with the first-meeting closing words in front."""
+    async def _teach_with_prefix(self, turn):
+        """Teach with the program's words (first-meeting closing or introduction) in front."""
         prefix = turn.prefix
         sink = EXPLANATION_SINK.get()
         token = None

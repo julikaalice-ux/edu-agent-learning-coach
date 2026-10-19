@@ -52,6 +52,10 @@ RESEARCH_NOTES = {Evidence.UNAVAILABLE: "本次未取得可核查资料，未完
                   Evidence.DISPUTED: "来源存在冲突，相关说法不能当作确定结论。"}
 
 NEXT_TOPIC = "接下来想学什么？"
+# The program's introduction when a first message already asks something.
+INTRO = "你好，我是你的学习教练，可以讲概念、陪你解题、出小题看看是不是学会了，需要时还能画图。"
+INTRO_RECORDS_OFF = "学习记录默认不保存，想保存可以说“开启记录”。"
+INTRO_RECORDS_ON = "学习记录已开启，想关掉可以说“关闭记录”。"
 STEP_QUESTION = "question"   # next_step.kind when the reply asks something
 CHOICE_LETTERS = "ABCD"      # how the choices of a question are labelled
 

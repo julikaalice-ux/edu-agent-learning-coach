@@ -7,8 +7,7 @@ from learning_coach.domain.context import brief_card, learner_messages, memory_s
 from learning_coach.domain.note_contracts import NOTES_SCHEMA
 from learning_coach.domain.routing import INTENT_CHAT
 from learning_coach.service.execution import StageFailure
-from learning_coach.service.pipeline.shell import USER
-from learning_coach.service.pipeline.state import NOTES_FOR_QUESTIONS, Key, memory_enabled
+from learning_coach.service.pipeline.state import NOTES_FOR_QUESTIONS, USER, Key, memory_enabled
 from learning_coach.service.pipeline.texts import NEXT_TOPIC, question, reply
 from learning_coach.service.ports import StorageError
 

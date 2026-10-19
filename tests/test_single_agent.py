@@ -415,7 +415,8 @@ class MessageExtractionTests(unittest.TestCase):
 class StreamingPipelineTests(SingleAgentTests):
     async def test_run_stream_yields_deltas_then_the_validated_reply(self):
         agent = ScriptedStreamAgent([final(reply("分数表示整体被平均分成的份数。"))])
-        events = [event async for event in self.pipeline(agent).run_stream(messages("分数是什么"), session_id="s")]
+        events = [event async for event in self.pipeline(agent).run_stream(messages("分数是什么"), session_id="s",
+                                                                           returning_visitor=True)]
         deltas = "".join(event["delta"] for event in events if "delta" in event)
         last = [event for event in events if "output" in event][-1]
         self.assertEqual(deltas, "分数表示整体被平均分成的份数。")

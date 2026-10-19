@@ -32,10 +32,10 @@ from learning_coach.service.execution import (CALL_RESERVE, EXPLANATION_SINK, EX
                                               StageFailure, external_allowed)
 from learning_coach.service.pipeline import permissions
 from learning_coach.service.pipeline.checks import respond_problem, validate_response
-from learning_coach.service.pipeline.shell import ASSISTANT
 from learning_coach.service.pipeline.state import (NOTES_FOR_QUESTIONS, NOTES_FOR_VISUALS, Key, Memory, Mode,
-                                                   apply_task, default_participant, mark_evidence, model_view,
-                                                   read_memory, record_quiz_result, track_tasks)
+                                                   apply_task, default_participant, is_first_meeting,
+                                                   mark_evidence, model_view, read_memory, record_quiz_result,
+                                                   track_tasks)
 from learning_coach.service.pipeline.texts import (NOTES_OFFER, QUIZ_PICTURE_LINK, RESEARCH_NOTES, RESPONSE_VERSION,
                                                    STEP_QUESTION, VISUAL_FAILED, VISUAL_LINK, question,
                                                    render_question)
@@ -135,11 +135,8 @@ class Teacher:
         numbered = number_turns(turn.messages)
         context = state.setdefault(Key.CONTEXT, {})
         memory = read_memory(state, self.deps.store, turn.memory_key)
-        # First meeting: the client has not seen this learner before, there is no
-        # reply yet in this conversation and nothing remembered.
-        first_meeting = (not turn.returning_visitor and Key.ONBOARDING not in state
-                         and not any(item["role"] == ASSISTANT for item in turn.messages)
-                         and not (memory.snapshot.get("profile") or memory.snapshot.get("concepts")))
+        # Once the program has introduced the coach, the coordinator only answers.
+        first_meeting = is_first_meeting(turn, memory) and not turn.introduced
         focus = " ".join(filter(None, (state.get(Key.ACTIVE_TASK), (state.get(Key.QUIZ) or {}).get("topic"),
                                        turn.text)))
         # Recent turns within the budget; what falls out of it lives on in the

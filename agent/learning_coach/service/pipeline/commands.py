@@ -12,10 +12,10 @@ from learning_coach.domain.note_contracts import COMPANION_REPORT, SCHEMA_VERSIO
 from learning_coach.domain.onboarding import (BY_GUARDIAN, NO_STAGE, RECORDS_OFF, RECORDS_ON, STEP_CONSENT_GUARDIAN,
                                               STEP_DONE, STEP_WHO, WHO_COMPANION, WHO_SELF)
 from learning_coach.domain.routing import INTENT_CHAT, INTENT_UNCLEAR
-from learning_coach.service.pipeline.shell import USER
-from learning_coach.service.pipeline.state import Key
+from learning_coach.service.pipeline.state import USER, Key, is_first_meeting, read_memory
 from learning_coach.service.pipeline.texts import (CMD_FORGET, CMD_MEMORY_OFF, CMD_MEMORY_ON, CONFIRM_DELETE,
-                                                   RECORD_DELETE, question, reply)
+                                                   INTRO, INTRO_RECORDS_OFF, INTRO_RECORDS_ON, RECORD_DELETE,
+                                                   question, reply)
 from learning_coach.service.ports import StorageError
 
 LOG = logging.getLogger(__name__)
@@ -144,6 +144,21 @@ class Commands:
         # Answer the question the learner arrived with, as if just asked.
         turn.messages, turn.prefix = [{"role": USER, "text": pending}], closing
         return None
+
+    def introduce(self, turn):
+        """A first meeting that opens with a question: the program says who the coach is.
+
+        Left to the coordinator, the introduction crowded out the answer to the
+        question. The program now puts two fixed sentences in front and the
+        coordinator only answers. A bare greeting still gets the coordinator's
+        own introduction.
+        """
+        if turn.prefix is not None or not onboarding.carries_question(turn.text):
+            return
+        memory = read_memory(turn.state, self.deps.store, turn.memory_key)
+        if is_first_meeting(turn, memory):
+            turn.prefix = INTRO + (INTRO_RECORDS_ON if memory.enabled else INTRO_RECORDS_OFF)
+            turn.introduced = True
 
     def _finish_first_meeting(self, turn, record):
         """Apply the consent answer; a stated stage becomes the first profile entry."""

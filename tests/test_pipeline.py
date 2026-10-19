@@ -212,8 +212,9 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(output), {"schema_version", "intent", "message", "next_step"})
 
     async def test_first_meeting_flag_reaches_coordinator(self):
+        # A bare greeting: the coordinator introduces itself.
         runner = FakeRunner([plan(research_query="分数定义")])
-        await self.pipeline(runner).run(messages("你好，想学分数"), session_id="new", turn_id="1")
+        await self.pipeline(runner).run(messages("你好"), session_id="new", turn_id="1")
         decide = runner.calls_for("coordinator", "decide")[0]
         self.assertIs(decide["first_meeting"], True)
         self.assertIs(runner.calls_for("coordinator", "respond")[0]["first_meeting"], True)
@@ -221,6 +222,22 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         history = ({"role": "user", "text": "你好"}, {"role": "assistant", "text": "你好，我是学习教练。"})
         await self.pipeline(later).run(messages("讲讲分数", *history), session_id="new2", turn_id="1")
         self.assertIs(later.calls_for("coordinator", "decide")[0]["first_meeting"], False)
+
+    async def test_a_first_question_is_answered_after_the_programs_introduction(self):
+        answer = {"schema_version": "1.0", "intent": {"primary": "A", "is_implicit": False},
+                  "message": "象鼻是上唇和鼻子长在一起形成的。", "next_step": None}
+        runner = FakeRunner([plan("A")], replies=[answer])
+        output, _ = await self.pipeline(runner).run(messages("大象的鼻子为什么这么长"), session_id="new", turn_id="1")
+        # The coordinator only answers; the introduction is the program's.
+        self.assertIs(runner.calls_for("coordinator", "decide")[0]["first_meeting"], False)
+        self.assertTrue(output["message"].startswith("你好，我是你的学习教练"))
+        self.assertIn("学习记录默认不保存", output["message"])
+        self.assertTrue(output["message"].endswith("象鼻是上唇和鼻子长在一起形成的。"))
+        # Not on a later turn, and not for a returning visitor.
+        again = FakeRunner([plan("A")])
+        output, _ = await self.pipeline(again).run(messages("大象的鼻子为什么这么长"), session_id="back",
+                                                   turn_id="1", returning_visitor=True)
+        self.assertNotIn("我是你的学习教练", output["message"])
 
     async def test_returning_visitor_is_not_greeted_again(self):
         runner = FakeRunner([plan()])

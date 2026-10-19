@@ -64,11 +64,16 @@ def _choose(step: str, answer: str):
     return None
 
 
+def carries_question(first_message: str) -> bool:
+    """False for an empty message, a bare greeting or "跳过"; True when there is something to answer."""
+    text = first_message.strip()
+    return bool(text) and not GREETINGS.match(text) and not SKIP.match(text)
+
+
 def start(first_message: str) -> dict:
     """Begin the questions; keep a real first question to answer afterwards."""
     text = first_message.strip()
-    pending = None if (not text or GREETINGS.match(text) or SKIP.match(text)) else text[:MAX_QUESTION_CHARS]
-    return {"step": STEP_WHO, "pending_question": pending}
+    return {"step": STEP_WHO, "pending_question": text[:MAX_QUESTION_CHARS] if carries_question(text) else None}
 
 
 def advance(record: dict, answer: str) -> dict:

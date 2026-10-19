@@ -59,6 +59,8 @@ class Mode(StrEnum):
     SINGLE = "single"                    # the single-agent baseline
 
 
+USER, ASSISTANT = "user", "assistant"   # the two message roles kept in the history
+
 # state["resume_stage"]: whether the active task is being worked on or paused.
 TASK_ACTIVE, TASK_PAUSED = "active", "paused"
 
@@ -104,6 +106,14 @@ def memory_enabled(state, store, memory_key) -> bool:
 def read_memory(state, store, memory_key) -> Memory:
     enabled = memory_enabled(state, store, memory_key)
     return Memory(enabled, store.snapshot(memory_key) if enabled else empty_snapshot())
+
+
+def is_first_meeting(turn, memory: Memory) -> bool:
+    """This learner talks to the coach for the first time: the client has not seen
+    them before, there is no reply yet in this conversation and nothing remembered."""
+    return (not turn.returning_visitor and Key.ONBOARDING not in turn.state
+            and not any(item["role"] == ASSISTANT for item in turn.messages)
+            and not (memory.snapshot.get("profile") or memory.snapshot.get("concepts")))
 
 
 def running_quiz(state) -> dict | None:
