@@ -196,7 +196,7 @@ def recover_practice_route(decision, state, learner_text):
 # message, so implicit or declined requests are never forced.
 VISUAL_TRIGGERS = ("画图", "图片", "插图", "配图", "画面", "照片", "示意图", "结构图",
                    "互动图", "可视化", "流程图", "思维导图", "用图解释", "用图说明",
-                   "用图展示", "动画", "动图", "互动演示")
+                   "用图展示", "动画", "动图", "互动演示", "记忆卡", "闪卡")
 VISUAL_OPT_OUTS = ("不用图", "不要图", "别画", "不用画", "文字说明", "文字版")
 _NON_VISUAL_DEMO = re.compile(r"模拟(?:考试|考|试卷|试题|面试)|演示文稿|幻灯片")
 _VISUAL_WORD = r"(?:演示|模拟|动画|动图|图片|插图|配图|照片|示意图|结构图|互动图|可视化|流程图|思维导图|画图|用图解释|用图说明|用图展示)"

@@ -7,7 +7,7 @@ from copy import deepcopy
 from learning_coach.domain.contracts import ContractError, validate
 from learning_coach.domain.teaching_visuals import visual_handoff
 from learning_coach.domain.visual_contracts import VISUAL_SCHEMA
-from learning_coach.domain.visual_quality import (GALLERY_REVIEW_SCHEMA, VISUAL_REVIEW_SCHEMA,
+from learning_coach.domain.visual_quality import (GALLERY_REVIEW_SCHEMA, VISUAL_REVIEW_SCHEMA, blocking_issues,
                                                   gallery_problem, needs_explanatory_visual, repair_gallery,
                                                   validate_gallery_review, validate_visual_review)
 from learning_coach.service.execution import StageFailure
@@ -237,10 +237,11 @@ class VisualGenerationService:
         except StageFailure:
             return "done", (None, unavailable_visual("review_unavailable", _issue(
                 "insufficient_evidence", "本轮独立审阅未完成，图示不发布。"), attempt))
-        if review["verdict"] == "pass":
-            return "pass", review
         if review["verdict"] == "insufficient":
             return "done", (None, unavailable_visual("insufficient_evidence", deepcopy(review["issues"]), attempt))
+        if review["verdict"] == "pass" or not blocking_issues(review):
+            # Only minor issues: publish, with them shown as notes.
+            return "pass", review
         return "retry", deepcopy(review["issues"])
 
     async def _gallery(self, session_id, payload, spec, research, learner_text, explanatory, attempt,
@@ -314,4 +315,7 @@ class VisualGenerationService:
                 "图示规格经过独立模型审阅与本地渲染检查，这不等于正确性证明或像素视觉核验。")
         if review["fact_basis"] == "general_knowledge":
             context["limitations"].append("事实审阅基于模型一般知识，本轮未对这些内容进行外部来源查证。")
+        minor = [issue["message"] for issue in review["issues"] if issue.get("severity") == "minor"]
+        if minor:
+            context["limitations"].append("审阅提示（不影响使用）：" + "；".join(message[:160] for message in minor[:2]))
         return context

@@ -314,6 +314,44 @@ class FasterVisualFlowTests(unittest.IsolatedAsyncioTestCase):
             temp.cleanup()
 
 
+class ReviewSeverityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_minor_issues_publish_with_a_note_and_must_fix_issues_redraw(self):
+        minor = {**review("revise", message="第三步还可以拆成两步。"),
+                 "issues": [{"code": "label_problem", "message": "第三步还可以拆成两步。", "severity": "minor"}]}
+        for verdict in ("pass", "revise"):
+            with self.subTest(verdict=verdict):
+                given = {**minor, "verdict": verdict}
+                runner = FakeRunner(visuals=[VISUAL], visual_reviews=[given])
+                artifact, context = await VisualGenerationService(runner, FakeArtifacts()).generate(
+                    "s", {"goal": "对照", "research": None}, learner_text="画个对比图")
+                self.assertIsNotNone(artifact)
+                self.assertEqual(len(runner.calls_for("visualizer")), 1)
+                self.assertIn("第三步还可以拆成两步", "".join(context["limitations"]))
+        runner = FakeRunner(visuals=[VISUAL, VISUAL], visual_reviews=[review("revise"), review()])
+        artifact, _ = await VisualGenerationService(runner, FakeArtifacts()).generate(
+            "s", {"goal": "对照", "research": None}, learner_text="画个对比图")
+        self.assertIsNotNone(artifact)
+        self.assertEqual(len(runner.calls_for("visualizer")), 2)
+
+    def test_a_pass_cannot_hide_a_must_fix_issue(self):
+        from learning_coach.domain.visual_quality import validate_visual_review
+        hidden = {**review(), "issues": review("revise")["issues"]}
+        with self.assertRaises(ContractError):
+            validate_visual_review(hidden, None)
+
+    def test_schema_problem_names_the_path_not_the_value(self):
+        from learning_coach.domain.contracts import schema_problem
+        broken = json.dumps({**gallery("甲骨"), "arrange": "SECRET_VALUE"}, ensure_ascii=False)
+        where = schema_problem(broken, VISUAL_SCHEMA)
+        self.assertNotIn("SECRET_VALUE", where)
+        self.assertEqual(schema_problem("not json", VISUAL_SCHEMA), "invalid_json")
+
+    def test_flashcard_requests_count_as_picture_requests(self):
+        from learning_coach.domain.routing import explicit_visual_quote
+        self.assertEqual(explicit_visual_quote("给我做一组元素周期表前 20 号元素的记忆卡片"), "记忆卡")
+        self.assertIsNone(explicit_visual_quote("弹出测试卡片"))
+
+
 class RunnerTests(unittest.IsolatedAsyncioTestCase):
     async def test_pictures_go_into_one_message_with_their_labels(self):
         seen = []
@@ -401,6 +439,20 @@ class ImageSearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(image_search._public_host("localhost"))
         with self.assertRaisesRegex(image_search.RetrievalError, "host_rejected"):
             image_search.download_image("https://127.0.0.1/a.png")
+
+    async def test_nothing_found_retries_once_with_the_core_words(self):
+        queries = []
+
+        def commons(query, limit):
+            queries.append(query)
+            return [] if len(queries) == 1 else [{"source": "commons", "title": "c", "description": "", "author": "",
+                                                  "license": "CC0", "page_url": "", "url": "https://upload.wikimedia.org/c"}]
+        with mock.patch.object(image_search, "commons_candidates", side_effect=commons), \
+                mock.patch.object(image_search, "download_image", return_value=(TINY_PNG, "image/png")):
+            found = await image_search.WebImageFinder().find("植物细胞", "plant cell under light microscope 400x")
+        self.assertEqual(queries, ["plant cell under light microscope 400x", "plant cell light"])
+        self.assertEqual(len(found), 1)
+        self.assertEqual(image_search.simpler_query("plant cell"), "")
 
     async def test_an_unreachable_source_is_skipped_for_a_while(self):
         calls = []

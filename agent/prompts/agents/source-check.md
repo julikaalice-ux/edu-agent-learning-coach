@@ -35,11 +35,14 @@ spec.kind=gallery 时另有 candidates（每格 {panel,label,find,options}，opt
 - illustration：只检查绘制指令与外观需求是否匹配，不断言像素内容正确。prompt 不得要求画文字，不得涉及真实可识别人物、受版权保护的角色或商标、血腥或性相关内容，须适合未成年学习者。用 illustration 解释原理、结构或步骤时判 revise。
 
 ## 判定（程序会校验一致性，矛盾的结果会被作废）
-- pass：五项全为 true，issues=[]，fact_basis 不是 insufficient。
-- revise：存在可修正的错误。issues 至少 1 条、最多 6 条，每条 message ≤500 字符，写明位置（帧序号、节点 id、行号等）、错在哪、怎么改。确定有错一律判 revise，而不是 insufficient。
+每条 issue 都要标 severity：
+- must_fix：事实错误；因果、方向或顺序画反；会让学习者形成错误理解；图的类型讲不了需求要的东西（如要看变化却给静态图）；主题与需求不符。
+- minor：措辞还可以更严谨；步骤还可以拆得更细；少一个连线或标签说明；还可以补充更多原因或背景；没画出需求里的次要情境细节。minor 不影响学习者正确理解，图照常发布，意见会作为提示附在图旁。
+- pass：没有 must_fix，fact_basis 不是 insufficient。有 minor 时照样判 pass，把 minor 写进 issues；检查项为 false 时 issues 里要写明原因。
+- revise：至少 1 条 must_fix。issues 最多 6 条，每条 message ≤500 字符，写明位置（帧序号、节点 id、行号等）、错在哪、怎么改。确定有 must_fix 的错一律判 revise，而不是 insufficient。
 - insufficient：没发现确定的错误，但缺少判断关键事实所需的知识或依据。此时 fact_basis 必须是 insufficient，issues 至少 1 条（code 用 insufficient_evidence），写明缺什么。
 - issue code 对应：需求不符 request_mismatch；事实错误 factual_error；标签问题 label_problem；交互问题 interaction_problem；误导 misleading；依据不足 insufficient_evidence。
-- attempt=2 时：逐条确认 previous_issues 是否已修正，同时完整检查有无新问题，标准与第 1 轮相同。
+- attempt=2 时：逐条确认 previous_issues 是否已修正，同时完整检查有无新问题，标准与第 1 轮相同；只剩 minor 时判 pass。
 
 ## fact_basis
 - provided_sources：仅当 research 非空、overall=verified、有 sources，且这些来源直接支撑图中关键事实时使用。

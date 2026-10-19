@@ -10,7 +10,7 @@ from time import perf_counter
 from agent_framework import Agent, Content, Message
 
 from learning_coach.domain.context import count_tokens
-from learning_coach.domain.contracts import ContractError, parse, validate, object_schema
+from learning_coach.domain.contracts import ContractError, parse, schema_problem, validate, object_schema
 
 
 LOG = logging.getLogger(__name__)
@@ -92,6 +92,7 @@ class StructuredRunner:
             outcome = "cancelled"
             message = json.dumps(request, ensure_ascii=False)
             usage = dict.fromkeys(USAGE_KEYS)
+            response, invalid_at = None, None
             try:
                 options = {"response_format": requested_schema} if self.native_json else {}
                 content = message
@@ -112,7 +113,8 @@ class StructuredRunner:
                 return result
             except ContractError:
                 outcome = "invalid_output"
-                LOG.info("agent_stage_invalid role=%s attempt=%s", role, attempt + 1)
+                invalid_at = schema_problem(getattr(response, "text", None), requested_schema)
+                LOG.info("agent_stage_invalid role=%s attempt=%s at=%s", role, attempt + 1, invalid_at)
                 request["format_correction"] = "上次输出未通过结构校验。仅返回符合 output_schema 的 JSON；不附围栏。"
             except Exception as error:
                 outcome = "provider_or_timeout_failure"
@@ -129,6 +131,8 @@ class StructuredRunner:
                           "elapsed_ms": round((perf_counter() - started) * 1000)}
                 if images:
                     record["images"] = len(images)
+                if invalid_at:
+                    record["invalid_at"] = invalid_at
                 self.usage.append(record)
                 LOG.info("agent_stage %s", " ".join(f"{key}={value}" for key, value in record.items()))
                 if self.observer is not None:

@@ -161,6 +161,19 @@ def validate(value, schema):
     return value
 
 
+def schema_problem(text, schema) -> str:
+    """Where an output broke its schema: JSON path and rule name only, never values."""
+    try:
+        value = json.loads(text)
+    except (TypeError, ValueError, RecursionError):
+        return "invalid_json"
+    from jsonschema.exceptions import best_match
+    error = best_match(Draft202012Validator(schema).iter_errors(value))
+    if error is None:
+        return ""
+    return ("/" + "/".join(str(part) for part in error.absolute_path) + " " + str(error.validator))[:120]
+
+
 def parse(text, schema):
     if not isinstance(text, str) or len(text) > MAX_RESPONSE_CHARS:
         raise ContractError("invalid_response_size")

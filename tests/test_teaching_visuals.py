@@ -21,7 +21,7 @@ from learning_coach.service.execution import StageFailure
 
 def review(verdict="pass", *, basis="general_knowledge", code="factual_error", message="第二步的因果箭头方向反了，请从原因指向结果。"):
     return {"verdict": verdict, "checks": {key: verdict == "pass" for key in REVIEW_CHECKS},
-            "issues": [] if verdict == "pass" else [{"code": code, "message": message}],
+            "issues": [] if verdict == "pass" else [{"code": code, "message": message, "severity": "must_fix"}],
             "fact_basis": basis}
 
 

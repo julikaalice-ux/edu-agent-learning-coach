@@ -99,6 +99,17 @@ def _json(request: Request) -> dict:
     return result
 
 
+_FILLER = {"a", "an", "the", "of", "in", "on", "under", "with", "and", "at", "for", "by", "to", "from"}
+
+
+def simpler_query(query: str) -> str:
+    """The first three content words of an English query, or "" when that changes nothing."""
+    words = [word for word in re.split(r"[\s,;]+", query or "") if word]
+    core = [word for word in words if word.lower() not in _FILLER][:3]
+    shorter = " ".join(core)
+    return shorter if core and shorter != " ".join(words) else ""
+
+
 def download_image(url: str) -> tuple[bytes, str]:
     """(bytes, media type) of one public https picture; raises RetrievalError otherwise."""
     parsed = urlsplit(url or "")
@@ -197,7 +208,12 @@ class WebImageFinder:
         lookups = [safely("commons", commons_candidates, query_en or query_zh, limit)]
         if self._bocha_api_key:
             lookups.append(safely("bocha", bocha_candidates, self._bocha_api_key, query_zh or query_en, limit))
-        listed = [item for found in await asyncio.gather(*lookups) for item in found][:limit + 2]
+        listed = [item for found in await asyncio.gather(*lookups) for item in found]
+        shorter = simpler_query(query_en)
+        if not listed and shorter:
+            # Long, specific search words often match nothing on Commons; try the core words once.
+            listed = await safely("commons", commons_candidates, shorter, limit)
+        listed = listed[:limit + 2]
 
         async def fetch(item):
             for url in (item["url"], item.get("fallback_url")):

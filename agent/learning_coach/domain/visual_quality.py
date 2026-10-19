@@ -15,6 +15,8 @@ ISSUE_CODES = ("request_mismatch", "factual_error", "label_problem", "interactio
 ISSUE_SCHEMA = object_schema({
     "code": {"enum": list(ISSUE_CODES)},
     "message": {"type": "string", "minLength": 1, "maxLength": 500, "pattern": r"\S"},
+    # must_fix blocks publication; minor is published as a note next to the visual.
+    "severity": {"enum": ["must_fix", "minor"]},
 })
 VISUAL_REVIEW_SCHEMA = object_schema({
     "verdict": {"enum": ["pass", "revise", "insufficient"]},
@@ -90,9 +92,16 @@ def gallery_problem(spec: dict, explanatory: bool) -> list[dict]:
     return []
 
 
+def blocking_issues(review: dict) -> list[dict]:
+    """The issues that stop a visual from being published."""
+    return [issue for issue in review["issues"] if issue.get("severity", "must_fix") == "must_fix"]
+
+
 def _consistent(review: dict, research: dict | None) -> dict:
     if review["verdict"] == "pass":
-        if not all(review["checks"].values()) or review["issues"] or review["fact_basis"] == "insufficient":
+        # Minor issues may come with a pass; a failed check must be explained by one.
+        if (blocking_issues(review) or review["fact_basis"] == "insufficient"
+                or (not all(review["checks"].values()) and not review["issues"])):
             raise ContractError("visual_review_inconsistent")
     elif not review["issues"]:
         raise ContractError("visual_review_missing_issues")
