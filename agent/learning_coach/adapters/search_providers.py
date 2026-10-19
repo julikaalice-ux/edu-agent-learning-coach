@@ -182,26 +182,51 @@ class ZhipuProvider:
 
 
 class RoutedProvider:
-    """BoCha for news and events; Zhipu for knowledge questions."""
+    """Knowledge queries prefer Zhipu, news queries prefer BoCha; a failed
+    provider falls through to the next, ending at Wikipedia.
 
-    def __init__(self, bocha: SearchProvider, zhipu: SearchProvider):
-        self._bocha, self._zhipu = bocha, zhipu
+    Each provider serves a different network: BoCha is mainland-only, Zhipu
+    and Tavily work overseas, Wikipedia is keyless. The caller's network
+    (mainland, overseas, behind a VPN) therefore never decides whether the
+    learner gets sources — only which provider supplied them.
+    """
+
+    def __init__(self, providers):
+        self._providers = [p for p in providers if p is not None]
 
     async def search(self, query: str) -> list[dict]:
-        provider = self._zhipu if _EDUCATIONAL.search(query) else self._bocha
-        return await provider.search(query)
+        knowledge = _EDUCATIONAL.search(query)
+        ordered = sorted(self._providers, key=lambda p: _preference(p, knowledge))
+        for provider in ordered:
+            try:
+                return await provider.search(query)
+            except (RetrievalError, OSError, TimeoutError, ValueError):
+                continue
+        return []
+
+
+def _preference(provider: SearchProvider, knowledge: bool) -> int:
+    if isinstance(provider, ZhipuProvider):
+        return 0 if knowledge else 1
+    if isinstance(provider, BochaProvider):
+        return 1 if knowledge else 0
+    if isinstance(provider, TavilyProvider):
+        return 2
+    return 3
 
 
 def default_provider() -> SearchProvider:
+    providers = []
     bocha = os.environ.get("BOCHA_API_KEY", "").strip()
     zhipu = os.environ.get("ZHIPU_API_KEY", "").strip()
-    if bocha and zhipu:
-        return RoutedProvider(BochaProvider(bocha), ZhipuProvider(zhipu))
+    tavily = os.environ.get("TAVILY_API_KEY", "").strip()
     if bocha:
-        return BochaProvider(bocha)
+        providers.append(BochaProvider(bocha))
     if zhipu:
-        return ZhipuProvider(zhipu)
-    key = os.environ.get("TAVILY_API_KEY", "").strip()
-    return TavilyProvider(key) if key else WikipediaProvider()
+        providers.append(ZhipuProvider(zhipu))
+    if tavily:
+        providers.append(TavilyProvider(tavily))
+    providers.append(WikipediaProvider())
+    return RoutedProvider(providers)
 
 

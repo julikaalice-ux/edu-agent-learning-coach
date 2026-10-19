@@ -273,13 +273,15 @@ class ProviderAdapterTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(providers.RetrievalError, "provider_quota_or_error"):
                 await providers.BochaProvider("sk-test").search("任何问题")
 
-    async def test_default_provider_prefers_bocha_over_tavily_over_wikipedia(self):
+    async def test_default_provider_chain_reflects_the_configured_keys(self):
         with patch.dict("os.environ", {}, clear=True):
-            self.assertIsInstance(providers.default_provider(), providers.WikipediaProvider)
-        with patch.dict("os.environ", {"BOCHA_API_KEY": "sk-b", "TAVILY_API_KEY": "tvly-1"}, clear=True):
-            self.assertIsInstance(providers.default_provider(), providers.BochaProvider)
-        with patch.dict("os.environ", {"TAVILY_API_KEY": "tvly-1"}, clear=True):
-            self.assertIsInstance(providers.default_provider(), providers.TavilyProvider)
+            chain = providers.default_provider()
+            self.assertIsInstance(chain, providers.RoutedProvider)
+            self.assertEqual([type(p) for p in chain._providers], [providers.WikipediaProvider])
+        with patch.dict("os.environ", {"BOCHA_API_KEY": "b", "ZHIPU_API_KEY": "z", "TAVILY_API_KEY": "t"}, clear=True):
+            chain = providers.default_provider()
+            self.assertEqual([type(p).__name__ for p in chain._providers],
+                             ["BochaProvider", "ZhipuProvider", "TavilyProvider", "WikipediaProvider"])
 
 
     async def test_zhipu_results_parse_and_stay_conservative(self):
@@ -298,24 +300,65 @@ class ProviderAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(found[0]["excerpt_kind"], "search_snippet")
 
     async def test_routed_provider_sends_knowledge_to_zhipu_and_news_to_bocha(self):
-        class Spy:
-            def __init__(self, name):
-                self.name, self.queries = name, []
+        class SpyBocha(providers.BochaProvider):
+            def __init__(self):
+                self.queries = []
             async def search(self, query):
                 self.queries.append(query)
                 return []
-        bocha, zhipu = Spy("bocha"), Spy("zhipu")
-        routed = providers.RoutedProvider(bocha, zhipu)
+        class SpyZhipu(providers.ZhipuProvider):
+            def __init__(self):
+                self.queries = []
+            async def search(self, query):
+                self.queries.append(query)
+                return []
+        bocha, zhipu = SpyBocha(), SpyZhipu()
+        routed = providers.RoutedProvider([bocha, zhipu])
         await routed.search("勾股定理 原理")
         await routed.search("2026年6月 航天发射事件")
         self.assertEqual(bocha.queries, ["2026年6月 航天发射事件"])
         self.assertEqual(zhipu.queries, ["勾股定理 原理"])
 
+    async def test_routed_provider_falls_through_an_unreachable_provider(self):
+        class FailingBocha(providers.BochaProvider):
+            def __init__(self):
+                self.calls = 0
+            async def search(self, query):
+                self.calls += 1
+                raise providers.RetrievalError("provider_unreachable")
+        class FailingZhipu(providers.ZhipuProvider):
+            def __init__(self):
+                self.calls = 0
+            async def search(self, query):
+                self.calls += 1
+                raise providers.RetrievalError("provider_unreachable")
+        class WorkingTavily(providers.TavilyProvider):
+            def __init__(self):
+                self.queries = []
+            async def search(self, query):
+                self.queries.append(query)
+                return [{"title": "ok", "url": "https://x.example", "excerpt": "有", "excerpt_kind": "search_snippet"}]
+        bocha, zhipu, tavily = FailingBocha(), FailingZhipu(), WorkingTavily()
+        routed = providers.RoutedProvider([bocha, zhipu, tavily])
+        found = await routed.search("2026年6月 航天发射事件")  # news prefers bocha; it fails
+        self.assertEqual(bocha.calls, 1)
+        self.assertEqual(zhipu.calls, 1)  # second choice also fails
+        self.assertEqual(tavily.queries, ["2026年6月 航天发射事件"])
+        self.assertEqual(found[0]["url"], "https://x.example")
+
+    async def test_routed_provider_returns_empty_when_every_provider_fails(self):
+        class Failing:
+            async def search(self, query):
+                raise OSError("offline")
+        self.assertEqual(await providers.RoutedProvider([Failing(), Failing()]).search("任何"), [])
+
     async def test_default_provider_routes_when_both_keys_are_set(self):
         with patch.dict("os.environ", {"BOCHA_API_KEY": "b", "ZHIPU_API_KEY": "z"}, clear=True):
             self.assertIsInstance(providers.default_provider(), providers.RoutedProvider)
         with patch.dict("os.environ", {"ZHIPU_API_KEY": "z"}, clear=True):
-            self.assertIsInstance(providers.default_provider(), providers.ZhipuProvider)
+            chain = providers.default_provider()
+            self.assertIsInstance(chain, providers.RoutedProvider)
+            self.assertIsInstance(chain._providers[0], providers.ZhipuProvider)
 
 
 if __name__ == "__main__":
