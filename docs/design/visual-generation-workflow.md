@@ -20,7 +20,7 @@
     → 字节进 artifact，回复内 data:image 内联显示
 
 链路 C：题目配图（出题请求图片时）
-  quizzer 出题带 image 字段 → pipeline._question_picture (service/pipeline.py)
+  quizzer 出题带 image 字段 → QuizService.picture (service/pipeline/quiz.py)
     → 同样走 generate_image → 回复带 [看题目配图]
 ```
 
@@ -38,7 +38,7 @@
 | `adapters/scenes.py` + `scene_assets/` | scene kind 的逐帧渲染（scene.html/js/css） |
 | `adapters/illustrate.py` | 图像后端：FLUX（默认）/ pollinations（备用），返回 PNG/JPEG 字节 |
 | `db/artifacts.py` | 产物存储：token 化 URL、24 小时过期、会话删除 |
-| `service/pipeline.py::_question_picture` | 题目配图入口（出题 → 生图 → artifact） |
+| `service/pipeline/quiz.py::QuizService.picture` | 题目配图入口（出题 → 生图 → artifact） |
 | `server.py::_artifact_store` | 组装点：本机 /artifacts 路由（Space）或公开 blob（托管端 `LEARNING_COACH_ARTIFACT_BLOB_URL`） |
 | `space/app.py::iframe_for / respond` | 演示页显示：互动图 iframe 内嵌，配图 data:image 内联 |
 

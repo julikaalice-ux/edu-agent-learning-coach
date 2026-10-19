@@ -23,7 +23,7 @@ import logging
 from learning_coach.domain.contracts import (QUIZ_SCHEMA, TASK_SCHEMA, TEXT, DIFFICULTY, ContractError,
                                              check_question, object_schema, public_quiz, selected_choice,
                                              validate)
-from learning_coach.domain.context import (learner_card, memory_slice, number_turns, recent_window)
+from learning_coach.domain.context import learner_card, memory_slice, number_turns, recent_window
 from learning_coach.domain.note_contracts import NOTES_SCHEMA
 from learning_coach.domain.research_contracts import (MAX_QUERIES, MAX_QUERY_CHARS, MAX_SOURCES,
                                                       VERIFY_SCHEMA)
@@ -32,9 +32,13 @@ from learning_coach.domain.teaching_visuals import visual_handoff
 from learning_coach.domain.visual_contracts import VISUAL_SCHEMA
 from learning_coach.domain.visual_quality import gallery_problem, needs_explanatory_visual
 from learning_coach.service.execution import EXTERNAL_DECLINED, external_allowed
-from learning_coach.service.pipeline import (NOTES_OFFER, PICTURE_TIMEOUT_SECONDS, QUIZ_PICTURE_LINK,
-                                             LearningPipeline, default_participant, empty_learning_notes,
-                                             render_question)
+from learning_coach.service.pipeline import LearningPipeline, permissions
+from learning_coach.service.pipeline.checks import validate_response
+from learning_coach.service.pipeline.quiz import PICTURE_TIMEOUT_SECONDS, new_quiz, recent_questions
+from learning_coach.service.pipeline.state import (Key, apply_task, default_participant, mark_evidence,
+                                                   model_view, read_memory, record_quiz_result, track_tasks)
+from learning_coach.service.pipeline.teach import attach_links, offer_notes_after_practice
+from learning_coach.service.pipeline.texts import question as ask, render_question
 from learning_coach.service.ports import (Artifacts, ImageGenerator, LearningMemory, SearchProvider,
                                           SingleAgentPort, StorageError, ToolSpec)
 from learning_coach.service.research import assess_claims, clean_queries, search_sources
@@ -177,7 +181,7 @@ class SingleAgentPipeline(LearningPipeline):
                 "pause_task": False, "quiz_action": "continue", "quiz_topic": quiz.get("topic"),
                 "quiz_total": quiz.get("total", 1), "difficulty": quiz.get("difficulty", "简单"),
                 "participant": quiz.get("participant", "unknown")}
-        graded, evidence, pending = self._quiz_grade(plan, text, state)
+        graded, evidence, pending = self.quiz.grade(plan, text, state)
         quiz = state["quiz"]
         feedback = (graded or {}).get("feedback") or {
             "correct": selected == question["answer_index"], "explanation": question["explanation"]}
@@ -313,14 +317,14 @@ class SingleAgentPipeline(LearningPipeline):
             if kind == "check" and active and running.get("kind", "practice") != "check":
                 return _problem("practice_running", "正在做一组练习，不插入检查题。")
             continue_set = kind == "practice" and active and running.get("kind", "practice") == "practice"
-            history = running.get("question_history", [])[-20:]
+            history = recent_questions(running)
             problem = check_question(question)
             if problem is None and question["question"].strip().casefold() in {
                     item.strip().casefold() for item in history}:
                 problem = "repeated_question"
             picture = None
             if problem is None and question["image"] is not None:
-                picture = await self._question_picture(session_id, question)
+                picture = await self.quiz.picture(session_id, question)
                 if picture is None:
                     return _problem("picture_not_available_write_text_only", "配图画不出来，请改出不用图的题。")
             if problem is not None:
@@ -328,11 +332,8 @@ class SingleAgentPipeline(LearningPipeline):
                 return _problem(problem, "题目没通过程序检查，请按问题修改后重出。")
             if not continue_set:
                 participant = running.get("participant") or default_participant(state)
-                running = {"topic": topic, "total": 1 if kind == "check" else total, "difficulty": difficulty,
-                           "asked": 0, "answered": 0, "correct": 0, "awaiting": None, "finished": False,
-                           "question_history": list(history), "participant": participant,
-                           "kind": kind, "errors": []}
-                state["quiz"] = running
+                running = state[Key.QUIZ] = new_quiz(kind=kind, topic=topic, total=1 if kind == "check" else total,
+                                                     difficulty=difficulty, participant=participant, history=history)
             running["awaiting"] = question
             running.setdefault("question_history", []).append(question["question"])
             running["asked"] = running.get("asked", 0) + 1
@@ -350,38 +351,29 @@ class SingleAgentPipeline(LearningPipeline):
                      QUESTION_PARAMETERS, ask_question),
         ]
 
-    async def _teach(self, messages, session_id, state, event_id, memory_key, returning_visitor, on_delta=None):
+    async def _teach(self, turn):
+        state, text, budgets = turn.state, turn.text, self.budgets
         # An authorization pause must not consume an answer or advance a quiz:
         # the original learner turn will run again once consent is resolved.
         permission_baseline = deepcopy(state)
-        text = messages[-1]["text"].strip()
-        budgets = self.budgets
-        numbered = number_turns(messages)
+        numbered = number_turns(turn.messages)
         current_turn = numbered[-1]["turn"]
-        context = state.setdefault("context", {})
-        memory_enabled = not state.get("memory_blocked", False) and self.store.is_enabled(memory_key)
-        memory = self.store.snapshot(memory_key) if memory_enabled else {
-            "schema_version": "1.0", "profile": {}, "concepts": [], "error_records": [], "review_plan": [],
-        }
-        first_meeting = (not returning_visitor and "onboarding" not in state
-                         and not any(item["role"] == "assistant" for item in messages)
-                         and not (memory.get("profile") or memory.get("concepts")))
-        previous_task, previous_quiz = state.get("active_task"), deepcopy(state.get("quiz"))
+        context = state.setdefault(Key.CONTEXT, {})
+        memory = read_memory(state, self.store, turn.memory_key)
+        first_meeting = (not turn.returning_visitor and Key.ONBOARDING not in state
+                         and not any(item["role"] == "assistant" for item in turn.messages)
+                         and not (memory.snapshot.get("profile") or memory.snapshot.get("concepts")))
+        previous_task, previous_quiz = state.get(Key.ACTIVE_TASK), deepcopy(state.get(Key.QUIZ))
         quiz_feedback, quiz_evidence = self._grade_waiting(text, state)
 
-        visible_state = deepcopy({key: value for key, value in state.items()
-                                  if key not in ("last_event", "last_input", "last_response", "last_execution",
-                                                 "context", "pending_external")})
-        quiz = visible_state.get("quiz")
-        if quiz and quiz.get("awaiting"):
-            quiz["awaiting"] = public_quiz(quiz["awaiting"])
-        focus = " ".join(filter(None, (state.get("active_task"), (state.get("quiz") or {}).get("topic"), text)))
+        visible_state = model_view(state)
+        focus = " ".join(filter(None, (state.get(Key.ACTIVE_TASK), (state.get(Key.QUIZ) or {}).get("topic"), text)))
         payload = {
             "messages": recent_window(numbered, budgets.decide_window, min_turns=budgets.min_turns,
                                       message_max=budgets.message_max),
-            "learner": learner_card(state, memory, memory_enabled=memory_enabled),
-            "state": visible_state, "memory": memory_slice(memory, focus, budgets.memory),
-            "memory_enabled": memory_enabled, "first_meeting": first_meeting,
+            "learner": learner_card(state, memory.snapshot, memory_enabled=memory.enabled),
+            "state": visible_state, "memory": memory_slice(memory.snapshot, focus, budgets.memory),
+            "memory_enabled": memory.enabled, "first_meeting": first_meeting,
             "quiz_feedback": quiz_feedback,
             "external_declined": EXTERNAL_DECLINED.get(),
             "capabilities": {
@@ -392,87 +384,59 @@ class SingleAgentPipeline(LearningPipeline):
                 "local_visual": {"available": self.artifacts is not None, "authorized": True},
             },
         }
-        turn = _Turn()
-        tools = self._tools(turn, session_id, state, text)
-        if on_delta is not None and hasattr(self.agent, "stream_call"):
-            drafted = await self.agent.stream_call("teach", payload, self.turn_schema, tools, on_delta=on_delta)
+        log = _Turn()
+        tools = self._tools(log, turn.session_id, state, text)
+        if turn.on_delta is not None and hasattr(self.agent, "stream_call"):
+            drafted = await self.agent.stream_call("teach", payload, self.turn_schema, tools, on_delta=turn.on_delta)
         else:
             drafted = await self.agent("teach", payload, self.turn_schema, tools)
         result = validate(drafted, self.turn_schema)
-        if turn.denied_capabilities and not EXTERNAL_DECLINED.get():
-            return self._request_external_permission(
-                messages, permission_baseline, sorted(turn.denied_capabilities),
-                "为当前问题补充外部资料或图片", result["response"]["intent"]["primary"])
+        if log.denied_capabilities and not EXTERNAL_DECLINED.get():
+            return permissions.ask(turn, permission_baseline, sorted(log.denied_capabilities),
+                                   "为当前问题补充外部资料或图片", result["response"]["intent"]["primary"])
         output, task = result["response"], result["task"]
         primary = output["intent"]["primary"]
         stopping = task["end_task"] or task["pause_task"] or result["stop_quiz"]
-        self._apply_task(state, primary, {**task, "quiz_action": "stop" if result["stop_quiz"] else "none"})
-        self._track_tasks(state, previous_task, previous_quiz, current_turn, text)
-        research = turn.research()
-        self._validate_response(output, output["intent"], research, stopping=stopping)
+        apply_task(state, primary, {**task, "quiz_action": "stop" if result["stop_quiz"] else "none"})
+        track_tasks(state, previous_task, previous_quiz, current_turn, text)
+        research = log.research()
+        validate_response(output, self.response_schema, output["intent"], research, stopping=stopping)
         if stopping:
             output["next_step"] = None
-        elif turn.question is not None:
-            output["next_step"] = {"kind": "question", "text": render_question(public_quiz(turn.question))}
+        elif log.question is not None:
+            output["next_step"] = ask(render_question(public_quiz(log.question)))
 
         offer_notes = False
         if quiz_feedback and quiz_feedback["finished"]:
-            results = context.get("quiz_results", [])
-            done = state.get("quiz") or previous_quiz or {}
-            results.append({"topic": done.get("topic"), "kind": quiz_feedback["kind"],
-                            "answered": quiz_feedback["answered"], "correct": quiz_feedback["correct_count"],
-                            "suspected_errors": done.get("errors", [])})
-            context["quiz_results"] = results[-5:]
-            if quiz_feedback["kind"] != "check" and turn.question is None:
-                output["next_step"] = None
-                if memory_enabled:
-                    output["next_step"] = {"kind": "question", "text": NOTES_OFFER}
-                    offer_notes = True
-        waiting = (state.get("quiz") or {}).get("awaiting")
-        if (waiting and not stopping and turn.question is None
+            done = state.get(Key.QUIZ) or previous_quiz or {}
+            record_quiz_result(context, topic=done.get("topic"), kind=quiz_feedback["kind"],
+                               answered=quiz_feedback["answered"], correct=quiz_feedback["correct_count"],
+                               errors=done.get("errors", []))
+            if quiz_feedback["kind"] != "check" and log.question is None:
+                offer_notes = offer_notes_after_practice(output, memory.enabled)
+        waiting = (state.get(Key.QUIZ) or {}).get("awaiting")
+        if (waiting and not stopping and log.question is None
                 and (not output["next_step"] or output["next_step"]["kind"] != "question")):
             # A question the learner still owes an answer to stays in view.
-            output["next_step"] = {"kind": "question", "text": render_question(public_quiz(waiting))}
-        self._validate_response(output, output["intent"], research, stopping=stopping)
-
-        if research is not None:
-            labels = {"unavailable": "本次未取得可核查资料，未完成检索验证。",
-                      "likely": "目前证据有限，尚未完成独立来源交叉核实。",
-                      "disputed": "来源存在冲突，相关说法不能当作确定结论。"}
-            if research["overall"] in labels:
-                output["message"] += "\n\n" + labels[research["overall"]]
-            sources = research["sources"][:3]
-            if sources:
-                output["message"] += "\n\n参考资料：" + "；".join(
-                    f"[{source['title'].replace('[', '（').replace(']', '）')}]({source['url']})" for source in sources)
-        if turn.artifact:
-            output["message"] += f"\n\n[打开互动图]({turn.artifact['url']})"
-        elif turn.visual_drafts:
-            output["message"] += "\n\n这次未生成可用的互动图。"
-        if turn.picture:
-            output["message"] += f"\n\n[{QUIZ_PICTURE_LINK}]({turn.picture['url']})"
+            output["next_step"] = ask(render_question(public_quiz(waiting)))
+        validate_response(output, self.response_schema, output["intent"], research, stopping=stopping)
+        attach_links(output, research, log.artifact, bool(log.visual_drafts),
+                     [log.picture] if log.picture else [])
         validate(output, self.response_schema)
 
         # Nothing persistent is committed before the public output is valid.
-        if turn.artifact:
-            self.artifacts.commit(session_id, turn.artifact)
-        if turn.picture:
-            self.artifacts.commit(session_id, turn.picture)
-        if quiz_evidence is not None and memory_enabled:
-            try:
-                turn_key = event_id if memory_key == session_id else f"{session_id}:{event_id}"
-                self.store.apply_notes(memory_key, turn_key, empty_learning_notes(), text,
-                                       quiz_evidence=quiz_evidence)
-            except (ValueError, OSError, StorageError):
-                output["message"] += "\n\n本轮做题记录未保存。"
-        if result["observe_learning"] and memory_enabled:
-            marks = [item for item in context.get("evidence_turns", []) if item != current_turn]
-            context["evidence_turns"] = (marks + [current_turn])[-20:]
+        if log.artifact:
+            self.artifacts.commit(turn.session_id, log.artifact)
+        if log.picture:
+            self.artifacts.commit(turn.session_id, log.picture)
+        self.quiz.save_evidence(turn, quiz_evidence, memory.enabled, output)
+        if result["observe_learning"] and memory.enabled:
+            mark_evidence(context, current_turn)
         if offer_notes:
-            state["notes_offer"] = True
-        state["last_execution"] = {"mode": "single", "tool_calls": turn.calls,
-                                   "research": research["overall"] if research else "not_requested",
-                                   "visual": "published" if turn.artifact else
-                                   "unavailable" if turn.visual_drafts else "not_requested",
-                                   "question": turn.question is not None}
+            state[Key.NOTES_OFFER] = True
+        state[Key.LAST_EXECUTION] = {"mode": "single", "tool_calls": log.calls,
+                                     "research": research["overall"] if research else "not_requested",
+                                     "visual": "published" if log.artifact else
+                                     "unavailable" if log.visual_drafts else "not_requested",
+                                     "question": log.question is not None}
         return output, state

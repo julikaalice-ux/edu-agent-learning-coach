@@ -17,6 +17,7 @@ sys.path.insert(0, str(SOURCE))
 from learning_coach.domain.contracts import validate
 from learning_coach.db.memory import LearningStore, NOTES_SCHEMA
 from learning_coach.service.pipeline import LearningPipeline
+from learning_coach.service.pipeline.checks import respond_problem
 from learning_coach.adapters.runner import StageFailure
 from learning_coach.service.ports import StorageError
 from learning_coach.adapters.visuals import VISUAL_SCHEMA
@@ -543,7 +544,7 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("不得声称已记下", runner.calls_for("coordinator", "respond")[1]["correction"], claim)
         # Negations and mentions of the feature itself are not claims.
         for text in ("我不会保存", "默认不保存学习记录"):
-            problem = self.pipeline(FakeRunner())._respond_problem({"message": text}, {}, False)
+            problem = respond_problem({"message": text}, {}, False)
             self.assertIsNone(problem, text)
 
     async def test_pronoun_variants_of_the_correct_choice_are_still_leaks(self):

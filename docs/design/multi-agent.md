@@ -184,7 +184,7 @@ API 依据：[MediaWiki Search](https://www.mediawiki.org/wiki/API:Search)、[Te
 
 ## 5. 出题
 
-实现文件：[`quiz-writer.md`](../../agent/prompts/agents/quiz-writer.md)、[`contracts.py`](../../agent/learning_coach/domain/contracts.py)、[`pipeline.py`](../../agent/learning_coach/service/pipeline.py)。
+实现文件：[`quiz-writer.md`](../../agent/prompts/agents/quiz-writer.md)、[`contracts.py`](../../agent/learning_coach/domain/contracts.py)、[`pipeline/quiz.py`](../../agent/learning_coach/service/pipeline/quiz.py)。
 
 两种题都由出题 agent 写：
 

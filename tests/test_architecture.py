@@ -28,7 +28,7 @@ class ArchitectureTests(unittest.TestCase):
             "adapters": {"adapters", "service", "domain"},
         }
         for layer, dependencies in allowed.items():
-            for path in (package / layer).glob("*.py"):
+            for path in (package / layer).rglob("*.py"):
                 for node in ast.walk(ast.parse(path.read_text())):
                     imports = ([node.module or ""] if isinstance(node, ast.ImportFrom)
                                else [alias.name for alias in node.names] if isinstance(node, ast.Import) else [])

@@ -36,7 +36,13 @@ agent/
     │   ├── http.py           # Responses 端点、产物读取路由
     │   └── host.py           # SDK 消息与应用输入/输出转换；读取平台注入的用户编号
     ├── service/
-    │   ├── pipeline.py       # 单轮教学用例编排：开场、记录开关、派活、判分、出题、整理笔记
+    │   ├── pipeline/         # 单轮编排：事件外壳 → 程序判断 → 执行
+    │   │   ├── shell.py      #   外壳：校验、防重放、会话锁、超时，失败时整轮回滚
+    │   │   ├── router.py     #   判断：记录指令，再按阶段表决定这轮做什么（不调模型）
+    │   │   ├── teach.py      #   讲解：主 agent 决策 → 程序定工具 → 并行执行 → 写回复 → 提交
+    │   │   ├── quiz.py       #   测验：建题组、判分、出题、检查题提议、换一题
+    │   │   ├── notes.py · commands.py · permissions.py  # 笔记、记录指令与首次问答、外部授权
+    │   │   └── checks.py · state.py · texts.py · deps.py # 回复检查、state 键、固定文案、依赖
     │   ├── research.py       # 用主 agent 写的搜索词去搜，再交核对 agent 查证
     │   ├── visual_generation.py  # 教学图起草、审阅与重画
     │   ├── ports.py          # Service 所需接口与 StorageError
@@ -74,9 +80,9 @@ scripts/                      # Space 打包、权限修复、Foundry Memory 初
 
 三个入口都调用 `server.create_pipeline`，用的是同一条流水线：
 
-- 托管：`agent/main.py` → `api/host.py` → `service/pipeline.py`
-- 演示网页：`space/app.py` → `service/pipeline.py`
-- 命令行：`agent/demo.py` → `service/pipeline.py`
+- 托管：`agent/main.py` → `api/host.py` → `service/pipeline/`
+- 演示网页：`space/app.py` → `service/pipeline/`
+- 命令行：`agent/demo.py` → `service/pipeline/`
 
 Service 只用 Domain 规则和自己定义的接口；模型、数据库、搜索和生图由 Server 注入。各入口保留自己的数据目录和公开地址。
 

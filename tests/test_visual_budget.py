@@ -147,7 +147,7 @@ class QuizVisualFailureTests(unittest.IsolatedAsyncioTestCase):
         self.store.set_enabled("learner", True)
         pipeline, scripted, agents = self.build(invalid_response_once=True, notes=True)
         with patch(
-            "learning_coach.service.pipeline.CallBudget",
+            "learning_coach.service.pipeline.shell.CallBudget",
             return_value=CallBudget(remaining=3),
         ):
             output, state = await pipeline.run(
@@ -174,7 +174,7 @@ class QuizVisualFailureTests(unittest.IsolatedAsyncioTestCase):
     async def test_visual_timeout_cancels_generation_but_returns_quiz_feedback(self):
         pipeline, scripted, agents = self.build(slow_visual=True)
         with patch(
-            "learning_coach.service.pipeline.VisualGenerationService",
+            "learning_coach.service.pipeline.teach.VisualGenerationService",
             partial(VisualGenerationService, timeout=0.01),
         ):
             output, state = await pipeline.run(

@@ -80,7 +80,7 @@ cp agent/.env.example agent/.env   # 填 FOUNDRY_PROJECT_ENDPOINT 和 AZURE_AI_M
 | 想看什么 | 文件 |
 | --- | --- |
 | 依赖组装（唯一创建模型客户端和数据库的地方） | [`agent/learning_coach/server.py`](agent/learning_coach/server.py) |
-| 单轮教学流程 | [`agent/learning_coach/service/pipeline.py`](agent/learning_coach/service/pipeline.py) |
+| 单轮教学流程 | [`agent/learning_coach/service/pipeline/`](agent/learning_coach/service/pipeline/__init__.py) |
 | 检索与查证 | [`agent/learning_coach/service/research.py`](agent/learning_coach/service/research.py) |
 | 工具准入与测验规则 | [`agent/learning_coach/domain/routing.py`](agent/learning_coach/domain/routing.py) |
 | 首次问答与记录同意 | [`agent/learning_coach/domain/onboarding.py`](agent/learning_coach/domain/onboarding.py) |
