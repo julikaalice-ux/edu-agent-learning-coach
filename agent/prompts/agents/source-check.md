@@ -31,7 +31,7 @@ spec.kind=gallery 时另有 candidates（每格 {panel,label,find,options}，opt
 - linear_function：slope、intercept 与教学例子一致；x 范围能显示截距和关键点。
 - scene：每帧自包含；帧间变化对应真实步骤；check_question 能凭图作答且答案未被原样写出。
 - diagram：边的方向和含义正确；无悬空引用、无重复 id；节点不过密。
-- gallery：每格从自己的 options 里挑最符合 find 和 label 的一张，写进 choices（每格一条 {panel, option}，option 填候选 id；没有合适的填 null，不因此判 revise）。合适是指：画面确实是这一格要的东西；适合未成年学习者（无血腥、裸露、伤亡特写）；图上的文字或画法不误导（例如把示意画当成实拍）。同样合适时优先 source=commons。points、steps 写错按 factual_error 判 revise；需求要讲原理或变化而 companion 不是 scene、process、diagram、linear_function 时判 request_mismatch。至少一格选中才能 pass。非 gallery 的图 choices 不输出。
+- gallery：每格从自己的 options 里挑最符合 find 和 label 的一张，写进 choices（每格一条 {panel, option}，option 填候选 id；没有合适的填 null，不因此判 revise）。合适是指：画面确实是这一格要的东西；适合未成年学习者（无血腥、裸露、伤亡特写）；图上的文字或画法不误导（例如把示意画当成实拍）。同样合适时优先 source=commons。设计员看不到图、也改不了图：图片的问题（不够清楚、没有标注、拍得不典型、带外文标注）只用选别的候选或填 null 解决，不判 revise，也不让 labels_clear、not_misleading 因此为 false；labels_clear 只看 label、points、steps 这些文字。只有文字写错（factual_error）、需求不符（request_mismatch，例如要讲原理或变化而 companion 不是 scene、process、diagram、linear_function）才判 revise。至少一格选中才能 pass。非 gallery 的图 choices 不输出。
 - illustration：只检查绘制指令与外观需求是否匹配，不断言像素内容正确。prompt 不得要求画文字，不得涉及真实可识别人物、受版权保护的角色或商标、血腥或性相关内容，须适合未成年学习者。用 illustration 解释原理、结构或步骤时判 revise。
 
 ## 判定（程序会校验一致性，矛盾的结果会被作废）

@@ -181,7 +181,9 @@ def create_pipeline(*, client=None, data_dir=None, public_base_url=None, native_
         directory = SRC_DIR / directory
     directory.mkdir(parents=True, exist_ok=True)
     artifacts = _artifact_store(directory, public_base_url, credential)
-    from learning_coach.adapters.illustrate import generate_image
+    from learning_coach.adapters.illustrate import generate_image, use_credential
+    if credential is not None:
+        use_credential(credential)
 
     encoder()  # load the tokenizer once at startup, not inside the first turn
 

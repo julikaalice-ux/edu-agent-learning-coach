@@ -18,7 +18,7 @@ from learning_coach.domain.note_contracts import ERROR_LABELS, NOTES_SCHEMA, SCH
 from learning_coach.domain.visual_contracts import VISUAL_SCHEMA
 from learning_coach.domain.routing import (EXPLAIN_INTENTS, INTENT_CHAT, INTENT_PRACTICE, INTENT_UNCLEAR,
                       QUIZ_INTENTS, conservative_participant, empty_results, execution_order,
-                      recover_explicit_visual_route,
+                      explicit_visual_quote, recover_explicit_visual_route,
                       recover_practice_route,
                       recover_quiz_route, require_finished, select_tools)
 from learning_coach.service.execution import BUDGET, CALL_RESERVE, CallBudget, StageFailure
@@ -404,6 +404,10 @@ class LearningPipeline:
             "state": visible_state, "memory": memory_view,
             "memory_enabled": memory_enabled, "first_meeting": first_meeting,
         }
+        if explicit_visual_quote(text) is not None:
+            # Said up front: a full direct answer here would only be thrown
+            # away by the visual route repair below (about 20 s of writing).
+            decide_input["visual_required"] = True
         decision = validate(await self.runner("coordinator", decide_input, self.decision_schema),
                             self.decision_schema)
         context["notes"], note_problems = accept_notes(
@@ -674,7 +678,9 @@ class LearningPipeline:
             quality, failure = visual_context.get("quality") or {}, visual_context.get("failure") or {}
             state["last_execution"]["visual"] = {
                 "kind": visual_context.get("kind"), "status": visual_context.get("status"),
-                "drafts": quality.get("attempts", failure.get("attempts")), "failure": failure.get("code")}
+                "drafts": quality.get("attempts", failure.get("attempts")), "failure": failure.get("code"),
+                # Reviewer/program issues behind a failure (model-written review text, no learner content).
+                "issues": [f"{issue['code']}: {issue['message']}" for issue in failure.get("issues", [])][:6]}
         if repair_kind:
             state["last_execution"]["routing_repaired"] = repair_kind
         return output, state

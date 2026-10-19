@@ -58,6 +58,13 @@ _CREDENTIAL = None
 _TOKEN = None
 
 
+def use_credential(credential) -> None:
+    """Share the app's credential, so pictures do not sign in a second time."""
+    global _CREDENTIAL, _TOKEN
+    with _TOKEN_LOCK:
+        _CREDENTIAL, _TOKEN = credential, None
+
+
 def _flux_token() -> str:
     """One credential and one cached token for every picture.
 

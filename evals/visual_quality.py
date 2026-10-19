@@ -98,7 +98,8 @@ async def run_case(pipeline, recorder, case, runs):
         elapsed_ms = round((perf_counter() - started) * 1000)
         records = recorder.take()
         visual_ms, stages, visual_in, visual_out = collect(records)
-        visual = ((state or {}).get("last_execution") or {}).get("visual") or {}
+        execution = (state or {}).get("last_execution") or {}
+        visual = execution.get("visual") or {}
         attempts = visual.get("drafts") or 0
         token = LINK.search(output.get("message", ""))
         published = False
@@ -111,6 +112,9 @@ async def run_case(pipeline, recorder, case, runs):
             "case_id": case["id"], "run": run, "elapsed_ms": elapsed_ms,
             "visual_ms": visual_ms, "attempts": attempts, "stages_ms": stages,
             "visual_kind": visual.get("kind"), "visual_failure": visual.get("failure"),
+            "visual_issues": visual.get("issues") or [],
+            # Set when the coordinator answered directly and the program had to redo the route.
+            "routing_repaired": execution.get("routing_repaired"),
             "visual_input_tokens": visual_in, "visual_output_tokens": visual_out,
             "success": not error and token is not None and published,
             "error": error, "fallback": FALLBACK_TEXT in output["message"],
@@ -126,10 +130,14 @@ async def run_case(pipeline, recorder, case, runs):
         rows[-1]["calls"] = [{key: record.get(key) for key in ("role", "phase", "attempt", "outcome", "elapsed_ms")}
                              for record in records]
         shares = "，".join(f"{name} {ms / 1000:.1f}s" for name, ms in {**stages, **others}.items() if ms)
+        if rows[-1]["routing_repaired"]:
+            shares += f"；路由被程序改过（{rows[-1]['routing_repaired']}）"
         print(f"{case['id']} run={run}: {'OK' if rows[-1]['success'] else 'FAIL'} "
               f"({elapsed_ms / 1000:.1f}s；{shares or '没有画图'}；{attempts} 稿；"
               f"{visual.get('kind') or '-'}{'，失败：' + visual['failure'] if visual.get('failure') else ''})",
               flush=True)
+        for issue in rows[-1]["visual_issues"]:
+            print(f"    问题：{issue[:200]}", flush=True)
     return rows
 
 
@@ -218,6 +226,7 @@ async def main():
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--runs", type=int, default=3, help="runs per case (default 3)")
     parser.add_argument("--cases", default=str(Path(__file__).with_name("visual_cases.jsonl")))
+    parser.add_argument("--only", default="", help="只跑这些用例，逗号分隔，如 VISQ-CELLS,VISQ-PHOTO")
     args = parser.parse_args()
 
     os.environ["LEARNING_COACH_ONBOARDING"] = "0"
@@ -241,6 +250,9 @@ async def main():
     recorder = Recorder()
     pipeline = create_pipeline(stage_observer=recorder)
     cases = load_cases(args.cases)
+    if args.only:
+        wanted = {name.strip() for name in args.only.split(",") if name.strip()}
+        cases = [case for case in cases if case["id"] in wanted]
     rows = []
     try:
         for case in cases:

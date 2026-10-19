@@ -241,6 +241,11 @@ def _visual_quote(learner_text):
     return None
 
 
+def explicit_visual_quote(learner_text):
+    """The learner's own words that ask for a picture or a demonstration, or None."""
+    return _visual_quote(learner_text)
+
+
 def recover_explicit_visual_route(decision, learner_text):
     """An explicit diagram/chart request must not be answered with plain text.
 

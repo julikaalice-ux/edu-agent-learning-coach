@@ -43,17 +43,27 @@ MAX_REVIEW_IMAGES = 12
 IMAGE_SEARCH_TIMEOUT = 20
 
 
-async def find_pictures(finder: ImageFinder, spec: dict) -> list[list[dict]]:
-    """Candidates for every gallery panel, searched in parallel; a failed panel gets []."""
+async def find_pictures(finder: ImageFinder, spec: dict, cache: dict | None = None) -> list[list[dict]]:
+    """Candidates for every gallery panel, searched in parallel; a failed panel gets [].
+
+    cache (optional, per turn) keeps results by query, so a redraw that only
+    fixed its text does not search the web again.
+    """
     panels = spec["panels"]
     per_panel = max(1, min(3, MAX_REVIEW_IMAGES // len(panels)))
 
     async def one(panel):
+        key = (panel["query_zh"], panel["query_en"], per_panel)
+        if cache is not None and key in cache:
+            return cache[key]
         try:
-            return await asyncio.wait_for(finder.find(panel["query_zh"], panel["query_en"], limit=per_panel),
-                                          timeout=IMAGE_SEARCH_TIMEOUT)
+            found = await asyncio.wait_for(finder.find(panel["query_zh"], panel["query_en"], limit=per_panel),
+                                           timeout=IMAGE_SEARCH_TIMEOUT)
         except Exception:  # noqa: BLE001 - search is optional; a failed panel just has no pictures
             return []
+        if cache is not None:
+            cache[key] = found
+        return found
     found = await asyncio.gather(*(one(panel) for panel in panels))
     return [list(options)[:per_panel] for options in found]
 
@@ -98,10 +108,14 @@ class VisualGenerationService:
         if research is not None and research.get("overall") != "verified":
             return None, unavailable_visual("research_unverified", _issue(
                 "insufficient_evidence", "当前检索资料未完成核实，不能据此绘制确定结论。"))
+        return await self._attempts(session_id, payload, research, learner_text)
+
+    async def _attempts(self, session_id, payload, research, learner_text):
         # Decided before drafting, so the designer is told up front instead of
         # having a whole draft rejected afterwards.
         explanatory = needs_explanatory_visual(payload["goal"], learner_text)
         gallery_allowed = self.image_finder is not None
+        self._found = {}  # pictures already found this turn, reused by a redraw
         previous_spec, issues = None, []
         for attempt in range(1, 3):
             self.drafts = attempt
@@ -227,7 +241,7 @@ class VisualGenerationService:
         except (RuntimeError, OSError, StorageError):
             return "done", (None, unavailable_visual("render_unavailable", _issue(
                 "render_invalid", "本次图示渲染服务不可用。"), attempt))
-        found = await find_pictures(self.image_finder, spec)
+        found = await find_pictures(self.image_finder, spec, cache=getattr(self, "_found", None))
         if not any(found):
             return "no_pictures", _issue("request_mismatch",
                 "没有找到可用的网络图片；这一稿请不要再用 gallery，改用程序画的图（diagram、comparison、process 或 scene）。")

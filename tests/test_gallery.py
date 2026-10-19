@@ -224,6 +224,36 @@ class GalleryServiceTests(unittest.IsolatedAsyncioTestCase):
 
 
 class FasterVisualFlowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_explicit_picture_request_is_flagged_to_the_coordinator(self):
+        temp = tempfile.TemporaryDirectory()
+        store = LearningStore(Path(temp.name) / "notes.sqlite3")
+        try:
+            for text, flagged in (("画一个结构图展示三角形的分类", True), ("三角形怎么分类？", False)):
+                runner = FakeRunner([plan()])
+                await LearningPipeline(runner, FakeResearch(), store, FakeArtifacts(), RESPONSE_SCHEMA).run(
+                    messages(text), session_id=text)
+                with self.subTest(text=text):
+                    self.assertEqual(runner.calls_for("coordinator", "decide")[0].get("visual_required", False),
+                                     flagged)
+        finally:
+            store.close()
+            temp.cleanup()
+
+    async def test_a_redraw_reuses_the_pictures_already_found(self):
+        temp = tempfile.TemporaryDirectory()
+        try:
+            finder = FakeFinder([[picture()], [picture()]])
+            runner = GalleryRunner(visuals=[gallery("植物细胞"), gallery("植物细胞")],
+                                   gallery_reviews=[gallery_review(["p0c0"], verdict="revise"),
+                                                    gallery_review(["p0c0"])])
+            artifacts = ArtifactStore(Path(temp.name) / "artifacts", renderer=render_visual)
+            artifact, _ = await VisualGenerationService(runner, artifacts, image_finder=finder).generate(
+                "s", {"goal": "看看植物细胞", "research": None}, learner_text="看看植物细胞")
+            self.assertIsNotNone(artifact)
+            self.assertEqual(len(finder.calls), 1)
+        finally:
+            temp.cleanup()
+
     async def test_ai_picture_is_generated_only_after_its_review_passes(self):
         picture_spec = {"kind": "illustration", "title": "超市", "prompt": "a supermarket", "alt": "超市"}
         calls = []
@@ -389,6 +419,25 @@ class FluxTokenTests(unittest.TestCase):
             self.assertEqual([illustrate._flux_token() for _ in range(3)], ["t", "t", "t"])
             self.assertEqual(len(built), 1)
             self.assertEqual(built[0].calls, 1)
+
+
+class SharedCredentialTests(unittest.TestCase):
+    def test_pictures_use_the_apps_credential_when_given(self):
+        from learning_coach.adapters import illustrate
+
+        class Token:
+            token, expires_on = "shared", 10 ** 12
+
+        class Credential:
+            def get_token(self, scope):
+                return Token()
+
+        def no_new_sign_in():
+            raise AssertionError("must not build a second credential")
+        with mock.patch.object(illustrate, "DefaultAzureCredential", no_new_sign_in), \
+                mock.patch.object(illustrate, "_CREDENTIAL", None), mock.patch.object(illustrate, "_TOKEN", None):
+            illustrate.use_credential(Credential())
+            self.assertEqual(illustrate._flux_token(), "shared")
 
 
 class TimingReportTests(unittest.IsolatedAsyncioTestCase):
