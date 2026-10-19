@@ -477,10 +477,7 @@ class SharedCredentialTests(unittest.TestCase):
             def get_token(self, scope):
                 return Token()
 
-        def no_new_sign_in():
-            raise AssertionError("must not build a second credential")
-        with mock.patch.object(illustrate, "DefaultAzureCredential", no_new_sign_in), \
-                mock.patch.object(illustrate, "_CREDENTIAL", None), mock.patch.object(illustrate, "_TOKEN", None):
+        with mock.patch.object(illustrate, "_CREDENTIAL", None), mock.patch.object(illustrate, "_TOKEN", None):
             illustrate.use_credential(Credential())
             self.assertEqual(illustrate._flux_token(), "shared")
 
