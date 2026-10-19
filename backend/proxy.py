@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -33,6 +34,14 @@ DEFAULT_ARTIFACT_BASE = "https://eduartifacts5044621b.blob.core.windows.net/arti
 ARTIFACT_BASE = os.environ.get("ARTIFACT_BLOB_URL", DEFAULT_ARTIFACT_BASE).rstrip("/")
 ARTIFACT_TOKEN = re.compile(r"[A-Za-z0-9_-]{16,64}")
 MAX_ARTIFACT_BYTES = 16 * 1024 * 1024   # a picture page with several photos stays well below this
+# What a visual page may do inside the demo page; the Space sends the same.
+# No X-Frame-Options: the demo page itself is often shown in a frame of
+# another site (huggingface.co, modelscope.cn), and a same-origin rule then
+# blocks the visual. The page holds public teaching material only.
+ARTIFACT_POLICY = ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+                   "img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'; sandbox allow-scripts")
+ARTIFACT_ROUTE = re.compile(r"/artifact/([A-Za-z0-9_-]+)(/image)?")
+DATA_IMAGE = re.compile(r"data:image/[a-z]+;base64,[A-Za-z0-9+/=]+")
 TOKEN_LOCK = threading.Lock()
 _TOKEN = {"value": None, "expires": 0}
 
@@ -106,6 +115,32 @@ def fetch_artifact(token: str) -> str | None:
     if len(data) > MAX_ARTIFACT_BYTES:
         raise RuntimeError("artifact_too_large")
     return data.decode("utf-8")
+
+
+def artifact_reply(path: str):
+    """(status, content type, body) for /artifact/<token> and /artifact/<token>/image; None for other paths.
+
+    Local runs (vite + this proxy) need the same route as the Space: the
+    page shows a visual in a frame from /artifact/<token>, and a question
+    picture from /artifact/<token>/image.
+    """
+    match = ARTIFACT_ROUTE.fullmatch(path)
+    if match is None:
+        return None
+    try:
+        document = fetch_artifact(match.group(1))
+    except Exception as error:
+        code = str(error) if isinstance(error, RuntimeError) else type(error).__name__
+        return 502, "application/json", json.dumps({"error": code}).encode()
+    if document is None:
+        return 404, "application/json", b'{"error": "not_found"}'
+    if not match.group(2):
+        return 200, "text/html; charset=utf-8", document.encode()
+    found = DATA_IMAGE.search(document)
+    if found is None:
+        return 404, "application/json", b'{"error": "not_found"}'
+    media_type, data = found.group(0)[len("data:"):].split(";base64,", 1)
+    return 200, media_type, base64.b64decode(data)
 
 
 def call(path: str, body: dict | None = None, method: str | None = None) -> dict:
@@ -216,7 +251,21 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/health":
             self._reply(200, {"ok": True})
             return
-        self._reply(404, {"error": "not_found"})
+        artifact = artifact_reply(urllib.parse.urlsplit(self.path).path)
+        if artifact is None:
+            self._reply(404, {"error": "not_found"})
+            return
+        status, content_type, body = artifact
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        if content_type.startswith("text/html"):
+            self.send_header("Content-Security-Policy", ARTIFACT_POLICY)
+        self.end_headers()
+        self.wfile.write(body)
 
     def do_POST(self):
         if self.path != "/turn":

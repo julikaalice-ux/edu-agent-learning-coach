@@ -802,11 +802,12 @@ def run_combined(port: int) -> None:
             return JSONResponse(status_code=502, content={"error": proxy_error(error)})
         if document is None:
             return JSONResponse(status_code=404, content={"error": "not_found"})
+        # No X-Frame-Options (see proxy.ARTIFACT_POLICY): opened through
+        # huggingface.co or modelscope.cn, this page is itself in a frame of
+        # another site, and a same-origin rule left the visual blank.
         return HTMLResponse(document, headers={
             "Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
-            "X-Content-Type-Options": "nosniff", "X-Frame-Options": "SAMEORIGIN",
-            "Content-Security-Policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
-                                       "img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'; sandbox allow-scripts",
+            "X-Content-Type-Options": "nosniff", "Content-Security-Policy": space_proxy.ARTIFACT_POLICY,
         })
 
     @fastapi_app.get("/artifact/{token}/image")

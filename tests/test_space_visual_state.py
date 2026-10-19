@@ -622,6 +622,31 @@ class SpaceArtifactTests(SpaceTestBase):
         self.assertEqual(seen, [proxy.ARTIFACT_BASE + "/" + "t" * 32 + ".html"])
 
 
+    def test_local_proxy_serves_the_visual_routes_the_page_uses(self):
+        proxy_spec = importlib.util.spec_from_file_location("proxy_route_test", ROOT / "backend/proxy.py")
+        proxy = importlib.util.module_from_spec(proxy_spec)
+        proxy_spec.loader.exec_module(proxy)
+        pages = {"p" * 32: '<html><img src="data:image/png;base64,iVBORw0KGgo="></html>', "q" * 32: "<html>图</html>"}
+
+        def fetch(token):
+            if token == "f" * 32:
+                raise RuntimeError("artifact_http_409")
+            return pages.get(token)
+        with patch.object(proxy, "fetch_artifact", fetch):
+            self.assertEqual(proxy.artifact_reply("/artifact/" + "q" * 32),
+                             (200, "text/html; charset=utf-8", "<html>图</html>".encode()))
+            self.assertEqual(proxy.artifact_reply("/artifact/" + "p" * 32 + "/image"),
+                             (200, "image/png", b"\x89PNG\r\n\x1a\n"))
+            self.assertEqual(proxy.artifact_reply("/artifact/" + "q" * 32 + "/image")[0], 404)
+            self.assertEqual(proxy.artifact_reply("/artifact/" + "x" * 32)[0], 404)
+            self.assertEqual(proxy.artifact_reply("/artifact/" + "f" * 32),
+                             (502, "application/json", b'{"error": "artifact_http_409"}'))
+            self.assertIsNone(proxy.artifact_reply("/turn"))
+            self.assertIsNone(proxy.artifact_reply("/artifact/../secret"))
+        # Shown inside a page that may itself sit in another site's frame.
+        self.assertNotIn("frame-ancestors", proxy.ARTIFACT_POLICY)
+
+
 class SpaceTurnTimingTests(SpaceTestBase):
     def test_turn_timing_logs_step_times_only(self):
         timer = self.app.TurnTimer()
