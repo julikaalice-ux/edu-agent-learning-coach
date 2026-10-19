@@ -242,15 +242,16 @@ class TeachingVisualPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("PRIVATE_PROVIDER", output["message"])
         self.assertEqual(runner.calls_for("coordinator", "respond")[0]["visual_context"]["failure"]["code"], "review_unavailable")
 
-    async def test_unverified_research_blocks_design_and_review(self):
-        self.research = FakeResearch({"overall": "likely", "sources": [], "claims": []})
+    async def test_unverified_research_never_reaches_the_drawing_which_uses_basic_knowledge_only(self):
+        self.research = FakeResearch({"overall": "likely", "sources": [{"id": "s1", "title": "未核实", "url": "https://example.org/a"}],
+                                      "claims": [{"text": "未核实的说法", "status": "likely"}]})
         runner = FakeRunner([plan(visual_request="解释资料", research_query="查证资料")])
         _, state = await self.pipeline(runner).run(messages("查证后画图"), session_id="s")
-        self.assertEqual(runner.calls_for("visualizer"), [])
-        self.assertEqual(runner.calls_for("verifier"), [])
-        self.assertEqual(self.artifacts.prepared, [])
-        self.assertEqual(state["last_execution"]["tools"]["visual"], "unavailable")
-        self.assertEqual(runner.calls_for("coordinator", "respond")[0]["visual_context"]["failure"]["code"], "research_unverified")
+        self.assertIsNone(runner.calls_for("visualizer")[0]["research"])
+        self.assertIsNone(runner.calls_for("verifier", "visual_review")[0]["research"])
+        self.assertEqual(state["last_execution"]["tools"]["visual"], "published")
+        context = runner.calls_for("coordinator", "respond")[0]["visual_context"]
+        self.assertIn("没有核实成功", "".join(context["limitations"]))
 
     async def test_non_visual_answer_still_finishes_in_one_call(self):
         runner = FakeRunner([direct_decision()])

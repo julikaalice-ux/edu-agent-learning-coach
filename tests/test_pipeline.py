@@ -813,15 +813,16 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("SECRET", json.dumps(output))
                 self.assertEqual(self.store.snapshot("s")["profile"], {})
 
-    async def test_unavailable_research_adds_uncertainty_and_prevents_visual(self):
+    async def test_unavailable_research_adds_uncertainty_and_keeps_the_visual_to_basics(self):
         research = FakeResearch({"overall": "unavailable", "sources": [], "claims": []})
         runner = FakeRunner([plan(research_query="一个待核实知识点", visual_request="画出结论")])
         output, _ = await self.pipeline(runner, research).run(messages("解释一下"), session_id="s", turn_id="1")
         self.assert_protocol(output)
         self.assertIn("未完成检索验证", output["message"])
-        self.assertIn("未生成可用的互动图", output["message"])
-        self.assertEqual(runner.calls_for("visualizer"), [])
-        self.assertEqual(self.artifacts.committed, [])
+        self.assertIn("打开互动图", output["message"])
+        self.assertIsNone(runner.calls_for("visualizer")[0]["research"])
+        context = runner.calls_for("coordinator", "respond")[0]["visual_context"]
+        self.assertIn("只画了稳定的基础知识", "".join(context["limitations"]))
 
     async def test_invalid_visual_spec_is_not_published(self):
         runner = FakeRunner([plan(visual_request="展示关系")], visuals=[

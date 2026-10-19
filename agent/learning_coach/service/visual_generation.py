@@ -105,10 +105,18 @@ class VisualGenerationService:
 
     async def _generate(self, session_id: str, payload: dict, *, learner_text: str):
         research = payload.get("research")
-        if research is not None and research.get("overall") != "verified":
-            return None, unavailable_visual("research_unverified", _issue(
-                "insufficient_evidence", "当前检索资料未完成核实，不能据此绘制确定结论。"))
-        return await self._attempts(session_id, payload, research, learner_text)
+        unverified = research is not None and research.get("overall") != "verified"
+        if unverified:
+            # Unverified material never reaches the designer or the reviewer:
+            # the visual is drawn from stable basic knowledge only (the
+            # designer's rule for research=null) and says so, instead of the
+            # whole visual failing after the learner waited for the search.
+            payload = {**payload, "research": None}
+            research = None
+        artifact, context = await self._attempts(session_id, payload, research, learner_text)
+        if unverified and artifact is not None:
+            context["limitations"].append("本轮检索资料没有核实成功，图里只画了稳定的基础知识，没有用检索到的说法。")
+        return artifact, context
 
     async def _attempts(self, session_id, payload, research, learner_text):
         # Decided before drafting, so the designer is told up front instead of

@@ -210,14 +210,15 @@ class DirectRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(runner.calls_for("coordinator", "decide")), 1)
         self.assertEqual(len(runner.calls_for("coordinator", "respond")), 1)
         self.assertEqual(runner.calls_for("notes"), [])
-        self.assertEqual(runner.calls_for("visualizer"), [])
+        # The failed search does not reach the drawing, which uses basic knowledge only.
+        self.assertIsNone(runner.calls_for("visualizer")[0]["research"])
         self.assertEqual(len(research.calls), 1)
         statuses = state["last_execution"]["tools"]
         self.assertEqual(statuses["research"], "unavailable")
         self.assertEqual(statuses["notes"], "deferred")
-        self.assertEqual(statuses["visual"], "unavailable")
+        self.assertEqual(statuses["visual"], "published")
 
-    async def test_limited_sources_are_disclosed_without_visual_fanout(self):
+    async def test_limited_sources_are_disclosed_and_kept_out_of_the_visual(self):
         for status in ("likely", "disputed", "unavailable"):
             with self.subTest(status=status):
                 text = "查证一下，再画图解释"
@@ -226,9 +227,10 @@ class DirectRoutingTests(unittest.IsolatedAsyncioTestCase):
                 output, state = await self.pipeline(runner, research).run(messages(text), session_id=status)
                 self.assert_wire(output)
                 self.assertEqual(state["last_execution"]["tools"]["research"], status)
-                self.assertEqual(state["last_execution"]["tools"]["visual"], "unavailable")
+                self.assertEqual(state["last_execution"]["tools"]["visual"], "published")
                 self.assertEqual(len(research.calls), 1)
-                self.assertEqual(runner.calls_for("visualizer"), [])
+                self.assertEqual(len(runner.calls_for("visualizer")), 1)
+                self.assertIsNone(runner.calls_for("visualizer")[0]["research"])
                 self.assertEqual(len(runner.calls_for("coordinator", "respond")), 1)
                 self.assertIn({"likely": "证据有限", "disputed": "来源存在冲突", "unavailable": "未完成检索验证"}[status], output["message"])
 
