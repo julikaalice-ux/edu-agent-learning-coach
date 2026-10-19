@@ -115,7 +115,9 @@ class StructuredRunner:
                 outcome = "invalid_output"
                 invalid_at = schema_problem(getattr(response, "text", None), requested_schema)
                 LOG.info("agent_stage_invalid role=%s attempt=%s at=%s", role, attempt + 1, invalid_at)
-                request["format_correction"] = "上次输出未通过结构校验。仅返回符合 output_schema 的 JSON；不附围栏。"
+                where = f"（出错位置：{invalid_at}）" if invalid_at and invalid_at != "invalid_json" else ""
+                request["format_correction"] = (f"上次输出未通过结构校验{where}。仅返回符合 output_schema 的 JSON；"
+                                                "数组长度、取值范围和必填字段以 schema 为准；不附围栏。")
             except Exception as error:
                 outcome = "provider_or_timeout_failure"
                 # Never log provider exceptions: they can contain requests or credentials.

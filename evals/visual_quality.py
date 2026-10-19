@@ -171,7 +171,8 @@ async def run_case(pipeline, recorder, case, runs):
         # Only codes and timings, never content: enough to see where a slow turn went.
         rows[-1]["calls"] = [{key: record.get(key) for key in ("role", "phase", "attempt", "outcome", "elapsed_ms",
                                                               "input_token_count", "output_token_count",
-                                                              "results", "invalid_at") if key in record}
+                                                              "results", "invalid_at", "query", "listed",
+                                                              "retried", "downloaded", "paused") if key in record}
                              for record in records]
         rows[-1]["visual_history"] = visual.get("history") or []
         rows[-1]["throttle"] = throttle
@@ -191,7 +192,10 @@ async def run_case(pipeline, recorder, case, runs):
             if call.get("invalid_at"):
                 print(f"    {call['role']} 输出格式不对：{call['invalid_at']}", flush=True)
             if call.get("role") == "image_search" and not call.get("results"):
-                print("    有一格没找到网络图片", flush=True)
+                print(f"    有一格没找到网络图片：搜「{call.get('query', '')}」，候选 {call.get('listed', '?')} 个，"
+                      f"下载成功 {call.get('downloaded', '?')} 张"
+                      + (f"，重试用「{call['retried']}」" if call.get("retried") else "")
+                      + (f"，暂停中的来源 {call['paused']}" if call.get("paused") else ""), flush=True)
     return rows
 
 

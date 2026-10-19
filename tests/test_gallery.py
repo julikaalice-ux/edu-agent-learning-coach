@@ -454,6 +454,14 @@ class ImageSearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(found), 1)
         self.assertEqual(image_search.simpler_query("plant cell"), "")
 
+    async def test_the_finder_reports_what_happened_for_the_evaluation(self):
+        with mock.patch.object(image_search, "commons_candidates", return_value=[]):
+            stats = {}
+            found = await image_search.WebImageFinder().find("植物细胞", "plant cell under light microscope",
+                                                             stats=stats)
+        self.assertEqual(found, [])
+        self.assertEqual((stats["listed"], stats["downloaded"], stats["retried"]), (0, 0, "plant cell light"))
+
     async def test_an_unreachable_source_is_skipped_for_a_while(self):
         calls = []
 

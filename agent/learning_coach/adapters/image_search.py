@@ -195,7 +195,12 @@ class WebImageFinder:
         self._bocha_api_key = bocha_api_key
         self._paused_until = {}
 
-    async def find(self, query_zh: str, query_en: str, *, limit: int = 3) -> list[dict]:
+    reports_stats = True
+
+    async def find(self, query_zh: str, query_en: str, *, limit: int = 3, stats: dict | None = None) -> list[dict]:
+        """stats (optional) receives counts for evaluations: listed, retried, downloaded."""
+        stats = stats if stats is not None else {}
+
         async def safely(name, function, *args):
             if self._paused_until.get(name, 0) > time.monotonic():
                 return []
@@ -213,7 +218,10 @@ class WebImageFinder:
         if not listed and shorter:
             # Long, specific search words often match nothing on Commons; try the core words once.
             listed = await safely("commons", commons_candidates, shorter, limit)
+            stats["retried"] = shorter
         listed = listed[:limit + 2]
+        stats["listed"] = len(listed)
+        stats["paused"] = sorted(name for name, until in self._paused_until.items() if until > time.monotonic())
 
         async def fetch(item):
             for url in (item["url"], item.get("fallback_url")):
@@ -228,7 +236,9 @@ class WebImageFinder:
                 return {**picture, "data": data, "media_type": media_type}
             return None
         pictures = await asyncio.gather(*(fetch(item) for item in listed))
-        return [picture for picture in pictures if picture is not None][:limit]
+        found = [picture for picture in pictures if picture is not None][:limit]
+        stats["downloaded"] = len(found)
+        return found
 
 
 def default_image_finder() -> WebImageFinder | None:

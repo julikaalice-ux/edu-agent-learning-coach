@@ -30,7 +30,7 @@ _DRAWN = [
                   "items": _object({"title": _text(80), "description": _text(600)})},
     }),
     _variant("flashcards", {
-        "cards": {"type": "array", "minItems": 1, "maxItems": 12,
+        "cards": {"type": "array", "minItems": 1, "maxItems": 20,
                   "items": _object({"front": _text(300), "back": _text(800)})},
     }),
     _variant("linear_function", {

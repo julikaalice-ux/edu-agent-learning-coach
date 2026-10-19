@@ -129,13 +129,15 @@ def _timed_pictures(generate, finder, observer):
 
     class TimedFinder:
         async def find(self, query_zh, query_en, *, limit=3):
-            started, found = perf_counter(), None
+            started, found, stats = perf_counter(), None, {}
+            extra = {"stats": stats} if getattr(finder, "reports_stats", False) else {}
             try:
-                found = await finder.find(query_zh, query_en, limit=limit)
+                found = await finder.find(query_zh, query_en, limit=limit, **extra)
                 return found
             finally:
+                # The search words are the designer's, not the learner's; kept short.
                 report("image_search", "search", "ok" if found is not None else "failed", started,
-                       results=len(found or []))
+                       results=len(found or []), query=(query_en or "")[:80], **stats)
 
     return (timed_generate if generate is not None else None,
             TimedFinder() if finder is not None else None)

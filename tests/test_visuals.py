@@ -116,7 +116,7 @@ class RenderTests(unittest.TestCase):
         invalid = [
             {**EXAMPLES[0], "html": "<script>alert(1)</script>"},
             {**EXAMPLES[1], "steps": []},
-            {**EXAMPLES[2], "cards": EXAMPLES[2]["cards"] * 13},
+            {**EXAMPLES[2], "cards": EXAMPLES[2]["cards"] * 21},
             {**EXAMPLES[3], "slope": True},
             {**EXAMPLES[3], "slope": 11},
             {**EXAMPLES[3], "x_min": -21},

@@ -56,7 +56,7 @@
 只返回一个符合 VISUAL_SCHEMA 的 JSON 对象，不加 Markdown 围栏、说明或额外字段。所有文案都是纯文本，不含 HTML、Markdown、JavaScript、CSS、图片数据、URL 或可执行表达式。每次只选一种：
 - comparison：kind、title、left_label、right_label、rows（1–8 个 {aspect,left,right}）。
 - process：kind、title、steps（2–8 个 {title,description}）。
-- flashcards：kind、title、cards（1–12 个 {front,back}）。
+- flashcards：kind、title、cards（1–20 个 {front,back}；要的更多时先做前 20 张，在 title 里写明是第一组）。
 - linear_function：kind、title、slope（[-10,10]）、intercept、x_min、x_max（均 [-20,20]）；x_min < x_max，数值有限。
 - scene：kind、title、learning_goal、interaction_hint、check_question、limitations、frames（2–4 帧，每帧 title、explanation、elements；elements 1–20 项，只用 rect、ellipse、line、arrow、text、polyline；颜色只用固定 palette）。
 - illustration：kind、title、prompt、alt。
