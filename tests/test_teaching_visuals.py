@@ -130,6 +130,12 @@ class TeachingVisualPipelineTests(unittest.IsolatedAsyncioTestCase):
         context = runner.calls_for("coordinator", "respond")[0]["visual_context"]
         self.assertEqual(context["failure"]["attempts"], 2)
         self.assertEqual(context["failure"]["code"], "quality_not_accepted")
+        self.assertEqual(context["failure"]["reason"], "画了两稿，都没通过独立审阅")
+        # The reviewer's notes are written to the designer; the responder (and so the learner) never sees them.
+        self.assertNotIn("因果箭头方向反了", json.dumps(runner.calls_for("coordinator", "respond")[0],
+                                                     ensure_ascii=False))
+        # They stay in last_execution for evaluations and logs.
+        self.assertTrue(state["last_execution"]["visual"]["issues"])
         self.assertEqual(state["last_execution"]["tools"]["visual"], "unavailable")
 
     async def test_insufficient_facts_fail_without_inventing_a_second_draft(self):

@@ -51,6 +51,16 @@ RESEARCH_NOTES = {Evidence.UNAVAILABLE: "本次未取得可核查资料，未完
                   Evidence.LIKELY: "目前证据有限，尚未完成独立来源交叉核实。",
                   Evidence.DISPUTED: "来源存在冲突，相关说法不能当作确定结论。"}
 
+# What the responder is told when a visual was not published (data for the
+# coordinator, never the reviewer's notes to the designer).
+VISUAL_FAILURE_REASONS = {"quality_not_accepted": "画了两稿，都没通过独立审阅",
+                          "visual_timeout": "画图超过了这一轮的时间上限",
+                          "insufficient_evidence": "审阅认为依据不足，没有发布",
+                          "generation_unavailable": "画图服务这次不可用",
+                          "review_unavailable": "审图服务这次不可用",
+                          "render_unavailable": "图示渲染这次不可用"}
+VISUAL_FAILED_REASON = "这次没画成"
+
 NEXT_TOPIC = "接下来想学什么？"
 # The program's introduction when a first message already asks something.
 INTRO = "你好，我是你的学习教练，可以讲概念、陪你解题、出小题看看是不是学会了，需要时还能画图。"

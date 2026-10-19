@@ -37,8 +37,8 @@ from learning_coach.service.pipeline.state import (NOTES_FOR_QUESTIONS, NOTES_FO
                                                    mark_evidence, model_view, read_memory, record_quiz_result,
                                                    track_tasks)
 from learning_coach.service.pipeline.texts import (NOTES_OFFER, QUIZ_PICTURE_LINK, RESEARCH_NOTES, RESPONSE_VERSION,
-                                                   STEP_QUESTION, VISUAL_FAILED, VISUAL_LINK, question,
-                                                   render_question)
+                                                   STEP_QUESTION, VISUAL_FAILED, VISUAL_FAILED_REASON,
+                                                   VISUAL_FAILURE_REASONS, VISUAL_LINK, question, render_question)
 from learning_coach.service.ports import CallPhase, Role
 from learning_coach.service.visual_generation import VisualGenerationService
 
@@ -394,7 +394,7 @@ class Teacher:
             "research": research_digest(results.research), "quiz": quiz_view,
             "visual_status": (Status.READY if results.artifact else
                               Status.UNAVAILABLE if plan.tools["visual"] == Status.UNAVAILABLE else Status.NOT_REQUESTED),
-            "visual_context": results.visual_context,
+            "visual_context": responder_visual(results.visual_context),
             "memory_enabled": view.memory.enabled, "first_meeting": view.first_meeting,
             "tool_results": deepcopy(plan.tools),
         }
@@ -491,6 +491,21 @@ def attach_links(output, research, artifact, visual_failed, pictures):
         output["message"] += "\n\n" + VISUAL_FAILED
     for picture in pictures:
         output["message"] += f"\n\n[{QUIZ_PICTURE_LINK}]({picture['url']})"
+
+
+def responder_visual(visual_context):
+    """What the responder sees of the visual.
+
+    A failed visual keeps only its code, the number of drafts and a plain
+    reason: the review issues are instructions to the designer ("请把图的重点
+    收窄成……"), and a responder that saw them passed them on to the learner.
+    """
+    if not visual_context or visual_context.get("status") != Status.UNAVAILABLE:
+        return visual_context
+    failure = visual_context.get("failure") or {}
+    return {"status": Status.UNAVAILABLE, "description": visual_context.get("description"),
+            "failure": {"code": failure.get("code"), "attempts": failure.get("attempts"),
+                        "reason": VISUAL_FAILURE_REASONS.get(failure.get("code"), VISUAL_FAILED_REASON)}}
 
 
 def visual_report(visual_context) -> dict:
