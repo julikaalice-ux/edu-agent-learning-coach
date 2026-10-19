@@ -6,7 +6,11 @@ import { STAGE_OPTIONS, WHO_OPTIONS } from "../lib/api";
 const PART_PATTERN = /\[(打开互动图|看题目配图)\]\(\/artifact\/([A-Za-z0-9_-]+)\)|\[([^\]]+)\]\(([^)]+)\)/g;
 
 function MessageContent({ text }: { text: string }) {
-  const normalized = text.replace(/http:\/\/localhost:8088\/artifacts\//g, "/artifact/");
+  // Visual links from a local agent or from the hosted agent's public storage
+  // become this page's /artifact/<token> route, which serves either.
+  const normalized = text
+    .replace(/http:\/\/localhost:8088\/artifacts\//g, "/artifact/")
+    .replace(/https:\/\/[a-z0-9]+\.blob\.core\.windows\.net\/artifacts\/([A-Za-z0-9_-]+)\.html/g, "/artifact/$1");
   const nodes: ReactNode[] = [];
   let last = 0;
   let key = 0;
@@ -28,7 +32,7 @@ function MessageContent({ text }: { text: string }) {
         ) : (
           <img
             key={key++}
-            src={`/artifact/${match[2]}`}
+            src={`/artifact/${match[2]}/image`}
             alt="题目配图"
             className="mt-2 block max-h-80 rounded-xl border border-line bg-white"
           />

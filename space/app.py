@@ -28,6 +28,7 @@ artifact routes.
 from __future__ import annotations
 
 import asyncio
+import base64
 from contextlib import aclosing, suppress
 import hmac
 from html import escape
@@ -649,6 +650,15 @@ def build_app() -> gr.Blocks:
     return demo
 
 
+def page_picture(document) -> tuple[str, bytes] | None:
+    """(media type, bytes) of the picture embedded in an artifact page, or None."""
+    found = DATA_IMAGE.search(document or "")
+    if found is None:
+        return None
+    media_type, data = found.group(0)[len("data:"):].split(";base64,", 1)
+    return media_type, base64.b64decode(data)
+
+
 PROXY_CODE = re.compile(r"[a-z][a-z0-9_]{2,60}")
 
 
@@ -668,7 +678,7 @@ def run_combined(port: int) -> None:
     同目录的 proxy.py（build_space 从 backend/ 复制）。
     """
     from fastapi import FastAPI
-    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
     from fastapi.staticfiles import StaticFiles
     import uvicorn
 
@@ -727,9 +737,29 @@ def run_combined(port: int) -> None:
         except Exception as error:
             return JSONResponse(status_code=502, content={"error": proxy_error(error)})
 
+    # Visuals from this container's own pipeline (legacy UI), or else the ones
+    # the hosted agent published; a few recent pages are kept so the iframe and
+    # the picture route do not fetch the same page twice.
+    fetched = {}
+
+    async def artifact_document(token: str) -> str | None:
+        document = PIPELINE.artifacts.get(token)
+        if document is None and token in fetched:
+            document = fetched[token]
+        if document is None:
+            document = await asyncio.to_thread(space_proxy.fetch_artifact, token)
+            if document is not None:
+                fetched[token] = document
+                while len(fetched) > 16:
+                    fetched.pop(next(iter(fetched)))
+        return document
+
     @fastapi_app.get("/artifact/{token}")
     async def artifact(token: str):
-        document = PIPELINE.artifacts.get(token)
+        try:
+            document = await artifact_document(token)
+        except Exception as error:
+            return JSONResponse(status_code=502, content={"error": proxy_error(error)})
         if document is None:
             return JSONResponse(status_code=404, content={"error": "not_found"})
         return HTMLResponse(document, headers={
@@ -738,6 +768,19 @@ def run_combined(port: int) -> None:
             "Content-Security-Policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
                                        "img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'; sandbox allow-scripts",
         })
+
+    @fastapi_app.get("/artifact/{token}/image")
+    async def artifact_image(token: str):
+        """The picture inside a question-picture page, for an <img> in the chat."""
+        try:
+            document = await artifact_document(token)
+        except Exception as error:
+            return JSONResponse(status_code=502, content={"error": proxy_error(error)})
+        picture = page_picture(document)
+        if picture is None:
+            return JSONResponse(status_code=404, content={"error": "not_found"})
+        return Response(picture[1], media_type=picture[0], headers={
+            "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
 
     # 最后挂 Gradio 到根路径：平台健康检查依赖 /config、/gradio_api/*，
     # 且它不能吞掉上面已注册的 /、/assets、/turn、/artifact。

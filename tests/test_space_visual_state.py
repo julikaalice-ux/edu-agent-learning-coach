@@ -588,5 +588,39 @@ class SessionNotesTests(SpaceTestBase):
         self.assertEqual(set(self.pipeline.store.seen_keys), {session["session_id"]})
 
 
+class SpaceArtifactTests(SpaceTestBase):
+    def test_question_picture_is_taken_out_of_its_page(self):
+        page = '<html><img alt="x" src="data:image/png;base64,iVBORw0KGgo="></html>'
+        self.assertEqual(self.app.page_picture(page), ("image/png", b"\x89PNG\r\n\x1a\n"))
+        self.assertIsNone(self.app.page_picture("<html>no picture</html>"))
+        self.assertIsNone(self.app.page_picture(None))
+
+    def test_hosted_visuals_are_fetched_from_public_storage_only_by_token(self):
+        proxy_spec = importlib.util.spec_from_file_location("proxy_artifact_test", ROOT / "backend/proxy.py")
+        proxy = importlib.util.module_from_spec(proxy_spec)
+        proxy_spec.loader.exec_module(proxy)
+        seen = []
+
+        class Page:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self, limit):
+                return "<html>互动图</html>".encode()
+
+        def opener(url, timeout):
+            seen.append(url)
+            return Page()
+        with patch.object(proxy.urllib.request, "urlopen", opener):
+            self.assertEqual(proxy.fetch_artifact("t" * 32), "<html>互动图</html>")
+            # Anything that is not a plain token never reaches the network.
+            self.assertIsNone(proxy.fetch_artifact("../secret"))
+            self.assertIsNone(proxy.fetch_artifact("t" * 32 + "/../x"))
+        self.assertEqual(seen, [proxy.ARTIFACT_BASE + "/" + "t" * 32 + ".html"])
+
+
 if __name__ == "__main__":
     unittest.main()

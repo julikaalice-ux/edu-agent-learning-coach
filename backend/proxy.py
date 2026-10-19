@@ -27,6 +27,12 @@ DEFAULT_ENDPOINT = ("https://cog-c5e2qyhj2tb7g.services.ai.azure.com/api/project
                     "/agents/agent-framework-agent-with-local-tools-responses/endpoint"
                     "/protocols/openai")
 ENDPOINT = os.environ.get("AGENT_ENDPOINT", DEFAULT_ENDPOINT)
+# The hosted agent publishes its visuals here (anonymous read, cannot be listed;
+# the same container as LEARNING_COACH_ARTIFACT_BLOB_URL in azure.yaml).
+DEFAULT_ARTIFACT_BASE = "https://eduartifacts5044621b.blob.core.windows.net/artifacts"
+ARTIFACT_BASE = os.environ.get("ARTIFACT_BLOB_URL", DEFAULT_ARTIFACT_BASE).rstrip("/")
+ARTIFACT_TOKEN = re.compile(r"[A-Za-z0-9_-]{16,64}")
+MAX_ARTIFACT_BYTES = 16 * 1024 * 1024   # a picture page with several photos stays well below this
 TOKEN_LOCK = threading.Lock()
 _TOKEN = {"value": None, "expires": 0}
 
@@ -84,6 +90,22 @@ def get_token() -> str:
         _TOKEN["value"] = payload["accessToken"]
         _TOKEN["expires"] = int(payload["expires_on"])
         return _TOKEN["value"]
+
+
+def fetch_artifact(token: str) -> str | None:
+    """A visual the hosted agent published, as its HTML page; None when there is no such page."""
+    if not ARTIFACT_TOKEN.fullmatch(token or ""):
+        return None
+    try:
+        with urllib.request.urlopen(f"{ARTIFACT_BASE}/{token}.html", timeout=20) as response:
+            data = response.read(MAX_ARTIFACT_BYTES + 1)
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            return None
+        raise RuntimeError(f"artifact_http_{error.code}") from None
+    if len(data) > MAX_ARTIFACT_BYTES:
+        raise RuntimeError("artifact_too_large")
+    return data.decode("utf-8")
 
 
 def call(path: str, body: dict | None = None, method: str | None = None) -> dict:
