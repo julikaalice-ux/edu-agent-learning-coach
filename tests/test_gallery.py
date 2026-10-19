@@ -445,10 +445,21 @@ class FluxTokenTests(unittest.TestCase):
                 built.append(self)
                 self.calls = 0
 
-            def get_token(self, scope):
+            def get_token(self, scope, **kwargs):
                 self.calls += 1
                 return Token()
-        with mock.patch.object(illustrate, "DefaultAzureCredential", Credential), \
+        from learning_coach.adapters import scope_credential
+
+        class Unavailable:
+            def __init__(self, *args):
+                pass
+
+            def get_token(self, scope, **kwargs):
+                from azure.identity import CredentialUnavailableError
+                raise CredentialUnavailableError("no az cli in tests")
+
+        with mock.patch.object(scope_credential, "ScopeCliCredential", Unavailable), \
+                mock.patch("azure.identity.DefaultAzureCredential", Credential), \
                 mock.patch.object(illustrate, "_CREDENTIAL", None), mock.patch.object(illustrate, "_TOKEN", None):
             self.assertEqual([illustrate._flux_token() for _ in range(3)], ["t", "t", "t"])
             self.assertEqual(len(built), 1)

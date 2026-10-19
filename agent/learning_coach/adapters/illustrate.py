@@ -23,8 +23,6 @@ import time
 import urllib.parse
 import urllib.request
 
-from azure.identity import DefaultAzureCredential
-
 FLUX_SCOPE = "https://ai.azure.com/.default"
 TIMEOUT_SECONDS = 90
 DEFAULT_FLUX_DEPLOYMENT = "flux-2-pro"
@@ -76,7 +74,10 @@ def _flux_token() -> str:
     with _TOKEN_LOCK:
         if _TOKEN is None or _TOKEN.expires_on - time.time() < 300:
             if _CREDENTIAL is None:
-                _CREDENTIAL = DefaultAzureCredential()
+                # The scope-form CLI credential first: some tenants reject the
+                # resource form (AADSTS500011) while the scope form works.
+                from learning_coach.adapters.scope_credential import chained_credential
+                _CREDENTIAL = chained_credential(FLUX_SCOPE)
             _TOKEN = _CREDENTIAL.get_token(FLUX_SCOPE)
         return _TOKEN.token
 

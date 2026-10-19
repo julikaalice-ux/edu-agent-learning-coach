@@ -54,7 +54,10 @@ def _foundry_clients(endpoint: str, models: dict[str, str]) -> tuple[dict[str, F
     Also returns the shared credential so other platform-backed adapters
     (Foundry Memory) reuse it instead of building their own.
     """
-    credential = DefaultAzureCredential()
+    # The scope-form CLI credential goes first: some tenants intermittently
+    # reject the resource form (AADSTS500011) while the scope form works.
+    from learning_coach.adapters.scope_credential import chained_credential
+    credential = chained_credential()
     by_model = {model: FoundryChatClient(project_endpoint=endpoint, model=model, credential=credential)
                 for model in set(models.values())}
     return {role: by_model[model] for role, model in models.items()}, credential
@@ -170,7 +173,8 @@ def create_pipeline(*, client=None, data_dir=None, public_base_url=None, native_
         role_clients, credential = _foundry_clients(os.environ["FOUNDRY_PROJECT_ENDPOINT"], models)
         client = role_clients["coordinator"]
     elif client is None:
-        credential = DefaultAzureCredential()
+        from learning_coach.adapters.scope_credential import chained_credential
+        credential = chained_credential()
         model = (os.environ.get("LEARNING_COACH_MODEL_SINGLE", "").strip()
                  or os.environ["AZURE_AI_MODEL_DEPLOYMENT_NAME"])
         client = FoundryChatClient(project_endpoint=os.environ["FOUNDRY_PROJECT_ENDPOINT"], model=model,
