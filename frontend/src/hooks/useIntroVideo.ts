@@ -15,6 +15,7 @@ export function useIntroVideo(videoUrl: string) {
       video.pause();
       return;
     }
+    video.playbackRate = 0.65; // 慢放让画面更静、更「高级」
     void video.play().catch(() => {
       /* 自动播放被浏览器拦截时保持首帧，问候层仍然可读 */
     });

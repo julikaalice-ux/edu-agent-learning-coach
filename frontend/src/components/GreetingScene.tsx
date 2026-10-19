@@ -22,7 +22,8 @@ export function GreetingScene({ input, onInput, onSend }: GreetingSceneProps) {
         muted
         playsInline
       />
-      <div className="absolute inset-0 bg-gradient-to-b from-paper/60 via-paper/10 to-paper" />
+      {/* 按原规格：上下渐层，其余交给素材本身 */}
+      <div className="absolute inset-0 bg-gradient-to-b from-paper via-transparent to-paper" />
       <div className="relative z-10 flex h-full flex-col items-center justify-center px-6 text-center">
         <p className="animate-fade-rise text-sm tracking-[0.3em] text-moss">学习教练 · edu-agent</p>
         <h1 className="animate-fade-rise mt-6 max-w-3xl font-display text-5xl leading-snug text-ink sm:text-7xl">
