@@ -471,39 +471,131 @@ def check_access(request: gr.Request):
     return allowed, gr.update(visible=allowed), gr.update(visible=not allowed)
 
 
+COACH_CSS = """
+/* 学习教练 · edu-agent 演示页样式：自然元素色系（暖纸底 + 苔绿 + 鼠尾草）。
+   配色参考视觉参考库「打开画册」：底 #f3f1eb、主文字 #202721、链接绿 #2c6040、
+   辅助灰绿 #62715f、标签底 #e4eadf、卡片描边 #d9ded3、控件描边 #bbc5b5。 */
+.gradio-container { max-width: 880px !important; margin: 0 auto !important;
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei",
+        "Noto Sans SC", sans-serif !important; }
+body, .gradio-container { background: #f3f1eb !important; }
+
+/* 页头 */
+.coach-hero { text-align: center; padding: 26px 16px 10px; }
+.coach-hero-emoji { font-size: 44px; line-height: 1; margin-bottom: 8px; }
+.coach-hero h1 { font-size: 1.9em; margin: 0 0 6px; color: #202721; letter-spacing: .02em; }
+.coach-hero p { margin: 0 0 14px; color: #62715f; font-size: .98em; }
+.coach-hero-chips { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-bottom: 10px; }
+.coach-hero-chips span { background: #e4eadf; color: #2c6040;
+    border-radius: 6px; padding: 4px 12px; font-size: .86em; }
+.coach-hero-note { color: #62715f; font-size: .82em; }
+
+/* 对话气泡 */
+#coach-chat { border: 1px solid #d9ded3; border-radius: 12px; background: #fff;
+    box-shadow: 0 4px 18px rgba(32,39,33,.06); padding: 8px; }
+#coach-chat .message { gap: 8px; }
+#coach-chat .message .bubble-wrap { border-radius: 14px; padding: 10px 14px; line-height: 1.7; }
+#coach-chat .message.user .bubble-wrap, #coach-chat [data-testid="user"] .bubble-wrap {
+    background: linear-gradient(135deg, #2c6040, #264f36); color: #fff;
+    border-bottom-right-radius: 6px; }
+#coach-chat .message.bot .bubble-wrap, #coach-chat [data-testid="bot"] .bubble-wrap {
+    background: #faf9f5; color: #202721; border: 1px solid #d9ded3;
+    border-bottom-left-radius: 6px; }
+#coach-chat .message.user, #coach-chat [data-testid="user"] { justify-content: flex-end; }
+#coach-chat .message.bot, #coach-chat [data-testid="bot"] { justify-content: flex-start; }
+
+/* 选择按钮 */
+#coach-choices { gap: 8px; flex-wrap: wrap; }
+#coach-choices button { border-radius: 6px !important; background: #e4eadf !important;
+    border: 1px solid #c8d6c5 !important; color: #2c6040 !important;
+    padding: 6px 16px !important; font-size: .9em !important; min-height: 34px; }
+#coach-choices button:hover { background: #d8e4d2 !important; border-color: #9db79a !important; }
+
+/* 输入行 */
+#coach-composer { gap: 10px; align-items: end; }
+#coach-composer input, #coach-composer textarea {
+    border-radius: 8px !important; border: 1px solid #bbc5b5 !important;
+    padding: 12px 16px !important; background: #fff !important;
+    box-shadow: 0 1px 4px rgba(32,39,33,.05); }
+#coach-composer input:focus, #coach-composer textarea:focus { border-color: #63836d !important;
+    box-shadow: 0 0 0 3px rgba(99,131,109,.18) !important; }
+#coach-send, #coach-send button { border-radius: 8px !important; min-height: 44px !important;
+    padding: 0 24px !important; font-weight: 600; }
+
+/* 底部工具栏与说明 */
+#coach-toolbar { align-items: center; }
+#coach-reset, #coach-clear { border-radius: 6px !important; }
+.coach-footnote { color: #62715f !important; font-size: .82em; margin: 0; text-align: right; }
+
+/* 笔记面板 */
+#coach-notes { border: 1px solid #d9ded3 !important; border-radius: 12px !important;
+    background: #fff; box-shadow: 0 2px 10px rgba(32,39,33,.05); }
+
+/* 焦点可见性（参考库同款） */
+button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus-visible {
+    outline: 3px solid #63836d; outline-offset: 2px; }
+
+/* 移动端 */
+@media (max-width: 640px) {
+    .coach-hero { padding-top: 16px; }
+    .coach-hero h1 { font-size: 1.5em; }
+    .coach-footnote { text-align: left; }
+    #coach-chat { height: 60vh !important; }
+}
+"""
+
+
 def build_app() -> gr.Blocks:
-    with gr.Blocks(title="学习教练 · edu-agent") as demo:
-        gr.Markdown(
-            "# 学习教练 · edu-agent\n"
-            "多 agent 学习教练：意图编排 · 检索查证 · 出题判分 · 学习记忆 · 互动图与配图。\n\n"
-            "*Azure AI Foundry 驱动，无需登录即可体验。*"
+    theme = gr.themes.Soft(
+        primary_hue="blue", secondary_hue="teal", neutral_hue="slate",
+        radius_size="lg",
+    )
+    with gr.Blocks(title="学习教练 · edu-agent", theme=theme, css=COACH_CSS) as demo:
+        gr.HTML(
+            '<div class="coach-hero">'
+            '<div class="coach-hero-emoji">🎓</div>'
+            '<h1>学习教练 · edu-agent</h1>'
+            '<p>多 agent 学习教练：意图编排 · 检索查证 · 出题判分 · 学习记忆 · 互动图与配图</p>'
+            '<div class="coach-hero-chips">'
+            '<span>💡 讲概念</span><span>✍️ 陪解题</span><span>🧩 出小题</span><span>🖼️ 画图</span>'
+            '<span>🔍 查资料</span></div>'
+            '<div class="coach-hero-note">Azure AI Foundry 驱动 · 无需登录即可体验</div>'
+            "</div>"
         )
         locked_note = gr.Markdown(f"**{LOCKED_TEXT}**", visible=False)
         with gr.Column(visible=not ACCESS_KEY) as main:
-            chatbot = gr.Chatbot(label="对话", height=480, autoscroll=False, elem_id="coach-chat")
+            chatbot = gr.Chatbot(label="", height=540, autoscroll=False,
+                                 elem_id="coach-chat", placeholder=
+                                 "你好呀 👋 我是你的学习教练。\n\n"
+                                 "可以直接问我：\n"
+                                 "· 帮我解释一下什么是光合作用\n"
+                                 "· 给我出几道分数加减法的题\n"
+                                 "· 画一个对比 1/2 和 1/4 的互动图")
             panel = gr.HTML("", elem_id="coach-panel", css_template="""
-                .coach-visual { border: 1px solid #c7d8e3; border-radius: 12px; overflow: hidden; }
-                summary { cursor: pointer; padding: 12px 16px; font-weight: 600; }
-                summary span { float: right; font-size: 0.9em; font-weight: 400; }
+                .coach-visual { border: 1px solid #dbe7ee; border-radius: 16px; overflow: hidden;
+                                background: #fff; box-shadow: 0 2px 12px rgba(24,51,75,.06); }
+                summary { cursor: pointer; padding: 12px 16px; font-weight: 600; color: #18334b; }
+                summary span { float: right; font-size: 0.9em; font-weight: 400; color: #6b8394; }
                 details[open] .when-closed, details:not([open]) .when-open { display: none; }
-                iframe { display: block; max-width: 100%; }
+                iframe { display: block; max-width: 100%; border: none; }
             """)
             with gr.Row(elem_id="coach-choices"):
                 option_buttons = [gr.Button(visible=False, size="sm") for _ in range(MAX_OPTIONS)]
             with gr.Row(elem_id="coach-composer"):
                 input_box = gr.Textbox(
                     placeholder="问点什么，比如：帮我生成一个对比 1/2 和 1/4 的互动图",
-                    scale=9, label="")
+                    scale=9, label="", container=False, lines=1, max_lines=5)
                 send = gr.Button("发送", scale=1, variant="primary", elem_id="coach-send")
-            with gr.Row():
-                reset = gr.Button("新会话", elem_id="coach-reset")
+            with gr.Row(elem_id="coach-toolbar"):
+                reset = gr.Button("新会话", size="sm", elem_id="coach-reset")
                 if DEMO_STAGE:
-                    clear = gr.Button("清空演示数据", elem_id="coach-clear")
-                    gr.Markdown(f"**演示模式**：跳过了年龄和学习记录的询问，预设学段“{DEMO_STAGE}”，学习记录已开启。")
+                    clear = gr.Button("清空演示数据", size="sm", elem_id="coach-clear")
+                    gr.Markdown(f"<div class='coach-footnote'>演示模式：预设学段「{DEMO_STAGE}」，学习记录已开启。</div>")
                 else:
-                    gr.Markdown("每次打开页面都是一个新会话，不会保留之前的对话；本页开启的学习记录也只到本页关闭为止。"
-                                "第一次使用时会问学段和是否保存学习记录；之后随时可以说“开启记录”“关闭记录”“删除记录”。")
-            with gr.Accordion("我的笔记", open=False):
+                    gr.Markdown("<div class='coach-footnote'>每次打开页面都是一个新会话，不会保留之前的对话；"
+                                "本页开启的学习记录也只到本页关闭为止。第一次使用时会问学段和是否保存学习记录，"
+                                "之后随时可以说「开启记录」「关闭记录」「删除记录」。</div>")
+            with gr.Accordion("我的笔记", open=False, elem_id="coach-notes"):
                 show_notes = gr.Button("查看最新笔记", size="sm")
                 notes_view = gr.Markdown("")
         session = gr.State(new_session()[0])

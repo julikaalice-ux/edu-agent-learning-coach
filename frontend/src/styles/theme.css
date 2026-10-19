@@ -1,0 +1,70 @@
+/* Tailwind 4 入口 + 自然元素设计 token + fade-rise 动画。 */
+@import "tailwindcss";
+@import "./fonts.css";
+
+@theme {
+  /* 自然元素色系（参考「打开画册」视觉参考库） */
+  --color-paper: #f3f1eb;
+  --color-ink: #202721;
+  --color-moss: #2c6040;
+  --color-moss-deep: #264f36;
+  --color-sage: #e4eadf;
+  --color-sage-deep: #d8e4d2;
+  --color-muted: #62715f;
+  --color-line: #d9ded3;
+  --color-control: #bbc5b5;
+  --color-focus: #63836d;
+
+  --font-display: "Instrument Serif", "Songti SC", "Noto Serif SC", Georgia, serif;
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+@layer base {
+  body {
+    background: var(--color-paper);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+/* fade-rise 三档动画（入场只播一次，场景切换不再触发） */
+@keyframes fade-rise {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-rise {
+  animation: fade-rise 0.8s ease-out both;
+}
+.animate-fade-rise-delay {
+  animation: fade-rise 0.8s ease-out 0.2s both;
+}
+.animate-fade-rise-delay-2 {
+  animation: fade-rise 0.8s ease-out 0.4s both;
+}
+
+/* 场景镜头：推入时问候场景前推放大淡出，对话场景从略缩小放大到位 */
+.scene {
+  will-change: transform, opacity;
+}
+
+/* P08：减弱动画方案 */
+@media (prefers-reduced-motion: reduce) {
+  .animate-fade-rise,
+  .animate-fade-rise-delay,
+  .animate-fade-rise-delay-2 {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+  .transition-all {
+    transition-duration: 0.01ms !important;
+  }
+}

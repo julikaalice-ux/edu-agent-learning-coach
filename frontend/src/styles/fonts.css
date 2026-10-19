@@ -1,0 +1,7 @@
+/* 展示字体 Instrument Serif（拉丁）+ 中文衬线回退；正文 Inter + 中文无衬线回退。 */
+@import url("https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@400;500;600&display=swap");
+
+:root {
+  --font-display: "Instrument Serif", "Songti SC", "Noto Serif SC", Georgia, serif;
+  --font-body: "Inter", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
