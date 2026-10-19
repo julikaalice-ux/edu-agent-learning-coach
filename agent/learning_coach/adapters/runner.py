@@ -42,6 +42,26 @@ NO_TIMEOUT_RETRY = frozenset({"visualizer", "verifier"})
 USAGE_KEYS = ("input_token_count", "output_token_count", "cache_read_input_token_count")
 
 
+def error_chain(error) -> str:
+    """Type names along the cause chain, with HTTP status and short error codes only.
+
+    Messages are never kept: provider errors can carry requests or credentials.
+    """
+    parts, seen = [], set()
+    while error is not None and id(error) not in seen and len(parts) < 6:
+        seen.add(id(error))
+        part = type(error).__name__
+        status = getattr(error, "status_code", None) or getattr(getattr(error, "response", None), "status_code", None)
+        code = getattr(error, "code", None)
+        if isinstance(status, int):
+            part += f"[{status}]"
+        if isinstance(code, str) and code.replace("_", "").isalnum() and len(code) < 40:
+            part += f"[{code}]"
+        parts.append(part)
+        error = error.__cause__ or error.__context__
+    return "<".join(parts)
+
+
 def usage_of(response) -> dict:
     """Token usage the model API reported for one call (missing values stay None)."""
     details = getattr(response, "usage_details", None) or {}
@@ -92,7 +112,7 @@ class StructuredRunner:
             outcome = "cancelled"
             message = json.dumps(request, ensure_ascii=False)
             usage = dict.fromkeys(USAGE_KEYS)
-            response, invalid_at = None, None
+            response, invalid_at, failed_with = None, None, None
             try:
                 options = {"response_format": requested_schema} if self.native_json else {}
                 content = message
@@ -120,8 +140,9 @@ class StructuredRunner:
                                                 "数组长度、取值范围和必填字段以 schema 为准；不附围栏。")
             except Exception as error:
                 outcome = "provider_or_timeout_failure"
-                # Never log provider exceptions: they can contain requests or credentials.
-                LOG.warning("agent_stage_failed role=%s error_type=%s", role, type(error).__name__)
+                # Never log provider exception messages: they can contain requests or credentials.
+                failed_with = error_chain(error)
+                LOG.warning("agent_stage_failed role=%s error=%s", role, failed_with)
                 timed_out = isinstance(error, TimeoutError)
                 if attempt == 1 or provider_retried or (timed_out and role in NO_TIMEOUT_RETRY):
                     raise StageFailure("provider_or_timeout_failure") from None
@@ -135,6 +156,8 @@ class StructuredRunner:
                     record["images"] = len(images)
                 if invalid_at:
                     record["invalid_at"] = invalid_at
+                if failed_with:
+                    record["error"] = failed_with
                 self.usage.append(record)
                 LOG.info("agent_stage %s", " ".join(f"{key}={value}" for key, value in record.items()))
                 if self.observer is not None:

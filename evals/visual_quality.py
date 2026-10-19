@@ -172,8 +172,14 @@ async def run_case(pipeline, recorder, case, runs):
         rows[-1]["calls"] = [{key: record.get(key) for key in ("role", "phase", "attempt", "outcome", "elapsed_ms",
                                                               "input_token_count", "output_token_count",
                                                               "results", "invalid_at", "query", "listed",
-                                                              "retried", "downloaded", "paused") if key in record}
+                                                              "retried", "downloaded", "paused", "error")
+                              if key in record}
                              for record in records]
+        failed = [call for call in rows[-1]["calls"] if call.get("outcome") == "provider_or_timeout_failure"]
+        # A turn that broke before (or outside) drawing has no visual failure code of its own.
+        rows[-1]["turn_failure"] = None if visual.get("failure") or rows[-1]["success"] or not failed else (
+            "调用失败：" + "、".join(sorted({OTHER_STAGES.get((call["role"], call["phase"]), call["role"])
+                                         for call in failed})))
         rows[-1]["visual_history"] = visual.get("history") or []
         rows[-1]["throttle"] = throttle
         shares = "，".join(f"{name} {ms / 1000:.1f}s" for name, ms in {**stages, **others}.items() if ms)
@@ -184,11 +190,15 @@ async def run_case(pipeline, recorder, case, runs):
             shares += f"；路由被程序改过（{rows[-1]['routing_repaired']}）"
         print(f"{case['id']} run={run}: {'OK' if rows[-1]['success'] else 'FAIL'} "
               f"({elapsed_ms / 1000:.1f}s；{shares or '没有画图'}；{attempts} 稿；"
-              f"{visual.get('kind') or '-'}{'，失败：' + visual['failure'] if visual.get('failure') else ''})",
+              f"{visual.get('kind') or '-'}{'，失败：' + visual['failure'] if visual.get('failure') else ''}"
+              f"{'，' + rows[-1]['turn_failure'] if rows[-1]['turn_failure'] else ''})",
               flush=True)
         for issue in rows[-1]["visual_history"] or rows[-1]["visual_issues"]:
             print(f"    退回：{issue[:200]}", flush=True)
         for call in rows[-1]["calls"]:
+            if call.get("error"):
+                stage = OTHER_STAGES.get((call["role"], call["phase"]), call["role"])
+                print(f"    {stage}（{call['role']}）第 {call['attempt']} 次调用失败：{call['error']}", flush=True)
             if call.get("invalid_at"):
                 print(f"    {call['role']} 输出格式不对：{call['invalid_at']}", flush=True)
             if call.get("role") == "image_search" and not call.get("results"):
@@ -212,7 +222,8 @@ def summarize(rows, runs):
         visual = [row["visual_ms"] for row in case_rows]
         attempts = [row["attempts"] for row in case_rows]
         kinds = sorted({row.get("visual_kind") or "-" for row in case_rows})
-        failures = sorted({row["visual_failure"] for row in case_rows if row.get("visual_failure")})
+        failures = sorted({row.get("visual_failure") or row.get("turn_failure")
+                           for row in case_rows if row.get("visual_failure") or row.get("turn_failure")})
         lines.append({
             "case_id": case_id,
             "kinds": "、".join(kinds),
@@ -234,8 +245,9 @@ def summarize(rows, runs):
             stage_p50[name] = percentile(spent, .5) / 1000
     failure_counts = {}
     for row in rows:
-        if row.get("visual_failure"):
-            failure_counts[row["visual_failure"]] = failure_counts.get(row["visual_failure"], 0) + 1
+        reason = row.get("visual_failure") or row.get("turn_failure")
+        if reason:
+            failure_counts[reason] = failure_counts.get(reason, 0) + 1
     return lines, {
         "cases": len(by_case), "runs_per_case": runs,
         "stage_p50_s": stage_p50, "failures": failure_counts,

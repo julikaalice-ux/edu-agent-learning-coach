@@ -173,6 +173,24 @@ class StructuredRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("PRIVATE", " ".join(errors.output))
         self.assertTrue(any("phase=specialist attempt=1 outcome=provider_or_timeout_failure" in line for line in errors.output))
 
+    async def test_failed_call_records_the_error_chain_as_types_only(self):
+        class APIConnectionError(Exception):
+            pass
+        try:
+            try:
+                raise ConnectionError("PRIVATE_HOST_DETAIL")
+            except ConnectionError as cause:
+                raise APIConnectionError("PRIVATE_REQUEST") from cause
+        except APIConnectionError as error:
+            chained = error
+        records = []
+        with self.assertLogs("learning_coach.adapters.runner", level="WARNING") as logs:
+            with self.assertRaises(StageFailure):
+                await self.make_runner(FakeAgent(error=chained), observer=records.append)("coordinator", {}, SCHEMA)
+        self.assertEqual(records[0]["error"], "APIConnectionError<ConnectionError")
+        self.assertIn("error=APIConnectionError<ConnectionError", " ".join(logs.output))
+        self.assertNotIn("PRIVATE", " ".join(logs.output) + json.dumps(records))
+
     async def test_zero_budget_prevents_model_call(self):
         fake = FakeAgent()
         budget = CallBudget(remaining=0)
