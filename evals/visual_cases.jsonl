@@ -11,3 +11,4 @@
 {"id": "VISQ-HISTORY", "prompt": "用图片带我看看中国古代书写材料是怎么从甲骨发展到纸的", "note": "gallery 时间轴"}
 {"id": "VISQ-STORY", "prompt": "画一张图：小明在超市买了 3 个苹果和 2 个橙子", "note": "illustration（题目情境，现实里没有照片，走 flux）"}
 {"id": "VISQ-PROTON", "prompt": "画一个互动图展示质子在匀强磁场中的运动", "note": "scene 物理方向（洛伦兹力方向、圆周轨迹、垂直纸面的磁场）"}
+{"id": "VISQ-ELEPHANT", "prompt": "大象的鼻子为什么这么长？先给我看看大象长什么样", "note": "真实外观应走网络图片；以前选成 AI 生图，又因一张图要画几件事被退回"}

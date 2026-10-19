@@ -121,7 +121,12 @@ def collect(records):
     )
 
 
-async def run_case(pipeline, recorder, case, runs):
+# What a learner who tapped "允许本次外部访问" grants: the eval measures the
+# visuals, not the consent question (--no-external measures the local path).
+EXTERNAL_GRANTS = frozenset({"research", "image_search", "image_generation"})
+
+
+async def run_case(pipeline, recorder, case, runs, grants=EXTERNAL_GRANTS):
     rows = []
     for run in range(1, runs + 1):
         recorder.take()
@@ -131,7 +136,8 @@ async def run_case(pipeline, recorder, case, runs):
         error, state = None, {}
         try:
             output, state = await pipeline.run([{"role": "user", "text": case["prompt"]}],
-                                               session_id=session_id, turn_id="1")
+                                               session_id=session_id, turn_id="1",
+                                               external_permissions=grants)
         except Exception as caught:
             error = type(caught).__name__
             output = {"schema_version": "1.0", "intent": {"primary": "G", "is_implicit": False},
@@ -180,6 +186,8 @@ async def run_case(pipeline, recorder, case, runs):
         rows[-1]["turn_failure"] = None if visual.get("failure") or rows[-1]["success"] or not failed else (
             "调用失败：" + "、".join(sorted({OTHER_STAGES.get((call["role"], call["phase"]), call["role"])
                                          for call in failed})))
+        if (state or {}).get("pending_external") and not rows[-1]["success"]:
+            rows[-1]["turn_failure"] = "停在联网授权：" + "、".join(state["pending_external"]["capabilities"])
         rows[-1]["visual_history"] = visual.get("history") or []
         rows[-1]["throttle"] = throttle
         shares = "，".join(f"{name} {ms / 1000:.1f}s" for name, ms in {**stages, **others}.items() if ms)
@@ -304,6 +312,8 @@ async def main():
     parser.add_argument("--runs", type=int, default=3, help="runs per case (default 3)")
     parser.add_argument("--cases", default=str(Path(__file__).with_name("visual_cases.jsonl")))
     parser.add_argument("--only", default="", help="只跑这些用例，逗号分隔，如 VISQ-CELLS,VISQ-PHOTO")
+    parser.add_argument("--no-external", action="store_true",
+                        help="不给联网授权（查资料、搜图、AI 生图都不可用），只测本地图解")
     args = parser.parse_args()
 
     os.environ["LEARNING_COACH_ONBOARDING"] = "0"
@@ -334,7 +344,8 @@ async def main():
     rows = []
     try:
         for case in cases:
-            rows += await run_case(pipeline, recorder, case, args.runs)
+            rows += await run_case(pipeline, recorder, case, args.runs,
+                                   frozenset() if args.no_external else EXTERNAL_GRANTS)
     finally:
         pipeline.store.close()
 
