@@ -25,6 +25,7 @@ import argparse
 import asyncio
 from datetime import datetime
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -43,6 +44,45 @@ STAGES = {"visualizer": "画图", "verifier": "审图", "image": "生成图片",
 # Everything else in the turn, so time outside the visual can be explained too.
 OTHER_STAGES = {("coordinator", "decide"): "理解问题", ("coordinator", "respond"): "写回复",
                 ("quizzer", "quiz"): "出题"}
+
+
+class ThrottleWatch(logging.Handler):
+    """Counts the model SDK's silent waits: HTTP statuses (e.g. 429 = over the
+    deployment's per-minute limit) and "Retrying request in N seconds".
+    Keeps only status codes and wait seconds, never URLs or content."""
+
+    STATUS = re.compile(r'HTTP/[\d.]+ (\d{3})')
+    RETRY = re.compile(r"Retrying request in ([\d.]+) seconds")
+
+    def __init__(self):
+        super().__init__(logging.INFO)
+        self.take()
+
+    def emit(self, record):
+        message = record.getMessage()
+        status = self.STATUS.search(message) if record.name.startswith("httpx") else None
+        if status and status.group(1) != "200":
+            self.statuses[status.group(1)] = self.statuses.get(status.group(1), 0) + 1
+        retry = self.RETRY.search(message)
+        if retry:
+            self.retries += 1
+            self.wait += float(retry.group(1))
+
+    def take(self):
+        taken = {"retries": getattr(self, "retries", 0), "wait_s": round(getattr(self, "wait", 0.0), 1),
+                 "statuses": dict(getattr(self, "statuses", {}))}
+        self.retries, self.wait, self.statuses = 0, 0.0, {}
+        return taken
+
+    def install(self):
+        for name in ("openai._base_client", "httpx"):
+            logger = logging.getLogger(name)
+            logger.setLevel(logging.INFO)
+            logger.addHandler(self)
+        return self
+
+
+WATCH = ThrottleWatch()
 
 
 def percentile(values, share):
@@ -85,6 +125,7 @@ async def run_case(pipeline, recorder, case, runs):
     rows = []
     for run in range(1, runs + 1):
         recorder.take()
+        WATCH.take()
         session_id = f"visual-{uuid.uuid4().hex[:12]}"
         started = perf_counter()
         error, state = None, {}
@@ -97,6 +138,7 @@ async def run_case(pipeline, recorder, case, runs):
                       "message": FALLBACK_TEXT, "next_step": None}
         elapsed_ms = round((perf_counter() - started) * 1000)
         records = recorder.take()
+        throttle = WATCH.take()
         visual_ms, stages, visual_in, visual_out = collect(records)
         execution = (state or {}).get("last_execution") or {}
         visual = execution.get("visual") or {}
@@ -131,7 +173,11 @@ async def run_case(pipeline, recorder, case, runs):
                                                               "input_token_count", "output_token_count")}
                              for record in records]
         rows[-1]["visual_history"] = visual.get("history") or []
+        rows[-1]["throttle"] = throttle
         shares = "，".join(f"{name} {ms / 1000:.1f}s" for name, ms in {**stages, **others}.items() if ms)
+        if throttle["retries"] or throttle["statuses"]:
+            shares += (f"；模型服务让等了 {throttle['retries']} 次共 {throttle['wait_s']}s"
+                       f"（状态码 {throttle['statuses'] or '-'}）")
         if rows[-1]["routing_repaired"]:
             shares += f"；路由被程序改过（{rows[-1]['routing_repaired']}）"
         print(f"{case['id']} run={run}: {'OK' if rows[-1]['success'] else 'FAIL'} "
@@ -183,6 +229,11 @@ def summarize(rows, runs):
     return lines, {
         "cases": len(by_case), "runs_per_case": runs,
         "stage_p50_s": stage_p50, "failures": failure_counts,
+        "throttle": {"retries": sum(row.get("throttle", {}).get("retries", 0) for row in rows),
+                     "wait_s": sum(row.get("throttle", {}).get("wait_s", 0) for row in rows),
+                     "statuses": {code: sum(row.get("throttle", {}).get("statuses", {}).get(code, 0) for row in rows)
+                                  for code in sorted({code for row in rows
+                                                      for code in row.get("throttle", {}).get("statuses", {})})}},
         "success_rate": totals["success"] / totals["rows"] if totals["rows"] else None,
         "stable_cases": sum(1 for row in lines if row["success"] == f"{runs}/{runs}"),
         "flaky_cases": sum(1 for row in lines if row["success"] not in (f"0/{runs}", f"{runs}/{runs}")),
@@ -217,6 +268,8 @@ def write_reports(out, summary, lines, meta):
                    f"{name} {seconds:.1f}s" for name, seconds in summary["stage_p50_s"].items()) or "无"),
                "- 失败原因：" + ("，".join(f"{code} {count} 次" for code, count in summary["failures"].items())
                                   or "无"),
+               f"- 模型服务让等（限流后自动重试）：{summary['throttle']['retries']} 次，共 {summary['throttle']['wait_s']:.0f}s，"
+               f"状态码 {summary['throttle']['statuses'] or '无'}",
                "", "说明：success 要求回复带产物链接且产物确实已发布；稿次和失败原因来自流水线自己的记录。"]
     (out / "report.md").write_text("\n".join(report) + "\n", encoding="utf-8")
     (out / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -250,6 +303,7 @@ async def main():
             return taken
 
     recorder = Recorder()
+    WATCH.install()
     pipeline = create_pipeline(stage_observer=recorder)
     cases = load_cases(args.cases)
     if args.only:
