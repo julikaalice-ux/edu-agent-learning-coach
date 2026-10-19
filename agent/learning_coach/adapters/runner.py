@@ -17,7 +17,7 @@ LOG = logging.getLogger(__name__)
 ROLES = ("coordinator", "verifier", "notes", "visualizer", "quizzer")
 
 
-from learning_coach.service.execution import BUDGET, CALL_RESERVE, StageFailure
+from learning_coach.service.execution import BUDGET, CALL_RESERVE, REPLY_SINK, StageFailure
 
 
 def native_schema(schema):
@@ -122,8 +122,10 @@ class StructuredRunner:
                         parts += [Content.from_text(label), Content.from_data(data=data, media_type=media_type)]
                     content = Message("user", parts)
                 # Fresh stateless child calls prevent cross-role/session history leaks.
+                sink = REPLY_SINK.get()
                 response = await asyncio.wait_for(
-                    self.agents[role].run(content, options=options),
+                    self.agents[role].run(content, options=options) if sink is None
+                    else streamed(self.agents[role], content, options, sink),
                     timeout=self.role_timeouts.get(role, self.timeout),
                 )
                 usage = usage_of(response)
@@ -163,6 +165,18 @@ class StructuredRunner:
                 if self.observer is not None:
                     self.observer(record)
         raise StageFailure("invalid_stage_output")
+
+
+async def streamed(agent, content, options, sink):
+    """One call read as it is written: sink gets the whole raw text so far after each piece."""
+    stream = agent.run(content, options=options, stream=True)
+    written = ""
+    async for update in stream:
+        piece = update.text or ""
+        if piece:
+            written += piece
+            sink(written)
+    return await stream.get_final_response()
 
 
 # Every agent, including the single-agent baseline, starts with the same preamble.

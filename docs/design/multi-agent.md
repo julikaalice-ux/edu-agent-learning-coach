@@ -87,7 +87,7 @@ E/F/G、明确结束或暂停都不启动这些能力，分别先处理情绪、
 
 普通问答仍由主 Agent 一次 `decide` 交付完整解释。是否画图取决于当前知识目标、已有基础、卡点和偏好：结构/过程/比较可自主选图；图没有教学增益时用文字。图与正文沿用同一例子、符号和观察目标，有效的看图任务保留在唯一 `next_step`，不再被测验邀请覆盖。
 
-内部 tools decision 新增可空 `initial_explanation`，plan 新增 `visual_source`（local/web/generated/null）。公开四字段 JSON 不变。`LearningPipeline.run_stream` 仅在稳定知识、A/B、本地可视化、无检索/测验且没有待答题时发布已校验的 `explanation` 块；最终 `{output,state}` 合并这段不可变前缀及图示补充。无需额外模型调用。Space 用同一个气泡先显示解释，终态才提交历史、选项和图；关闭流会取消并等待工作任务，图或后续阶段失败不抹掉已显示解释。这是分阶段交付，不是逐 token 展示原始 JSON。
+内部 tools decision 新增可空 `initial_explanation`，plan 新增 `visual_source`（local/web/generated/null）。公开四字段 JSON 不变。`LearningPipeline.run_stream` 仅在稳定知识、A/B、本地可视化、无检索/测验且没有待答题时发布已校验的 `explanation` 块；最终 `{output,state}` 合并这段不可变前缀及图示补充。无需额外模型调用。Space 用同一个气泡先显示解释，终态才提交历史、选项和图；关闭流会取消并等待工作任务，图或后续阶段失败不抹掉已显示解释。学习者看不到原始 JSON：主 agent 的回复只抽出 message 文本边写边发（`pipeline/streaming.py`），有待答题、出题或会被程序改成练习的回合不边写边发。
 
 外部检索、网络搜图、外部生图默认未授权。模型收到 `capabilities` 的 available/authorized，配置了后端不代表许可。程序在执行前提出本次授权，保存原请求；批准后恢复原请求，拒绝后用已有知识与本地图解继续。授权仅覆盖本次原请求，支持分步批准，不能延续到新问题或另一会话。宿主已获取许可时可传入 `run(..., external_permissions={...})`；不得把模型字段直接当该参数。实际外部调用还有门禁；题目意外要求生图而无许可时改成纯文字题。当前未接入 MCP 能力，capabilities 中为不可用；新增适配器时须执行同样授权检查。原本配置的对话模型调用属于应用的基础服务，这个门禁约束额外的外部工具。
 
@@ -95,7 +95,7 @@ E/F/G、明确结束或暂停都不启动这些能力，分别先处理情绪、
 
 ## 2. 托管入口与输出协议
 
-应用通过 Agent Framework 的 `BaseAgent` 接入 `ResponsesHostServer`。内部 agent 消息、搜索结果、校验失败的内容和笔记都不直接发给学习者。Foundry 托管入口仍等终态才发送结果，没有逐字或分阶段正文输出；本次分阶段交付接在 Space。托管入口会读取平台注入的用户编号（`x-agent-user-id`），作为学习记录的键；取不到时按会话保存。
+应用通过 Agent Framework 的 `BaseAgent` 接入 `ResponsesHostServer`。内部 agent 消息、搜索结果、校验失败的内容和笔记都不直接发给学习者。Foundry 托管入口用 `run_stream`：回复文本边写边发，提前讲解一到就发，其余等终态校验后补上；终态没有接着已发文本时，空一行后补上终态全文。托管入口会读取平台注入的用户编号（`x-agent-user-id`），作为学习记录的键；取不到时按会话保存。
 
 托管协议的响应与历史显式使用内存存储，避免 SDK 默认把原始聊天写入用户目录；生命周期限于当前进程。服务器关闭 SDK 的自动遥测初始化，没有接入云端遥测或原始消息采集。
 

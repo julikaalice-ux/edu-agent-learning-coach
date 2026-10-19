@@ -10,6 +10,10 @@
     respond   the coordinator writes the reply from the results
     finish    program checks and links, then commits (nothing is saved earlier)
 
+Where the program will keep the coordinator's draft, its text is shown while
+it is written (streaming.py): a direct answer in decide, or the reply in
+respond.
+
 The coordinator proposes; the program decides what runs and what is saved.
 """
 
@@ -23,8 +27,9 @@ from learning_coach.domain.contracts import (ContractError, DecisionMode, QuizAc
                                              validate)
 from learning_coach.domain.context import (accept_notes, brief_card, count_tokens, empty_notes, learner_card,
                                            memory_slice, note_slice, number_turns, recent_window, research_digest)
+from learning_coach.domain.partial_reply import written_value
 from learning_coach.domain.research_contracts import Evidence
-from learning_coach.domain.routing import (EXPLAIN_INTENTS, Status, empty_results, execution_order,
+from learning_coach.domain.routing import (EXPLAIN_INTENTS, INTENT_PRACTICE, Status, empty_results, execution_order,
                                            explicit_visual_quote, prefer_web_pictures,
                                            recover_explicit_visual_route, recover_practice_route,
                                            recover_quiz_route, require_finished, select_tools)
@@ -32,6 +37,7 @@ from learning_coach.service.execution import (CALL_RESERVE, EXPLANATION_SINK, EX
                                               StageFailure, external_allowed)
 from learning_coach.service.pipeline import permissions
 from learning_coach.service.pipeline.checks import respond_problem, validate_response
+from learning_coach.service.pipeline.streaming import ReplyStream, streaming
 from learning_coach.service.pipeline.state import (NOTES_FOR_QUESTIONS, NOTES_FOR_VISUALS, Key, Memory, Mode,
                                                    apply_task, default_participant, is_first_meeting,
                                                    mark_evidence, model_view, read_memory, record_quiz_result,
@@ -162,7 +168,14 @@ class Teacher:
             # Said up front: a full direct answer here would only be thrown
             # away by the visual route repair below (about 20 s of writing).
             decide_input["visual_required"] = True
-        value = validate(await self.deps.runner(Role.COORDINATOR, decide_input, self.decision_schema), self.decision_schema)
+        # A direct answer is shown while it is written, unless a repair below
+        # could replace it: a waiting question, a visual request, practice.
+        stream = None
+        if turn.on_delta is not None and not waiting(state) and "visual_required" not in decide_input:
+            stream = ReplyStream(turn.on_delta, allow=kept_direct_answer)
+        with streaming(stream):
+            value = validate(await self.deps.runner(Role.COORDINATOR, decide_input, self.decision_schema),
+                             self.decision_schema)
         view.context["notes"], note_problems = accept_notes(
             value.get("context_notes"), view.context.get("notes"), view.numbered, budgets.notes)
         # Read before any routing repair: repaired decisions are rebuilt without it.
@@ -401,7 +414,15 @@ class Teacher:
             "tool_results": deepcopy(plan.tools),
         }
         decision.report["respond_tokens"] = count_tokens(response_input)
-        output = await self.deps.runner(Role.COORDINATOR, response_input, self.deps.response_schema)
+        # Shown while it is written, except around a quiz question (the
+        # answer-leak check may send the draft back) and after an early
+        # explanation (the reply then only adds to it).
+        stream = None
+        if (turn.on_delta is not None and plan.initial_explanation is None and not waiting(state)
+                and plan.tools["quiz"] in (Status.NOT_REQUESTED, Status.SKIPPED)):
+            stream = ReplyStream(turn.on_delta)
+        with streaming(stream):
+            output = await self.deps.runner(Role.COORDINATOR, response_input, self.deps.response_schema)
         problem = respond_problem(output, state, view.memory.enabled)
         if problem:
             # One corrected redraft; still leaking falls back like other contract errors.
@@ -470,6 +491,17 @@ class Teacher:
         if decision.repaired:
             state[Key.LAST_EXECUTION]["routing_repaired"] = decision.repaired
         return output, state
+
+
+def waiting(state) -> bool:
+    """A quiz question is waiting for the learner's answer."""
+    return bool((state.get(Key.QUIZ) or {}).get("awaiting"))
+
+
+def kept_direct_answer(head) -> bool:
+    """The decision being written is a direct answer that no repair turns into practice."""
+    return (written_value(head, "mode") == DecisionMode.ANSWER
+            and written_value(head, "primary") not in (None, INTENT_PRACTICE))
 
 
 def offer_notes_after_practice(output, memory_enabled) -> bool:

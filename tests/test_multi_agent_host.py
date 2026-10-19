@@ -18,7 +18,8 @@ sys.path.insert(0, str(SOURCE))
 SDK_AVAILABLE = all(importlib.util.find_spec(name) is not None for name in
                     ("agent_framework", "agent_framework_foundry_hosting", "jsonschema"))
 if SDK_AVAILABLE:
-    from agent_framework import Agent, AgentResponse, AgentSession, ChatResponse, Message
+    from agent_framework import (Agent, AgentResponse, AgentSession, ChatResponse, ChatResponseUpdate, Content,
+                                 Message, ResponseStream)
     from agent_framework_foundry_hosting import ResponsesHostServer
     from azure.ai.agentserver.responses import InMemoryResponseProvider
     from starlette.requests import Request
@@ -56,14 +57,28 @@ class FakeAgent:
         return SimpleNamespace(text=self.responses[min(len(self.calls) - 1, len(self.responses) - 1)])
 
 
+def chat_reply(text, stream, size=7):
+    """What a chat client returns: a response to await, or a stream of small text pieces."""
+    if not stream:
+        async def whole():
+            return ChatResponse(messages=[Message("assistant", [text])])
+        return whole()
+
+    async def pieces():
+        for start in range(0, len(text), size):
+            yield ChatResponseUpdate(contents=[Content.from_text(text[start:start + size])], role="assistant",
+                                     message_id="reply")
+    return ResponseStream(pieces(), finalizer=ChatResponse.from_updates)
+
+
 class FakeChatClient:
     def __init__(self, output=None):
         self.calls = []
         self.output = output or {"ok": True}
 
-    async def get_response(self, messages, *, stream=False, options=None, **kwargs):
+    def get_response(self, messages, *, stream=False, options=None, **kwargs):
         self.calls.append((messages, stream, options))
-        return ChatResponse(messages=[Message("assistant", [json.dumps(self.output)])])
+        return chat_reply(json.dumps(self.output), stream)
 
 
 class FakePipeline:
@@ -298,6 +313,44 @@ class LearningCoachHostTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("PRIVATE_SPECIALIST_OUTPUT", final.text)
         self.assertEqual(len(pipeline.calls), 2)
 
+    async def test_streamed_pieces_and_the_final_reply_read_as_one_message(self):
+        full = FINAL["message"] + "\n\n" + FINAL["next_step"]["text"]
+
+        class StreamingPipeline(FakePipeline):
+            def __init__(self, events):
+                super().__init__()
+                self.events = events
+
+            async def run_stream(self, inputs, *, session_id, state, learner_id=None):
+                for event in self.events:
+                    yield event
+                state["streamed"] = True
+                yield {"output": validate(deepcopy(FINAL), FINAL_SCHEMA), "state": state}
+
+        cases = {
+            "the final reply continues the draft": (
+                [{"delta": "把一个整体"}, {"delta": "平均分成"}],
+                ["把一个整体", "平均分成", full[len("把一个整体平均分成"):]]),
+            "an early explanation, then the rest": (
+                [{"explanation": "把一个整体平均分成相同大小的几份。"}],
+                ["把一个整体平均分成相同大小的几份。", "\n\n" + FINAL["next_step"]["text"]]),
+            "a draft the program replaced": (
+                [{"delta": "草稿"}],
+                ["草稿", "\n\n" + full]),
+        }
+        for name, (events, expected) in cases.items():
+            with self.subTest(name):
+                agent = LearningCoachAgent(StreamingPipeline(events))
+                session = AgentSession()
+                stream = agent.run("分数是什么", stream=True, session=session)
+                updates = [update async for update in stream]
+                final = await stream.get_final_response()
+                self.assertEqual([update.text for update in updates], expected)
+                self.assertEqual(len({update.message_id for update in updates}), 1)
+                self.assertEqual(final.text, "".join(expected))
+                self.assertEqual(session.state["learning_coach"]["last_response"], FINAL)
+                self.assertTrue(session.state["learning_coach"]["streamed"])
+
     async def test_two_sdk_sessions_do_not_share_state(self):
         pipeline = FakePipeline()
         agent = LearningCoachAgent(pipeline)
@@ -524,7 +577,7 @@ class FiveRoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 self.roles = []
                 self.response_payload = None
 
-            async def get_response(self, messages, *, stream=False, options=None, **kwargs):
+            def get_response(self, messages, *, stream=False, options=None, **kwargs):
                 self.calls.append((messages, stream, options))
                 request = json.loads(messages[-1].text)
                 data = request["input"]
@@ -578,7 +631,7 @@ class FiveRoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 self.roles.append(role)
                 # This path reaches real Agent construction, message normalization,
                 # option merging and response serialization, only transport is fake.
-                return ChatResponse(messages=[Message("assistant", [json.dumps(answer, ensure_ascii=False)])])
+                return chat_reply(json.dumps(answer, ensure_ascii=False), stream)
 
         client, provider = ScriptedChatClient(), Provider()
         agents = create_agents(client, SOURCE / "prompts/instructions.md")
@@ -605,7 +658,13 @@ class FiveRoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 validate(output, FINAL_SCHEMA)
                 expected_text = output["message"] + ("\n\n" + output["next_step"]["text"] if output["next_step"] else "")
                 self.assertEqual(final.text, expected_text)
-                self.assertEqual(len(updates), 1)
+                # The reply arrives while it is written; only its text, never the JSON around it.
+                self.assertGreater(len(updates), 1)
+                self.assertEqual("".join(update.text for update in updates), final.text)
+                # A first question: the program's introduction goes out with the first piece.
+                self.assertTrue(updates[0].text.startswith(INTRO))
+                self.assertTrue(updates[0].text.endswith("\n\n普通条"))
+                self.assertNotIn('"', "".join(update.text for update in updates))
                 # Notes are not compiled inside the teaching turn.
                 self.assertEqual(client.roles, ["coordinator", "verifier", "visualizer", "verifier", "coordinator"])
                 self.assertEqual(len(provider.calls), 2)

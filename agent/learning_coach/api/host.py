@@ -1,11 +1,14 @@
-"""Only a validated final response crosses the Responses hosting boundary.
+"""Only learner-facing text crosses the Responses hosting boundary.
 
 The learner-facing text is the wire response's ``message`` plus any ``next_step``
-prompt (quiz question faces included). The full four-field wire stays in session
-state (``learning_coach.last_response``) for evaluation and debugging; it is
-never serialized as chat text.
+prompt (quiz question faces included). When streamed, the reply text arrives
+while the coordinator writes it, an early explanation as soon as it is
+checked, and the rest once the whole reply is checked. The full four-field
+wire stays in session state (``learning_coach.last_response``) for evaluation
+and debugging; it is never serialized as chat text.
 """
 
+from contextlib import aclosing
 from copy import deepcopy
 import logging
 import os
@@ -95,7 +98,8 @@ class LearningCoachAgent(BaseAgent):
             function_invocation_kwargs=None, client_kwargs=None, **kwargs):
         active_session = session if session is not None else self.create_session()
 
-        async def execute():
+        def prepare():
+            """The pipeline's arguments for this turn, and the guard to save after it."""
             if isinstance(messages, str):
                 inputs = [{"role": "user", "text": messages}]
             elif isinstance(messages, Message):
@@ -124,14 +128,18 @@ class LearningCoachAgent(BaseAgent):
                     # the pre-reset prefix is gone, keep only the current message.
                     inputs = original[-1:]
             state_arg = {} if fresh else deepcopy(active_session.state.get("learning_coach", {}))
-            output, state = await self.pipeline.run(
-                inputs, session_id=active_session.session_id,
-                learner_id=owner,
-                state=state_arg,
-            )
+            arguments = {"session_id": active_session.session_id, "learner_id": owner, "state": state_arg}
+            return inputs, arguments, (owner, guard.get("skip", 0))
+
+        def commit(output, state, guard):
+            owner, skip = guard
             active_session.state["learning_coach"] = {**state, "last_response": output}
-            active_session.state[GUARD_KEY] = {"owner": owner, "last_turn_at": time.time(),
-                                               "skip": guard.get("skip", 0)}
+            active_session.state[GUARD_KEY] = {"owner": owner, "last_turn_at": time.time(), "skip": skip}
+
+        async def execute():
+            inputs, arguments, guard = prepare()
+            output, state = await self.pipeline.run(inputs, **arguments)
+            commit(output, state, guard)
             return AgentResponse(messages=[Message("assistant", [Content.from_text(learner_text(output))])],
                                  agent_id=self.id)
 
@@ -139,8 +147,41 @@ class LearningCoachAgent(BaseAgent):
             return execute()
 
         async def updates():
-            response = await execute()
-            yield AgentResponseUpdate(role="assistant", contents=[Content.from_text(response.text)],
-                                      agent_id=self.id, message_id=str(uuid4()))
+            """Reply text as it becomes known; together the pieces are what the learner reads.
+
+            The Responses wire keeps every piece sent, so a piece is never taken
+            back. The final reply normally continues what was shown; when it
+            does not (a draft the program replaced, or a failed turn), it
+            follows the shown text after a blank line.
+            """
+            message_id = str(uuid4())
+            run_stream = getattr(self.pipeline, "run_stream", None)
+            if run_stream is None:
+                response = await execute()
+                yield AgentResponseUpdate(role="assistant", contents=[Content.from_text(response.text)],
+                                          agent_id=self.id, message_id=message_id)
+                return
+            inputs, arguments, guard = prepare()
+            shown = ""
+            async with aclosing(run_stream(inputs, **arguments)) as events:
+                async for event in events:
+                    if "output" in event:
+                        commit(event["output"], event["state"], guard)
+                        piece = continuation(shown, learner_text(event["output"]))
+                    elif "explanation" in event:
+                        piece = continuation(shown, event["explanation"])
+                    else:
+                        piece = event.get("delta") or ""
+                    if piece:
+                        shown += piece
+                        yield AgentResponseUpdate(role="assistant", contents=[Content.from_text(piece)],
+                                                  agent_id=self.id, message_id=message_id)
 
         return ResponseStream(updates(), finalizer=AgentResponse.from_updates)
+
+
+def continuation(shown: str, text: str) -> str:
+    """What to send so the learner ends up reading text after what was already shown."""
+    if text.startswith(shown):
+        return text[len(shown):]
+    return "\n\n" + text

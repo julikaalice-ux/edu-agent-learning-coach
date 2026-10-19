@@ -32,6 +32,10 @@ EXTERNAL_CAPABILITIES = frozenset(Capability)
 EXTERNAL_PERMISSIONS = ContextVar("learning_coach_external_permissions", default=frozenset())
 EXTERNAL_DECLINED = ContextVar("learning_coach_external_declined", default=False)
 EXPLANATION_SINK = ContextVar("learning_coach_explanation_sink", default=None)
+# Set only around a coordinator call whose reply may be shown while it is
+# written. The runner then streams that call and passes it the raw text
+# written so far, once per piece; a retry starts again from empty text.
+REPLY_SINK = ContextVar("learning_coach_reply_sink", default=None)
 
 
 def external_allowed(capability: str) -> bool:

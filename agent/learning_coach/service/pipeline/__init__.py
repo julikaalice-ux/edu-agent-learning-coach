@@ -8,6 +8,7 @@
     notes.py        compiling learning notes
     permissions.py  external access: asking once, resuming the held turn
     checks.py       program checks on a reply before anyone sees it
+    streaming.py    the coordinator's reply text shown while it is written
     state.py        the state keys and small reads/writes on them
     texts.py        fixed wording and the replies the program recognizes
 
@@ -107,20 +108,33 @@ class LearningPipeline:
                                      external_permissions=external_permissions)
 
     async def run_stream(self, messages, **kwargs):
-        """Deliver a validated explanation, then one final response/state transaction.
+        """Reply text as it becomes known, then one final response/state transaction.
+
+        Events, in order:
+          {"delta": text}        reply text while the coordinator writes it (a draft;
+                                 the final reply normally continues it)
+          {"explanation": text}  a checked explanation shown before the visual is ready;
+                                 the final reply starts with it
+          {"output": ..., "state": ...}  the checked reply, always last
 
         Closing this iterator cancels and joins the turn; no orphan worker can
         publish a late visual after the host has reset the conversation.
         """
         events = asyncio.Queue()
         callback = kwargs.pop("on_explanation", None)
+        delta_callback = kwargs.pop("on_delta", None)
 
         def publish(text):
             if callback is not None:
                 callback(text)
             events.put_nowait({"explanation": text})
 
-        task = asyncio.create_task(self.run(messages, on_explanation=publish, **kwargs))
+        def publish_delta(text):
+            if delta_callback is not None:
+                delta_callback(text)
+            events.put_nowait({"delta": text})
+
+        task = asyncio.create_task(self.run(messages, on_explanation=publish, on_delta=publish_delta, **kwargs))
         getter = None
         try:
             while not task.done() or not events.empty():
@@ -207,6 +221,18 @@ class LearningPipeline:
     async def _teach_with_prefix(self, turn):
         """Teach with the program's words (first-meeting closing or introduction) in front."""
         prefix = turn.prefix
+        emit = turn.on_delta
+        if emit is not None:
+            # Text shown while it is written gets the same words in front, once.
+            started = []
+
+            def with_prefix(piece):
+                if not started:
+                    started.append(True)
+                    piece = prefix + "\n\n" + piece
+                emit(piece)
+
+            turn.on_delta = with_prefix
         sink = EXPLANATION_SINK.get()
         token = None
         if sink is not None:
