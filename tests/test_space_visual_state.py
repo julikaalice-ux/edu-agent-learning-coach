@@ -622,5 +622,17 @@ class SpaceArtifactTests(SpaceTestBase):
         self.assertEqual(seen, [proxy.ARTIFACT_BASE + "/" + "t" * 32 + ".html"])
 
 
+class SpaceTurnTimingTests(SpaceTestBase):
+    def test_turn_timing_logs_step_times_only(self):
+        timer = self.app.TurnTimer()
+        timer.mark("token_ms")
+        timer.mark("token_ms")  # the first mark of a step counts
+        timer.mark("first_text_ms")
+        with self.assertLogs("learning_coach", level="INFO") as logs:
+            timer.log("ok")
+        line = logs.records[-1].getMessage()
+        self.assertRegex(line, r"^turn_timing outcome=ok token_ms=\d+ first_text_ms=\d+ total_ms=\d+$")
+
+
 if __name__ == "__main__":
     unittest.main()

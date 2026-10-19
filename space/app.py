@@ -650,6 +650,27 @@ def build_app() -> gr.Blocks:
     return demo
 
 
+class TurnTimer:
+    """Milliseconds from the start of one /turn to each of its steps, logged once.
+
+    Only step names and times reach the log, never the question or the reply:
+    token_ms (Azure token; cached after the first), new_conversation_ms (only
+    for a new chat), first_text_ms (first reply text from the agent), total_ms.
+    """
+
+    def __init__(self):
+        self.started = time.perf_counter()
+        self.marks = {}
+
+    def mark(self, name):
+        self.marks.setdefault(name, round((time.perf_counter() - self.started) * 1000))
+
+    def log(self, outcome):
+        self.mark("total_ms")
+        logger.info("turn_timing outcome=%s %s", outcome,
+                    " ".join(f"{name}={value}" for name, value in self.marks.items()))
+
+
 def page_picture(document) -> tuple[str, bytes] | None:
     """(media type, bytes) of the picture embedded in an artifact page, or None."""
     found = DATA_IMAGE.search(document or "")
@@ -708,33 +729,52 @@ def run_combined(port: int) -> None:
         if not user_input:
             return JSONResponse(status_code=400, content={"error": "empty_input"})
         conversation = payload.get("conversation")
+        timer = TurnTimer()
+        try:
+            await asyncio.to_thread(space_proxy.get_token)
+        except Exception as error:
+            timer.log("token_failed")
+            return JSONResponse(status_code=502, content={"error": proxy_error(error)})
+        timer.mark("token_ms")
         if not conversation:
             try:
                 conversation = space_proxy.call("conversations", {}).get("id")
             except Exception as error:
+                timer.log("conversation_failed")
                 return JSONResponse(status_code=502, content={"error": proxy_error(error)})
             if not conversation:
+                timer.log("conversation_failed")
                 return JSONResponse(status_code=502, content={"error": "conversation_create_failed"})
+            timer.mark("new_conversation_ms")
         try:
             if payload.get("stream"):
                 async def events():
-                    for event in space_proxy.stream_reply(conversation, user_input):
-                        if "delta" in event:
-                            frame = json.dumps({"delta": event["delta"]}, ensure_ascii=False)
-                        else:
-                            frame = json.dumps({"done": True, "conversation": event["conversation"],
-                                                "text": event["text"],
-                                                "options": space_proxy.extract_options(event["text"])},
-                                               ensure_ascii=False)
-                        yield f"data: {frame}\n\n"
+                    outcome = "failed"
+                    try:
+                        for event in space_proxy.stream_reply(conversation, user_input):
+                            if "delta" in event:
+                                timer.mark("first_text_ms")
+                                frame = json.dumps({"delta": event["delta"]}, ensure_ascii=False)
+                            else:
+                                frame = json.dumps({"done": True, "conversation": event["conversation"],
+                                                    "text": event["text"],
+                                                    "options": space_proxy.extract_options(event["text"])},
+                                                   ensure_ascii=False)
+                            yield f"data: {frame}\n\n"
+                        outcome = "ok"
+                    finally:
+                        timer.log(outcome)
                 return StreamingResponse(events(), media_type="text/event-stream",
                                          headers={"Cache-Control": "no-cache"})
             result = space_proxy.call("responses", {"conversation": conversation, "input": user_input})
+            timer.mark("first_text_ms")
             text = space_proxy.extract_text(result) or "这次处理没有顺利完成，请再试一次。"
+            timer.log("ok")
             return JSONResponse(status_code=200, content={
                 "conversation": conversation, "text": text,
                 "options": space_proxy.extract_options(text)})
         except Exception as error:
+            timer.log("failed")
             return JSONResponse(status_code=502, content={"error": proxy_error(error)})
 
     # Visuals from this container's own pipeline (legacy UI), or else the ones
