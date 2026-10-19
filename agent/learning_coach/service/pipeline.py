@@ -43,6 +43,11 @@ NOTES_OFFER = "要把这次学的整理成笔记吗？\n1. 整理\n2. 不用"
 NOTES_REQUEST = ("整理笔记", "帮我整理笔记", "整理一下笔记", "生成笔记", "做笔记")
 NOTES_YES = ("1", "整理", "整理吧", "整理一下", "好", "好的", "要", "可以")
 NOTES_NO = ("2", "不用", "不用了", "先不用", "不要", "不整理")
+# After an explanation the reply only offers a check question; the graded
+# card appears when the learner takes the offer (a button in the demo page).
+CHECK_OFFER = "想做一道小题，检验一下刚才这块吗？\n1. 做一道小题\n2. 先不用"
+CHECK_YES = ("1", "做一道小题", "做一道", "做题", "做", "好", "好的", "可以", "来吧", "来", "考考我", "出题")
+CHECK_NO = ("2", "先不用", "不用", "不用了", "不要", "不做", "不想做")
 # While a question waits: replace it without grading (e.g. a picture that does not fit).
 SKIP_QUESTION = ("换一题", "换一道", "换一道题", "跳过这题", "这题跳过", "换个题")
 QUIZ_PICTURE_LINK = "看题目配图"
@@ -356,6 +361,14 @@ class LearningPipeline:
         if prefix is None and offered and text in NOTES_NO:
             return reply("好，这次先不整理。之后想整理，随时说“整理笔记”。", INTENT_CHAT,
                          {"kind": "question", "text": "接下来想学什么？"}), state
+        # A check offer also lasts one turn: yes asks the question, no declines,
+        # anything else continues the lesson (and may bring a new offer).
+        check_offer = state.pop("check_offer", None)
+        if prefix is None and check_offer and text in CHECK_YES:
+            return await self._ask_check(messages, session_id, state, memory_key, check_offer)
+        if prefix is None and check_offer and text in CHECK_NO:
+            return reply("好，这一块先不检验。还有哪里不清楚，随时问我。", INTENT_CHAT,
+                         {"kind": "question", "text": "接下来想了解什么？"}), state
         waiting = state.get("quiz") or {}
         if prefix is None and text in SKIP_QUESTION and waiting.get("awaiting") and not waiting.get("finished"):
             return await self._replace_question(messages, session_id, state, memory_key)
@@ -446,28 +459,20 @@ class LearningPipeline:
             self._validate_response(output, output["intent"], None, stopping=stopping)
             if stopping:
                 output["next_step"] = None
-            picture = None
+            offered = False
             if check and primary in EXPLAIN_INTENTS and not stopping:
-                # A graded check question on what was just explained replaces the
-                # coordinator's own closing question.
-                picture = await self._add_check_question(
-                    output, check, state, session_id, brief_card(state, memory, default_participant(state)),
-                    notes_now, sub_window)
-                self._validate_response(output, output["intent"], None)
-            if picture:
-                output["message"] += f"\n\n[{QUIZ_PICTURE_LINK}]({picture['url']})"
+                # The explanation stands on its own; the reply ends with an
+                # offer of a check question instead of the question itself.
+                offered = self._offer_check(output, check, state,
+                                            brief_card(state, memory, default_participant(state)))
             validate(output, self.response_schema)
             if self._respond_problem(output, state, memory_enabled):
-                # Checked after the check question is drafted, so the waiting
-                # question's answer is known; a single decide call cannot be
-                # redrafted here, so failing the turn is safer than publishing
-                # the answer before the learner answers.
+                # A single decide call cannot be redrafted here, so failing the
+                # turn is safer than publishing a waiting question's answer.
                 raise ContractError("answer_visible_before_answer")
-            if picture:
-                self.artifacts.commit(session_id, picture)
             state["last_execution"] = {"mode": "answer", "tools": empty_results(), "context": context_report}
-            if (state.get("quiz") or {}).get("kind") == "check" and check and not stopping and primary in EXPLAIN_INTENTS:
-                state["last_execution"]["check_question"] = bool((state.get("quiz") or {}).get("awaiting"))
+            if offered:
+                state["last_execution"]["check_offered"] = True
             return output, state
 
         plan, tool_results = select_tools(decision["plan"], messages[-1]["text"], memory_enabled=memory_enabled)
@@ -624,9 +629,7 @@ class LearningPipeline:
             (visual_context or {}).get("kind"), (visual_context or {}).get("companion_kind"))
         if (check and not stopping and primary in EXPLAIN_INTENTS and not scene_asks
                 and tool_results["quiz"] in ("not_requested", "skipped_policy")):
-            picture = await self._add_check_question(output, check, state, session_id, brief, notes_now, sub_window)
-            if picture:
-                pictures.append(picture)
+            self._offer_check(output, check, state, brief)
 
         if tool_results["quiz"] in ("needs_input", "awaiting_answer") and (
                 not output["next_step"] or output["next_step"]["kind"] != "question"):
@@ -948,29 +951,52 @@ class LearningPipeline:
             LOG.warning("quiz_picture_unavailable")
             return None
 
-    async def _add_check_question(self, output, check, state, session_id, brief, notes_now, sub_window):
-        """One graded question on what the reply just explained. Returns its picture, if any.
+    @staticmethod
+    def _offer_check(output, check, state, brief):
+        """End an explanation with an offer of one graded question on it; True when offered.
 
-        A running practice set is left alone. If no acceptable question comes
-        back, the coordinator's own closing question stays.
+        A running practice set is left alone. The explanation is kept so the
+        question, asked only if the learner takes the offer, tests exactly it.
         """
         running = state.get("quiz") or {}
         if running and not running.get("finished") and running.get("kind", "practice") != "check":
-            return None
-        quiz = {"topic": check["topic"], "total": 1, "difficulty": check["difficulty"], "asked": 0,
+            return False
+        state["check_offer"] = {"topic": check["topic"], "difficulty": check["difficulty"],
+                                "explanation": output["message"][:3000],
+                                "participant": brief.get("participant") or default_participant(state)}
+        output["next_step"] = {"kind": "question", "text": CHECK_OFFER}
+        return True
+
+    async def _ask_check(self, messages, session_id, state, memory_key, offer):
+        """The learner took the check offer: one graded question on the explanation it came with."""
+        running = state.get("quiz") or {}
+        quiz = {"topic": offer["topic"], "total": 1, "difficulty": offer["difficulty"], "asked": 0,
                 "answered": 0, "correct": 0, "awaiting": None, "finished": False,
                 "question_history": list(running.get("question_history", [])[-20:]),
-                "participant": brief.get("participant") or default_participant(state), "kind": "check", "errors": []}
-        extra = {"explanation": output["message"][:3000], "learner": brief,
-                 "context_notes": note_slice(notes_now, "covered", "stuck"), "recent_messages": sub_window}
+                "participant": offer["participant"], "kind": "check", "errors": []}
+        memory_enabled = not state.get("memory_blocked", False) and self.store.is_enabled(memory_key)
+        memory = self.store.snapshot(memory_key) if memory_enabled else {}
+        numbered = number_turns(messages)
+        extra = {"explanation": offer["explanation"], "learner": brief_card(state, memory, offer["participant"]),
+                 "context_notes": note_slice((state.get("context") or {}).get("notes"), "covered", "stuck"),
+                 "recent_messages": recent_window(numbered, self.budgets.sub_window, min_turns=1,
+                                                  message_max=self.budgets.message_max)}
         try:
             question, picture = await self._quiz_question(quiz["participant"], quiz, extra, session_id=session_id)
         except (StageFailure, ContractError):
             LOG.warning("check_question_unavailable")
-            return None
+            return reply("这次没能出好题。刚才哪里不清楚，可以直接问我。", INTENT_CHAT,
+                         {"kind": "question", "text": "接下来想了解什么？"}), state
         state["quiz"] = quiz
-        output["next_step"] = {"kind": "question", "text": render_question(question["new_question"])}
-        return picture
+        output = reply("好，来一道小题，只考刚才讲的那一块。", INTENT_PRACTICE,
+                       {"kind": "question", "text": render_question(question["new_question"])})
+        if picture:
+            output["message"] += f"\n\n[{QUIZ_PICTURE_LINK}]({picture['url']})"
+        validate(output, self.response_schema)
+        if picture:
+            self.artifacts.commit(session_id, picture)
+        state["last_execution"] = {"mode": "check_question", "tools": empty_results()}
+        return output, state
 
     async def _replace_question(self, messages, session_id, state, memory_key):
         """“换一题”: drop the waiting question without grading and ask a new one."""

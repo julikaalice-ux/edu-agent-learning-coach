@@ -23,6 +23,7 @@ from learning_coach.domain.teaching_visuals import gallery_arrangement, visual_h
 from learning_coach.domain.visual_contracts import VISUAL_SCHEMA
 from learning_coach.domain.visual_quality import gallery_problem, validate_gallery_review
 from learning_coach.service.execution import StageFailure
+from learning_coach.service.pipeline import CHECK_OFFER
 from learning_coach.service.visual_generation import VisualGenerationService
 
 
@@ -303,9 +304,11 @@ class FasterVisualFlowTests(unittest.IsolatedAsyncioTestCase):
                                                     "visual": {"code": "explicit_visual", "evidence_quote": "画图"}}
                 runner = FakeRunner([decision], visuals=[visual])
                 pipeline = LearningPipeline(runner, FakeResearch(), store, FakeArtifacts(), RESPONSE_SCHEMA)
-                await pipeline.run(messages("画图讲水的三态"), session_id=f"s{expected}")
+                output, _ = await pipeline.run(messages("画图讲水的三态"), session_id=f"t{expected}")
                 with self.subTest(kind=visual["kind"]):
-                    self.assertEqual(len(runner.calls_for("quizzer")), expected)
+                    self.assertEqual(runner.calls_for("quizzer"), [])  # a check is only offered, never asked here
+                    offered = (output["next_step"] or {}).get("text") == CHECK_OFFER
+                    self.assertEqual(offered, bool(expected))
         finally:
             store.close()
             temp.cleanup()

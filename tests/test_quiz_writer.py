@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from learning_coach.adapters.runner import StageFailure  # noqa: E402
 from learning_coach.db.memory import LearningStore  # noqa: E402
 from learning_coach.domain.contracts import QUIZ_SCHEMA, check_question, validate  # noqa: E402
-from learning_coach.service.pipeline import NOTES_OFFER, LearningPipeline  # noqa: E402
+from learning_coach.service.pipeline import CHECK_OFFER, NOTES_OFFER, LearningPipeline  # noqa: E402
 from test_pipeline import (QUIZ, RESPONSE_SCHEMA, FakeArtifacts, FakeResearch, FakeRunner,  # noqa: E402
                            exchange, messages, plan)
 
@@ -82,21 +82,28 @@ class QuizWriterPipelineTests(unittest.IsolatedAsyncioTestCase):
         return LearningPipeline(runner, FakeResearch(), self.store, self.artifacts, RESPONSE_SCHEMA,
                                 image_generator=pictures)
 
-    async def test_explanation_gets_a_graded_check_question_from_the_quiz_writer(self):
+    async def test_explanation_offers_a_check_and_the_card_comes_when_taken(self):
         self.store.set_enabled("s", True)
         runner = FakeRunner([direct(check={"topic": "分数的意义", "difficulty": "简单"})], quiz=[QUIZ])
         pipeline = self.pipeline(runner)
-        output, state = await pipeline.run(messages("分数是什么"), session_id="s", turn_id="1")
+        explained, state = await pipeline.run(messages("分数是什么"), session_id="s", turn_id="1")
+        # The explanation turn only explains, and ends with the offer.
+        self.assertEqual(explained["next_step"], {"kind": "question", "text": CHECK_OFFER})
+        self.assertEqual(runner.calls_for("quizzer"), [])
+        self.assertNotIn("quiz", state)
+        # Taking the offer asks the question, on the explanation it came with.
+        output, state = await pipeline.run(messages("做一道小题", *exchange("分数是什么")), session_id="s",
+                                           state=state, turn_id="2")
         request = runner.calls_for("quizzer")[0]
         self.assertEqual((request["kind"], request["topic"]), ("check", "分数的意义"))
         self.assertEqual(request["explanation"], "分数表示把整体平均分成几份，取其中几份。")
         self.assertIn("A. 四分之一", output["next_step"]["text"])
         self.assertNotIn("PRIVATE", json.dumps(output, ensure_ascii=False))
         self.assertEqual((state["quiz"]["kind"], state["quiz"]["total"]), ("check", 1))
-        self.assertEqual(len(runner.calls_for("coordinator")), 1)  # no extra coordinator call
+        self.assertEqual(len(runner.calls_for("coordinator")), 1)  # taking the offer needs no coordinator call
         # Answering it is graded by the program and counts toward mastery.
-        answered, after = await pipeline.run(messages("A", *exchange("分数是什么")), session_id="s",
-                                             state=state, turn_id="2")
+        answered, after = await pipeline.run(messages("A", *exchange("分数是什么", "做一道小题")), session_id="s",
+                                             state=state, turn_id="3")
         concept = self.store.snapshot("s")["concepts"][0]
         self.assertEqual((concept["attempts"], concept["correct_count"]), (1, 1))
         self.assertTrue(after["quiz"]["finished"])
@@ -111,17 +118,23 @@ class QuizWriterPipelineTests(unittest.IsolatedAsyncioTestCase):
         runner = FakeRunner([again, again, again], quiz=[THREE, {**THREE, "question": "哪个分数更大？（再看一次）"}])
         pipeline = self.pipeline(runner)
         _, state = await pipeline.run(messages("分数怎么比大小"), session_id="s", turn_id="1")
+        _, state = await pipeline.run(messages("做一道小题", *exchange("分数怎么比大小")), session_id="s",
+                                      state=state, turn_id="2")
         self.assertNotIn("PRIVATE_DIAGNOSIS", json.dumps([c["payload"] for c in runner.calls if c["role"] == "coordinator"],
                                                          ensure_ascii=False))
-        _, state = await pipeline.run(messages("A", *exchange("分数怎么比大小")), session_id="s", state=state, turn_id="2")
+        history = ("分数怎么比大小", "做一道小题")
+        _, state = await pipeline.run(messages("A", *exchange(*history)), session_id="s", state=state, turn_id="3")
         feedback = runner.calls_for("coordinator", "respond")[-1]["quiz"]["feedback"]
         self.assertFalse(feedback["correct"])
         self.assertEqual((feedback["suspected_error"]["type"], feedback["suspected_error"]["code"]), ("概念性误解", "conceptual"))
         self.assertNotIn("repeated_error", feedback)
-        _, state = await pipeline.run(messages("再讲讲", *exchange("分数怎么比大小", "A")), session_id="s",
-                                      state=state, turn_id="3")
-        _, state = await pipeline.run(messages("C", *exchange("分数怎么比大小", "A", "再讲讲")), session_id="s",
-                                      state=state, turn_id="4")
+        history += ("A",)
+        _, state = await pipeline.run(messages("再讲讲", *exchange(*history)), session_id="s", state=state, turn_id="4")
+        history += ("再讲讲",)
+        _, state = await pipeline.run(messages("做一道小题", *exchange(*history)), session_id="s",
+                                      state=state, turn_id="5")
+        history += ("做一道小题",)
+        _, state = await pipeline.run(messages("C", *exchange(*history)), session_id="s", state=state, turn_id="6")
         feedback = runner.calls_for("coordinator", "respond")[-1]["quiz"]["feedback"]
         self.assertTrue(feedback["repeated_error"])
         with sqlite3.connect(self.path) as db:
@@ -137,9 +150,28 @@ class QuizWriterPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(runner.calls_for("quizzer")), 1)
         self.assertEqual(after["quiz"]["kind"], "practice")
         failing = FakeRunner([direct(check={"topic": "分数", "difficulty": "简单"})], quiz=[StageFailure("PRIVATE")])
-        output, state = await self.pipeline(failing).run(messages("分数是什么"), session_id="f", turn_id="1")
-        self.assertIn("你听懂了吗", output["next_step"]["text"])
+        _, state = await self.pipeline(failing).run(messages("分数是什么"), session_id="f", turn_id="1")
+        output, state = await self.pipeline(failing).run(messages("做一道小题", *exchange("分数是什么")),
+                                                         session_id="f", state=state, turn_id="2")
+        self.assertIn("没能出好题", output["message"])
+        self.assertNotIn("PRIVATE", json.dumps(output, ensure_ascii=False))
         self.assertNotIn("quiz", state)
+
+    async def test_declining_or_moving_on_drops_the_offer(self):
+        for text, expected in (("先不用", "先不检验"), ("那分母呢", None)):
+            with self.subTest(text=text):
+                runner = FakeRunner([direct(check={"topic": "分数", "difficulty": "简单"}),
+                                     direct(message="分母表示平均分成几份。")])
+                pipeline = self.pipeline(runner)
+                _, state = await pipeline.run(messages("分数是什么"), session_id=text, turn_id="1")
+                output, state = await pipeline.run(messages(text, *exchange("分数是什么")), session_id=text,
+                                                   state=state, turn_id="2")
+                self.assertEqual(runner.calls_for("quizzer"), [])
+                if expected:
+                    self.assertIn(expected, output["message"])
+                else:
+                    self.assertIn("分母", output["message"])  # a follow-up question is simply answered
+                self.assertNotIn("check_offer", state)
 
     async def test_bad_diagnoses_are_corrected_once_then_rejected(self):
         bad = deepcopy(THREE)

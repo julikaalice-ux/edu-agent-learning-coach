@@ -472,10 +472,18 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         bad = {**QUIZ, "question": "分母表示什么？", "choices": ["平均分成的份数", "取走的份数"], "answer_index": 0}
         good = {**QUIZ, "question": "一块蛋糕切成 8 份取 3 份，取走了整体的多少？",
                 "choices": ["八分之三", "八分之五"], "answer_index": 0}
-        runner = FakeRunner([plan("A", check_question={"topic": "分数", "difficulty": "简单"})],
-                            replies=[reply], quiz=[bad, good])
-        output, _ = await self.pipeline(runner).run(messages("讲讲分数"), session_id="s", turn_id="1")
+        decision = {"mode": "tools", "plan": plan("A", observe_learning=True),
+                    "check_question": {"topic": "分数", "difficulty": "简单"}}
+        decision["plan"]["tool_reasons"] = {"research": None, "quiz": None, "visual": None,
+                                            "notes": {"code": "learning_evidence", "evidence_quote": "讲讲分数"}}
+        runner = FakeRunner([decision], replies=[reply], quiz=[bad, good])
+        pipeline = self.pipeline(runner)
+        _, state = await pipeline.run(messages("讲讲分数"), session_id="s", turn_id="1")
+        output, _ = await pipeline.run(messages("做一道小题", {"role": "user", "text": "讲讲分数"},
+                                                {"role": "assistant", "text": reply["message"]}),
+                                       session_id="s", state=state, turn_id="2")
         drafts = runner.calls_for("quizzer")
+        self.assertEqual(drafts[0]["explanation"], reply["message"])
         self.assertEqual(len(drafts), 2)
         self.assertNotIn("correction", drafts[0])
         self.assertEqual(drafts[1]["correction"], "answer_in_explanation")
