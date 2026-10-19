@@ -23,10 +23,19 @@ _RENDER_CORRECTIONS = {
     "scene_nonfinite_number": "图形坐标、尺寸和透明度必须为有限数值。",
     "scene_zero_length_line": "线段或箭头没有长度，请给出不同的起点和终点。",
     "scene_out_of_bounds": "图形超出画布，位置加宽高后仍须落在0至100的范围内。",
-    "scene_label_does_not_fit": "标签超过可用空间，请缩短文字或扩大所属图形。",
+    "scene_label_does_not_fit": "标签放不进它所属的图形，请缩短文字或扩大图形；小图形（如粒子、小球）把 label 留空，在旁边放一个 text 元素写名字。",
     "scene_label_out_of_bounds": "标签超出画布，请向内移动对象或缩短标签。",
-    "scene_labels_overlap": "标签相互遮挡，请调整布局或缩短文字。",
+    "scene_labels_overlap": ("标签相互遮挡，请调整布局或缩短文字。线和箭头的标签画在线段中点上方约 4 格、"
+                             "宽约 19 格高约 14 格的范围里；从同一点出发的几支箭头标签容易叠在一起，"
+                             "可以把箭头拉长、错开方向，或把 label 留空，改在不挡别的文字的地方放 text。"),
 }
+
+
+def _render_issue(error: ValueError, prefix: str = "") -> list[dict]:
+    """The designer's correction for a render failure, with the frame and element ids when known."""
+    message = prefix + _RENDER_CORRECTIONS.get(str(error), "草稿无法渲染；检查图形边界、元素标识、连线引用、坐标范围和数值条件。")
+    where = getattr(error, "where", "")
+    return _issue("render_invalid", message + (f"（出错位置：{where}）" if where else ""))
 
 
 def _issue(code: str, message: str) -> list[dict]:
@@ -219,8 +228,7 @@ class VisualGenerationService:
                 if str(error) == "invalid_visual_dependency":
                     return "done", (None, unavailable_visual("render_unavailable", _issue(
                         "render_invalid", "本地图形渲染依赖不可用，图示未发布。"), attempt))
-                return "retry", _issue("render_invalid", _RENDER_CORRECTIONS.get(str(error),
-                    "草稿无法渲染；检查图形边界、元素标识、连线引用、坐标范围和数值条件。"))
+                return "retry", _render_issue(error)
             except (RuntimeError, OSError, StorageError):
                 return "done", (None, unavailable_visual("render_unavailable", _issue(
                     "render_invalid", "本次图示渲染服务不可用。"), attempt))
@@ -297,8 +305,7 @@ class VisualGenerationService:
             if str(error) == "invalid_visual_dependency":
                 return "done", (None, unavailable_visual("render_unavailable", _issue(
                     "render_invalid", "本地图形渲染依赖不可用，图示未发布。"), attempt))
-            return "retry", _issue("render_invalid", "配套图（companion）" + _RENDER_CORRECTIONS.get(
-                str(error), "无法渲染；检查图形边界、元素标识、连线引用、坐标范围和数值条件。"))
+            return "retry", _render_issue(error, "配套图（companion）")
         except (RuntimeError, OSError, StorageError):
             return "done", (None, unavailable_visual("render_unavailable", _issue(
                 "render_invalid", "本次图示渲染服务不可用。"), attempt))

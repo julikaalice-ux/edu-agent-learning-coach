@@ -214,6 +214,23 @@ class TeachingVisualPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("from/to", runner.calls_for("visualizer")[1]["revision_issues"][0]["message"])
         self.assertEqual(len(self.artifacts.committed), 1)
 
+    async def test_render_error_tells_the_redraw_where_it_broke(self):
+        from learning_coach.domain.scene_contracts import SceneError
+
+        class RejectFirst(FakeArtifacts):
+            failed = False
+            def prepare(self, session_id, spec):
+                if not self.failed:
+                    self.failed = True
+                    raise SceneError("scene_labels_overlap", "第 2 帧的 v 和 force")
+                return super().prepare(session_id, spec)
+        self.artifacts = RejectFirst()
+        runner = FakeRunner([plan(visual_request="展示关系")], visuals=[VISUAL, VISUAL])
+        await self.pipeline(runner).run(messages("请画图"), session_id="s")
+        message = runner.calls_for("visualizer")[1]["revision_issues"][0]["message"]
+        self.assertIn("标签相互遮挡", message)
+        self.assertIn("出错位置：第 2 帧的 v 和 force", message)
+
     async def test_visualizer_and_reviewer_receive_bounded_context(self):
         runner = FakeRunner([plan(visual_request="对比它们", task_summary="理解分子与分母")], visuals=[VISUAL])
         history = [{"role": "user" if i % 2 == 0 else "assistant", "text": str(i) + "长" * 4000}

@@ -144,6 +144,38 @@ class SceneContractTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, error):
                     render_visual(bad)
 
+    def test_render_errors_name_the_frame_and_elements(self):
+        from learning_coach.domain.scene_contracts import SceneError, scene_layout
+        bad = scene_spec()
+        copy = deepcopy(bad["frames"][1]["elements"][0])
+        copy["id"] = "overlapping"
+        bad["frames"][1]["elements"].append(copy)
+        with self.assertRaises(SceneError) as caught:
+            scene_layout(bad)
+        self.assertEqual(str(caught.exception), "scene_labels_overlap")
+        self.assertEqual(caught.exception.where, "第 2 帧的 actor 和 overlapping")
+        bad = scene_spec()
+        bad["frames"][2]["elements"][0]["x"] = 95
+        with self.assertRaises(SceneError) as caught:
+            scene_layout(bad)
+        self.assertEqual((str(caught.exception), caught.exception.where), ("scene_out_of_bounds", "第 3 帧的 actor"))
+
+    def test_field_marks_are_a_background_other_labels_may_sit_on(self):
+        from learning_coach.domain.scene_contracts import scene_layout
+        spec = scene_spec()
+        for frame in spec["frames"]:
+            frame["elements"].insert(0, {"id": "field", "shape": "text", "x": 0, "y": 30, "width": 100,
+                                         "height": 30, "color": "neutral", "text": "×　×　×　×　×　×　×　×"})
+        layout = scene_layout(spec)
+        self.assertTrue(layout[0]["field"]["background"])
+        self.assertNotIn("background", layout[0]["actor"])
+        page = Page(render_visual(spec))
+        self.assertIn("box.background?art:labels", page.scripts[-1]["text"])
+        # Ordinary words in the same place still count as overlapping.
+        spec["frames"][1]["elements"][0]["text"] = "磁场方向垂直纸面向里"
+        with self.assertRaisesRegex(ValueError, "scene_labels_overlap"):
+            scene_layout(spec)
+
     def test_offline_page_isolates_model_text_and_authorizes_exact_fixed_scripts(self):
         normal = Page(render_visual(scene_spec()))
         spec = scene_spec()

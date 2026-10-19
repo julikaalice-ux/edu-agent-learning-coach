@@ -10,3 +10,4 @@
 {"id": "VISQ-CELLS", "prompt": "找几张图片给我看看动物细胞和植物细胞有什么区别", "note": "gallery 并排 + 对比表"}
 {"id": "VISQ-HISTORY", "prompt": "用图片带我看看中国古代书写材料是怎么从甲骨发展到纸的", "note": "gallery 时间轴"}
 {"id": "VISQ-STORY", "prompt": "画一张图：小明在超市买了 3 个苹果和 2 个橙子", "note": "illustration（题目情境，现实里没有照片，走 flux）"}
+{"id": "VISQ-PROTON", "prompt": "画一个互动图展示质子在匀强磁场中的运动", "note": "scene 物理方向（洛伦兹力方向、圆周轨迹、垂直纸面的磁场）"}

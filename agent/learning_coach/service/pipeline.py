@@ -851,6 +851,11 @@ class LearningPipeline:
                 # Reviewer/program issues behind a failure (model-written review text, no learner content).
                 "issues": [f"{issue['code']}: {issue['message']}" for issue in failure.get("issues", [])][:6],
                 "history": failure.get("history", [])}
+            # Codes only: which draft was sent back for what, without review text or learner content.
+            LOG.info("visual_result kind=%s status=%s failure=%s drafts=%s sent_back=%s",
+                     visual_context.get("kind"), visual_context.get("status"), failure.get("code"),
+                     quality.get("attempts", failure.get("attempts")),
+                     "|".join(entry.split("：", 1)[0].replace(" ", "") for entry in failure.get("history", [])) or "-")
         if repair_kind:
             state["last_execution"]["routing_repaired"] = repair_kind
         return output, state

@@ -1,6 +1,7 @@
 """Topic-independent, bounded drawing primitives for interactive storyboards."""
 
 import math
+import re
 import unicodedata
 
 
@@ -77,6 +78,20 @@ LINE_LABEL_LIFT = 18             # px a line label sits above the line's midpoin
 OVERLAP_TOLERANCE = 2            # px two labels may share before they overlap
 
 
+# A text made only of field marks (into / out of the page) is a background
+# pattern: it may fill the field region, so other labels may sit on it.
+FIELD_MARKS = re.compile(r"[×✕⊗·•⊙\s]*[×✕⊗·•⊙][×✕⊗·•⊙\s]*")
+
+
+class SceneError(ValueError):
+    """A render-check failure. str() is the code; where names the frame and the
+    element ids (the designer's own ids), so a redraw can fix the exact spot."""
+
+    def __init__(self, code, where=""):
+        super().__init__(code)
+        self.where = where
+
+
 def _check_geometry(item):
     numbers = [v for v in item.values() if isinstance(v, (float, int))]
     numbers.extend(v for point in item.get("points", []) for v in point)
@@ -129,22 +144,30 @@ def _overlaps(a, b):
             and min(a[3], b[3]) > max(a[1], b[1]) + OVERLAP_TOLERANCE)
 
 
-def _frame_layout(frame):
+def _frame_layout(frame, number):
     seen, layout, text_boxes = set(), {}, []
     for item in frame["elements"]:
+        where = f"第 {number} 帧的 {item['id']}"
         if item["id"] in seen:
-            raise ValueError("scene_duplicate_id")
+            raise SceneError("scene_duplicate_id", where)
         seen.add(item["id"])
-        _check_geometry(item)
         label = item.get("label", item.get("text", ""))
-        if not label:
-            continue
-        fitted = _fit_label(label, *_label_box(item))
-        bounds = _label_bounds(fitted)
-        if any(_overlaps(bounds, other) for other in text_boxes):
-            raise ValueError("scene_labels_overlap")
-        text_boxes.append(bounds)
+        try:
+            _check_geometry(item)
+            if not label:
+                continue
+            fitted = _fit_label(label, *_label_box(item))
+            bounds = _label_bounds(fitted)
+        except ValueError as error:
+            raise SceneError(str(error), where) from None
         layout[item["id"]] = fitted
+        if item["shape"] == "text" and FIELD_MARKS.fullmatch(label):
+            fitted["background"] = True  # drawn under the shapes' labels
+            continue
+        clash = next((other for other, box in text_boxes if _overlaps(bounds, box)), None)
+        if clash is not None:
+            raise SceneError("scene_labels_overlap", f"第 {number} 帧的 {clash} 和 {item['id']}")
+        text_boxes.append((item["id"], bounds))
     return layout
 
 
@@ -154,4 +177,4 @@ def scene_layout(spec):
     The returned layout is computed by the application, so the model cannot
     insert styles or font settings.
     """
-    return [_frame_layout(frame) for frame in spec["frames"]]
+    return [_frame_layout(frame, number) for number, frame in enumerate(spec["frames"], 1)]
