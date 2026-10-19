@@ -34,6 +34,11 @@ def direct_decision(primary="A", *, end=False, pause=False, message="先从已�
 
 class DirectRoutingTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        # These orchestration fixtures model a host-authorized research turn.
+        # Default-deny and consent lifecycle have separate boundary regressions.
+        from learning_coach.service.execution import EXTERNAL_PERMISSIONS
+        token = EXTERNAL_PERMISSIONS.set(frozenset({"research"}))
+        self.addCleanup(EXTERNAL_PERMISSIONS.reset, token)
         self.temp = tempfile.TemporaryDirectory()
         self.store = LearningStore(Path(self.temp.name) / "notes.sqlite3")
         self.artifacts = FakeArtifacts()

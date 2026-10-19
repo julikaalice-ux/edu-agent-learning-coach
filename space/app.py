@@ -28,7 +28,9 @@ artifact routes.
 from __future__ import annotations
 
 import asyncio
+from contextlib import aclosing, suppress
 import hmac
+from html import escape
 import logging
 import os
 import re
@@ -194,14 +196,17 @@ def build_pipeline() -> LearningPipeline:
 PIPELINE = build_pipeline()
 
 
-def iframe_for(document: str) -> str:
-    escaped = document.replace("&", "&amp;").replace('"', "&quot;")
+def iframe_for(document: str, token: str = "") -> str:
+    escaped = escape(document, quote=True)
     # Picture pages (gallery) are taller than a single drawn visual.
     height = 640 if 'id="gallery"' in document else 460
     return (
-        '<iframe srcdoc="' + escaped + '" '
+        f'<details class="coach-visual" data-artifact="{escape(token, quote=True)}" open>'
+        '<summary>互动演示 <span class="when-open">收起演示 ×</span>'
+        '<span class="when-closed">重新打开演示</span></summary>'
+        '<iframe title="互动演示" srcdoc="' + escaped + '" '
         f'style="width:100%;height:{height}px;border:1px solid #c7d8e3;border-radius:12px;'
-        'background:#fff" sandbox="allow-scripts"></iframe>'
+        'background:#fff" sandbox="allow-scripts"></iframe></details>'
     )
 
 
@@ -217,10 +222,10 @@ def seen_before(device) -> bool:
 async def respond(user_text, session, device=None, allowed=False):
     user_text = (user_text or "").strip()
     if not user_text:
-        yield session, session["chat"], session["panel"], "", device
+        yield session, session["chat"], gr.skip(), "", device
         return
     if session.get("locked"):
-        yield session, session["chat"], session["panel"], "", device
+        yield session, session["chat"], gr.skip(), "", device
         return
     # Checked here, not only by hiding the page, so direct API calls are refused too.
     if not allowed or not TURN_LIMIT.take():
@@ -228,17 +233,20 @@ async def respond(user_text, session, device=None, allowed=False):
             {"role": "user", "content": user_text},
             {"role": "assistant", "content": LIMIT_TEXT if allowed else LOCKED_TEXT},
         ]
-        yield session, session["chat"], session["panel"], "", device
+        yield session, session["chat"], gr.skip(), "", device
         return
     session["locked"] = True
+    task = None
+    initial_explanation = ""
+    final_published = False
+    messages = session["history"] + [{"role": "user", "text": user_text}]
     try:
         # First token: acknowledge immediately so the UI never looks frozen.
         thinking = session["chat"] + [
             {"role": "user", "content": user_text},
             {"role": "assistant", "content": "我先想想…"},
         ]
-        yield session, thinking, session["panel"], "", device
-        session["history"].append({"role": "user", "text": user_text})
+        yield session, thinking, gr.skip(), "", device
         STAGE_STATUS.current = None
         # No learner_id: learning records are keyed by this page's session and
         # die with it. seen only skips the first-meeting questions.
@@ -249,7 +257,9 @@ async def respond(user_text, session, device=None, allowed=False):
             text = learner_text(output)
             # Keep model context separate from presentation-only markup and image bytes.
             history_text = ARTIFACT_LINK.sub("", text).rstrip()
-            panel = sess["panel"]
+            # Leave the browser's collapse state and running iframe untouched
+            # during progress updates and replies that do not bring a new visual.
+            panel = gr.skip()
             tokens = ARTIFACT_LINK.findall(text)
             text = ARTIFACT_LINK.sub("", text).rstrip()
             for token in tokens:
@@ -262,12 +272,13 @@ async def respond(user_text, session, device=None, allowed=False):
                 if image and "<script" not in document:
                     # Generated picture (illustration or question picture): inline in chat.
                     text = f"{text}\n\n![配图]({image.group(0)})"
-                else:
-                    # Interactive visual: embedded sandboxed frame below chat.
-                    panel = iframe_for(document)
-            sess["history"].append({"role": "assistant", "text": history_text})
+                elif token != sess.get("panel_token"):
+                    # Only a new artifact opens/replaces the interactive panel.
+                    panel = iframe_for(document, token)
+                    sess["panel"] = panel
+                    sess["panel_token"] = token
+            sess["history"] = messages + [{"role": "assistant", "text": history_text}]
             sess["options"] = options_from(output)
-            sess["panel"] = panel
             sess["chat"] = sess["chat"] + [
                 {"role": "user", "content": user_text},
                 {"role": "assistant", "content": text},
@@ -276,25 +287,36 @@ async def respond(user_text, session, device=None, allowed=False):
 
         streamer = getattr(PIPELINE, "run_stream", None)
         if streamer is not None:
-            # Streaming: each delta replaces the placeholder, so the reply text
-            # appears as it is generated; the final event is the validated reply.
+            # Multi-agent turns can publish a validated explanation before the
+            # visual is ready. Single-agent token deltas use the same bubble;
+            # only the final event commits conversation state and artifacts.
             partial = ""
-            async for event in streamer(list(session["history"]), session_id=session["session_id"],
-                                        state=session["state"], learner_id=None,
-                                        returning_visitor=seen_before(device)):
-                if "delta" in event:
-                    partial += event["delta"]
-                    yield session, session["chat"] + [
-                        {"role": "user", "content": user_text},
-                        {"role": "assistant", "content": partial},
-                    ], session["panel"], "", device
-                    continue
-                device = True
-                panel = render_final(session, event["output"], event["state"])
-                yield session, session["chat"], panel, "", device
+            async with aclosing(streamer(messages, session_id=session["session_id"],
+                                         state=session["state"], learner_id=None,
+                                         returning_visitor=seen_before(device))) as stream:
+                async for event in stream:
+                    if "explanation" in event:
+                        initial_explanation = event["explanation"]
+                        yield session, session["chat"] + [
+                            {"role": "user", "content": user_text},
+                            {"role": "assistant", "content": initial_explanation},
+                        ], gr.skip(), "", device
+                        continue
+                    if "delta" in event:
+                        partial += event["delta"]
+                        yield session, session["chat"] + [
+                            {"role": "user", "content": user_text},
+                            {"role": "assistant", "content": partial},
+                        ], gr.skip(), "", device
+                        continue
+                    device = True
+                    panel = render_final(session, event["output"], event["state"])
+                    final_published = True
+                    yield session, session["chat"], panel, "", device
+                    return
             return
         # No streaming support: poll the stage observer while awaiting the turn.
-        task = asyncio.create_task(PIPELINE.run(list(session["history"]), session_id=session["session_id"],
+        task = asyncio.create_task(PIPELINE.run(messages, session_id=session["session_id"],
                                                 state=session["state"], learner_id=None,
                                                 returning_visitor=seen_before(device)))
         deadline = time.monotonic() + 240
@@ -314,17 +336,28 @@ async def respond(user_text, session, device=None, allowed=False):
                         {"role": "user", "content": user_text},
                         {"role": "assistant", "content": label},
                     ]
-                    yield session, thinking, session["panel"], "", device
+                    yield session, thinking, gr.skip(), "", device
         device = True
         panel = render_final(session, output, new_state)
+        final_published = True
         yield session, session["chat"], panel, "", device
     except Exception:
+        if final_published:
+            return
+        failure = "这次处理没有顺利完成，请再试一次。"
+        if initial_explanation:
+            failure = f"{initial_explanation}\n\n后续内容暂时没有完成，请稍后重试。"
         session["chat"] = session["chat"] + [
             {"role": "user", "content": user_text},
-            {"role": "assistant", "content": "这次处理没有顺利完成，请再试一次。"},
+            {"role": "assistant", "content": failure},
         ]
-        yield session, session["chat"], session["panel"], "", device
+        yield session, session["chat"], gr.skip(), "", device
     finally:
+        # Reset cancels the generator; shield must not leave its pipeline running.
+        if task is not None and not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
         session["locked"] = False
 
 
@@ -368,7 +401,7 @@ def clear_demo(session, device):
 
 def new_session():
     session = {"session_id": uuid.uuid4().hex, "state": None, "history": [],
-               "chat": [], "panel": "", "locked": False}
+               "chat": [], "panel": "", "panel_token": None, "locked": False}
     return session, [], "", ""
 
 
@@ -447,19 +480,25 @@ def build_app() -> gr.Blocks:
         )
         locked_note = gr.Markdown(f"**{LOCKED_TEXT}**", visible=False)
         with gr.Column(visible=not ACCESS_KEY) as main:
-            chatbot = gr.Chatbot(label="对话", height=480)
-            panel = gr.HTML("")
-            with gr.Row():
+            chatbot = gr.Chatbot(label="对话", height=480, autoscroll=False, elem_id="coach-chat")
+            panel = gr.HTML("", elem_id="coach-panel", css_template="""
+                .coach-visual { border: 1px solid #c7d8e3; border-radius: 12px; overflow: hidden; }
+                summary { cursor: pointer; padding: 12px 16px; font-weight: 600; }
+                summary span { float: right; font-size: 0.9em; font-weight: 400; }
+                details[open] .when-closed, details:not([open]) .when-open { display: none; }
+                iframe { display: block; max-width: 100%; }
+            """)
+            with gr.Row(elem_id="coach-choices"):
                 option_buttons = [gr.Button(visible=False, size="sm") for _ in range(MAX_OPTIONS)]
-            with gr.Row():
+            with gr.Row(elem_id="coach-composer"):
                 input_box = gr.Textbox(
                     placeholder="问点什么，比如：帮我生成一个对比 1/2 和 1/4 的互动图",
                     scale=9, label="")
-                send = gr.Button("发送", scale=1, variant="primary")
+                send = gr.Button("发送", scale=1, variant="primary", elem_id="coach-send")
             with gr.Row():
-                reset = gr.Button("新会话")
+                reset = gr.Button("新会话", elem_id="coach-reset")
                 if DEMO_STAGE:
-                    clear = gr.Button("清空演示数据")
+                    clear = gr.Button("清空演示数据", elem_id="coach-clear")
                     gr.Markdown(f"**演示模式**：跳过了年龄和学习记录的询问，预设学段“{DEMO_STAGE}”，学习记录已开启。")
                 else:
                     gr.Markdown("每次打开页面都是一个新会话，不会保留之前的对话；本页开启的学习记录也只到本页关闭为止。"
@@ -475,15 +514,15 @@ def build_app() -> gr.Blocks:
         # Server-side per-visitor flag; set from the link on page load.
         allowed = gr.State(not ACCESS_KEY)
 
-        async def on_send(text, sess, dev, ok):
-            # respond is an async generator: first yields the "我先想想…"
-            # placeholder, then the completed turn.
-            async for result in respond(text, sess, dev, ok):
-                yield result
+        # Bind the generator directly so Gradio cancellation closes it promptly.
+        on_send = respond
 
         outputs = [session, chatbot, panel, input_box, device]
 
+        turn_events = []
+
         def after_turn(event):
+            turn_events.append(event)
             # Show the answer's numbered choices as buttons.
             event.then(option_updates, [session], option_buttons)
 
@@ -492,12 +531,16 @@ def build_app() -> gr.Blocks:
         for button in option_buttons:
             # A button passes its own label, so clicking it sends the chosen option.
             after_turn(button.click(on_send, [button, session, device, allowed], outputs))
-        reset.click(new_session, None, [session, chatbot, panel, input_box]).then(
+        reset.click(new_session, None, [session, chatbot, panel, input_box],
+                    cancels=turn_events, queue=False).then(
             option_updates, [session], option_buttons)
         if DEMO_STAGE:
-            clear.click(clear_demo, [session, device], [session, chatbot, panel, input_box, device]).then(
+            clear.click(clear_demo, [session, device], [session, chatbot, panel, input_box, device],
+                        cancels=turn_events, queue=False).then(
                 option_updates, [session], option_buttons)
         show_notes.click(notes_markdown, [session, allowed], [notes_view])
+        # Loaded from a local asset; no browser network service is needed.
+        demo.load(fn=None, js=Path(__file__).with_name("ui.js").read_text(encoding="utf-8"))
         demo.load(check_access, None, [allowed, main, locked_note])
         # Every page load starts a brand-new session. Gradio can re-attach a
         # reloaded page to its previous server-side session (the browser keeps

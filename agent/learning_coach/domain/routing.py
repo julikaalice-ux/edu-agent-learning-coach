@@ -142,7 +142,7 @@ def recover_quiz_route(decision, state, learner_text, *, memory_enabled):
         participant = conservative_participant(participant, decision["plan"]["participant"])
     repaired = {
         "intent": {"primary": INTENT_PRACTICE, "is_implicit": True},
-        "research_query": None, "search_queries": None, "visual_request": None, "observe_learning": memory_enabled,
+        "research_query": None, "search_queries": None, "visual_request": None, "visual_source": None, "observe_learning": memory_enabled,
         "task_summary": quiz["topic"], "pause_task": False, "end_task": False,
         "quiz_action": "continue", "quiz_topic": quiz["topic"], "quiz_total": quiz["total"],
         "difficulty": quiz["difficulty"], "participant": participant,
@@ -177,7 +177,7 @@ def recover_practice_route(decision, state, learner_text):
                        "evidence_quote": quote}
     plan = {
         "intent": {"primary": INTENT_PRACTICE, "is_implicit": False},
-        "research_query": None, "search_queries": None, "visual_request": None, "observe_learning": False,
+        "research_query": None, "search_queries": None, "visual_request": None, "visual_source": None, "observe_learning": False,
         "task_summary": task["task_summary"], "pause_task": False, "end_task": False,
         "quiz_action": "continue" if continuing else "start",
         "quiz_topic": quiz["topic"] if continuing else (task.get("task_summary") or "").strip() or None,
@@ -268,7 +268,7 @@ def recover_explicit_visual_route(decision, learner_text):
     reasons["visual"] = {"code": "explicit_visual", "evidence_quote": quote}
     plan = {
         "intent": {"primary": INTENT_CONCEPT, "is_implicit": False},
-        "research_query": None, "search_queries": None, "visual_request": learner_text.strip(),
+        "research_query": None, "search_queries": None, "visual_request": learner_text.strip(), "visual_source": "local",
         "observe_learning": False,
         "task_summary": task["task_summary"], "pause_task": False, "end_task": False,
         "quiz_action": "none", "quiz_topic": None, "quiz_total": QUIZ_SET_SIZE,

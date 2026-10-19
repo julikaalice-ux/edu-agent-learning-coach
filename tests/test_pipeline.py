@@ -45,7 +45,7 @@ VISUAL = {
 def plan(primary="A", **updates):
     value = {
         "intent": {"primary": primary, "is_implicit": False},
-        "research_query": None, "search_queries": None, "visual_request": None, "observe_learning": False,
+        "research_query": None, "search_queries": None, "visual_request": None, "visual_source": None, "observe_learning": False,
         "task_summary": "学习分数", "pause_task": False, "end_task": False,
         "quiz_action": "none", "quiz_topic": None, "quiz_total": 3,
         "difficulty": "简单", "participant": "learner",
@@ -118,6 +118,8 @@ class FakeRunner:
                         "visual": {"code": "comparison", "evidence_quote": current_text} if proposed["visual_request"] else None,
                     }
                     result = {"mode": "tools", "plan": proposed}
+            if result["mode"] == "tools":
+                result = {**result, "initial_explanation": result.get("initial_explanation")}
             # Decisions carry the coordinator's updated conversation notes; null = no change.
             result = {**result, "context_notes": result.get("context_notes"),
                       "check_question": result.get("check_question")}
@@ -187,6 +189,11 @@ class FakeArtifacts:
 
 class PipelineTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        # These orchestration fixtures model a host-authorized research turn.
+        # Default-deny and consent lifecycle have separate boundary regressions.
+        from learning_coach.service.execution import EXTERNAL_PERMISSIONS
+        token = EXTERNAL_PERMISSIONS.set(frozenset({"research"}))
+        self.addCleanup(EXTERNAL_PERMISSIONS.reset, token)
         self.temp = tempfile.TemporaryDirectory()
         self.store = LearningStore(Path(self.temp.name) / "notes.sqlite3")
         self.research = FakeResearch()

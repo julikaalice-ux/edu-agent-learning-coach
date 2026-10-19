@@ -10,7 +10,7 @@ from learning_coach.domain.visual_contracts import VISUAL_SCHEMA
 from learning_coach.domain.visual_quality import (GALLERY_REVIEW_SCHEMA, VISUAL_REVIEW_SCHEMA, blocking_issues,
                                                   gallery_problem, needs_explanatory_visual, repair_gallery,
                                                   validate_gallery_review, validate_visual_review)
-from learning_coach.service.execution import StageFailure
+from learning_coach.service.execution import StageFailure, external_allowed
 from learning_coach.service.ports import AgentRunner, Artifacts, ImageFinder, ImageGenerator, StorageError
 
 
@@ -50,6 +50,10 @@ async def find_pictures(finder: ImageFinder, spec: dict, cache: dict | None = No
     fixed its text does not search the web again.
     """
     panels = spec["panels"]
+    # This shared boundary also protects callers outside VisualGenerationService.
+    # Cached candidates do not imply permission to use the external capability.
+    if not external_allowed("image_search"):
+        return [[] for _ in panels]
     per_panel = max(1, min(3, MAX_REVIEW_IMAGES // len(panels)))
 
     async def one(panel):
@@ -130,14 +134,28 @@ class VisualGenerationService:
         # Decided before drafting, so the designer is told up front instead of
         # having a whole draft rejected afterwards.
         explanatory = needs_explanatory_visual(payload["goal"], learner_text)
-        gallery_allowed = self.image_finder is not None
+        requested_source = payload.get("visual_source") or "local"
+        gallery_allowed = (requested_source == "web" and self.image_finder is not None
+                           and external_allowed("image_search"))
+        illustration_allowed = (requested_source == "generated" and self.image_generator is not None
+                                and external_allowed("image_generation") and not explanatory)
+        # The source directive and allowed kinds must agree. Unavailable or
+        # unsuitable external modes become a local design before the first call.
+        source = "web" if gallery_allowed else "generated" if illustration_allowed else "local"
+        capabilities = {
+            "image_search": {"available": self.image_finder is not None,
+                             "authorized": self.image_finder is not None and external_allowed("image_search")},
+            "image_generation": {"available": self.image_generator is not None,
+                                 "authorized": self.image_generator is not None and external_allowed("image_generation")},
+            "local_visual": {"available": self.artifacts is not None, "authorized": True},
+        }
         self._found = {}  # pictures already found this turn, reused by a redraw
         previous_spec, issues = None, []
         for attempt in range(1, 3):
             self.drafts = attempt
             draft_input = deepcopy(payload)
-            draft_input.update(attempt=attempt, illustration_allowed=not explanatory,
-                               gallery_allowed=gallery_allowed)
+            draft_input.update(attempt=attempt, visual_source=source, illustration_allowed=illustration_allowed,
+                               gallery_allowed=gallery_allowed, capabilities=deepcopy(capabilities))
             if issues:
                 draft_input.update(revision_issues=deepcopy(issues), previous_spec=previous_spec)
             try:
@@ -157,6 +175,10 @@ class VisualGenerationService:
                 issues = _issue("interaction_problem", "当前请求需要解释机制或演示变化；未经像素核验的静态 AI 配图不能完成此任务。请改用可检查的图解或分步 scene。")
                 self._note(attempt, issues)
                 continue
+            if spec["kind"] == "illustration" and not illustration_allowed:
+                issues = _issue("request_mismatch", "本轮未授权或未选择外部图片生成；请改用程序画的图。")
+                self._note(attempt, issues)
+                continue
             if spec["kind"] == "gallery":
                 if not gallery_allowed:
                     issues = _issue("request_mismatch", "本轮不能使用网络图片（gallery）；请改用程序画的图。")
@@ -168,9 +190,16 @@ class VisualGenerationService:
                 result = await self._drawn(session_id, payload, spec, research, learner_text, attempt, issues)
             outcome, value = result
             if outcome == "done":
+                artifact, context = value
+                if artifact is not None and spec["kind"] not in ("gallery", "illustration"):
+                    if requested_source == "web":
+                        context["limitations"].append("本轮未取得可用网络图片，当前展示的是本地图解。")
+                    elif requested_source == "generated":
+                        context["limitations"].append("本轮未取得可用 AI 配图，当前展示的是本地图解。")
                 return value
             if outcome == "no_pictures":
                 gallery_allowed = False
+                source = "local"
             issues = value
             self._note(attempt, issues)
         return None, unavailable_visual("quality_not_accepted", issues, 2)
@@ -178,6 +207,9 @@ class VisualGenerationService:
     async def _drawn(self, session_id, payload, spec, research, learner_text, attempt, previous_issues):
         """A program-drawn spec or an AI picture: render check, review, then (picture only) generate."""
         artifact = None
+        if spec["kind"] == "illustration" and (
+                payload.get("visual_source") != "generated" or not external_allowed("image_generation")):
+            return "retry", _issue("request_mismatch", "外部图片生成未获本次授权；请改用程序画的图。")
         if spec["kind"] != "illustration":
             try:
                 artifact = self.artifacts.prepare(session_id, spec)
@@ -197,6 +229,10 @@ class VisualGenerationService:
             return review
         review = review[1]
         if spec["kind"] == "illustration":
+            # Check again at the actual side-effect boundary; a model-supplied
+            # spec or capability claim must never grant access to a backend.
+            if payload.get("visual_source") != "generated" or not external_allowed("image_generation"):
+                return "retry", _issue("request_mismatch", "外部图片生成未获本次授权；请改用程序画的图。")
             try:
                 if self.image_generator is None:
                     raise RuntimeError("image_backend_unavailable")
@@ -246,6 +282,8 @@ class VisualGenerationService:
 
     async def _gallery(self, session_id, payload, spec, research, learner_text, explanatory, attempt,
                        previous_issues):
+        if payload.get("visual_source") != "web" or not external_allowed("image_search"):
+            return "retry", _issue("request_mismatch", "联网搜图未获本次授权；请改用程序画的图。")
         # Small structure slips are fixed here rather than costing a whole redraw.
         spec = repair_gallery(spec)
         problem = gallery_problem(spec, explanatory)

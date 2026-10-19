@@ -187,6 +187,9 @@ class QuizWriterPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(output["intent"]["primary"], "G")
 
     async def test_requested_picture_is_drawn_and_published_with_the_question(self):
+        from learning_coach.service.execution import EXTERNAL_PERMISSIONS
+        token = EXTERNAL_PERMISSIONS.set(frozenset({"image_generation"}))
+        self.addCleanup(EXTERNAL_PERMISSIONS.reset, token)
         pictured = {**QUIZ, "question": "看图，图里是什么季节？", "choices": ["冬天", "夏天"],
                     "diagnoses": [{"choice_index": 1, "error_type": "conceptual", "misconception": "把雪景当成夏天"}],
                     "image": {"prompt": "a snowy village street, children building a snowman", "alt": "下雪的村庄"}}
@@ -201,6 +204,9 @@ class QuizWriterPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("new_question", runner.calls_for("coordinator", "respond")[0]["quiz"])
 
     async def test_picture_failure_asks_for_a_text_only_question(self):
+        from learning_coach.service.execution import EXTERNAL_PERMISSIONS
+        token = EXTERNAL_PERMISSIONS.set(frozenset({"image_generation"}))
+        self.addCleanup(EXTERNAL_PERMISSIONS.reset, token)
         pictured = {**QUIZ, "image": {"prompt": "four equal slices of a round pie", "alt": "切成四块的饼"}}
         for pictures in (Pictures(fail=True), None):
             with self.subTest(generator=pictures):

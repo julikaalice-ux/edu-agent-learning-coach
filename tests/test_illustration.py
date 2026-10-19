@@ -68,7 +68,7 @@ class IllustrationPipelineTests(unittest.IsolatedAsyncioTestCase):
         visual = {"kind": "illustration", "title": "圆明园复原图",
                   "prompt": "reconstructed view of Old Summer Palace, illustration",
                   "alt": "圆明园复原想象图"}
-        runner = FakeRunner([plan(visual_request="配一张圆明园的画面")], visuals=[visual])
+        runner = FakeRunner([plan(visual_request="配一张圆明园的画面", visual_source="generated")], visuals=[visual])
         calls = []
 
         async def generate(prompt):
@@ -76,7 +76,7 @@ class IllustrationPipelineTests(unittest.IsolatedAsyncioTestCase):
             return TINY_PNG
 
         output, _ = await self.pipeline(runner, image_generator=generate).run(
-            messages("给我看圆明园的图"), session_id="s", turn_id="1")
+            messages("给我看圆明园的图"), session_id="s", turn_id="1", external_permissions={"image_generation"})
         self.assertEqual(calls, [visual["prompt"]])
         validate(output, RESPONSE_SCHEMA)
         self.assertIn("打开互动图", output["message"])
@@ -86,27 +86,29 @@ class IllustrationPipelineTests(unittest.IsolatedAsyncioTestCase):
     async def test_illustration_failure_falls_back_with_notice(self):
         self.store.set_enabled("s", True)
         visual = {"kind": "illustration", "title": "t", "prompt": "p", "alt": "a"}
-        runner = FakeRunner([plan(visual_request="配一张图")], visuals=[visual])
+        runner = FakeRunner([plan(visual_request="配一张图", visual_source="generated")], visuals=[visual])
 
         async def broken(prompt):
             raise RuntimeError("backend_down")
 
         output, _ = await self.pipeline(runner, image_generator=broken).run(
-            messages("给我看一张图"), session_id="s", turn_id="1")
+            messages("给我看一张图"), session_id="s", turn_id="1", external_permissions={"image_generation"})
         validate(output, RESPONSE_SCHEMA)
         self.assertIn("未生成可用的互动图", output["message"])
         self.assertEqual(self.artifacts.committed, [])
 
-    async def test_illustration_without_generator_falls_back(self):
+    async def test_illustration_without_generator_can_redraft_as_a_local_visual(self):
         # Dependency inversion: a pipeline with no injected generator must not
-        # reach for a concrete backend; it degrades to the standard fallback.
+        # reach for a concrete backend; the designer can use a local diagram.
         self.store.set_enabled("s", True)
         visual = {"kind": "illustration", "title": "t", "prompt": "p", "alt": "a"}
-        runner = FakeRunner([plan(visual_request="配一张图")], visuals=[visual])
-        output, _ = await self.pipeline(runner).run(messages("给我看一张图"), session_id="s", turn_id="1")
+        runner = FakeRunner([plan(visual_request="配一张图", visual_source="generated")], visuals=[visual])
+        output, _ = await self.pipeline(runner).run(
+            messages("给我看一张图"), session_id="s", turn_id="1", external_permissions={"image_generation"})
         validate(output, RESPONSE_SCHEMA)
-        self.assertIn("未生成可用的互动图", output["message"])
-        self.assertEqual(self.artifacts.committed, [])
+        self.assertIn("打开互动图", output["message"])
+        self.assertEqual(self.artifacts.committed[0][1]["spec"]["kind"], "comparison")
+        self.assertFalse(runner.calls_for("visualizer")[0]["illustration_allowed"])
 
 
 if __name__ == "__main__":

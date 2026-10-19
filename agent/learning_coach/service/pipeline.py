@@ -2,6 +2,7 @@
 
 import asyncio
 from collections import OrderedDict
+from contextlib import suppress
 from copy import deepcopy
 import hashlib
 import json
@@ -21,7 +22,8 @@ from learning_coach.domain.routing import (EXPLAIN_INTENTS, INTENT_CHAT, INTENT_
                       explicit_visual_quote, recover_explicit_visual_route,
                       recover_practice_route,
                       recover_quiz_route, require_finished, select_tools)
-from learning_coach.service.execution import BUDGET, CALL_RESERVE, CallBudget, StageFailure
+from learning_coach.service.execution import (BUDGET, CALL_RESERVE, CallBudget, StageFailure,
+    EXTERNAL_CAPABILITIES, EXTERNAL_PERMISSIONS, EXTERNAL_DECLINED, EXPLANATION_SINK, external_allowed)
 from learning_coach.service.visual_generation import VisualGenerationService
 from learning_coach.service.ports import (AgentRunner, ResearchPort, LearningMemory, Artifacts, ImageFinder,
                                           ImageGenerator, StorageError)
@@ -148,7 +150,8 @@ class LearningPipeline:
         self._accepted = OrderedDict()
 
     async def run(self, messages, *, session_id, state=None, turn_id=None,
-                  learner_id=None, returning_visitor=False, on_delta=None):
+                  learner_id=None, returning_visitor=False, on_delta=None, on_explanation=None,
+                  external_permissions=None):
         """Run one turn.
 
         session_id identifies this conversation. learner_id is an optional,
@@ -165,6 +168,9 @@ class LearningPipeline:
         if learner_id is not None and (not isinstance(learner_id, str) or not learner_id.strip()
                                        or len(learner_id) > MAX_ID_CHARS):
             raise ValueError("invalid_learner_id")
+        grants = frozenset(EXTERNAL_PERMISSIONS.get() if external_permissions is None else external_permissions)
+        if not grants <= EXTERNAL_CAPABILITIES:
+            raise ValueError("unknown_external_permission")
         memory_key = learner_id or session_id
         # Keep the visible history (notes are compiled from it); what each agent
         # actually sees is cut to token budgets later.
@@ -194,6 +200,18 @@ class LearningPipeline:
                 raise ValueError("turn_id_conflict")
             committed_baseline = deepcopy(working)
             token = BUDGET.set(CallBudget())
+            permission_token = EXTERNAL_PERMISSIONS.set(grants)
+            declined_token = EXTERNAL_DECLINED.set(False)
+            initial = []
+
+            def deliver(explanation):
+                # Only a complete validated block reaches this sink, never raw JSON/tokens.
+                if not initial:
+                    initial.append(deepcopy(explanation))
+                    if on_explanation is not None:
+                        on_explanation(explanation["message"])
+
+            explanation_token = EXPLANATION_SINK.set(deliver)
             try:
                 output, updated = await asyncio.wait_for(
                     self._execute(clean, session_id, working, event_id, memory_key,
@@ -203,8 +221,15 @@ class LearningPipeline:
                 LOG.warning("learning_turn_failed")
                 output = reply("这次处理没有顺利完成，学习记录和进度没有继续推进。",
                                step={"kind": "question", "text": "要从刚才的问题再试一次吗？"})
+                if initial:
+                    output = deepcopy(initial[0])
+                    output["message"] += "\n\n后续图示未能完成，先保留以上讲解。学习进度没有继续推进。"
+                    output["next_step"] = {"kind": "question", "text": "想重试图示，还是继续文字讲解？"}
                 return output, committed_baseline
             finally:
+                EXPLANATION_SINK.reset(explanation_token)
+                EXTERNAL_DECLINED.reset(declined_token)
+                EXTERNAL_PERMISSIONS.reset(permission_token)
                 BUDGET.reset(token)
             validate(output, self.response_schema)
             updated.update(last_event=event_id, last_input=fingerprint, last_response=deepcopy(output),
@@ -224,6 +249,91 @@ class LearningPipeline:
                      "intent": output["intent"]}, ensure_ascii=False))
             return output, updated
 
+    async def run_stream(self, messages, **kwargs):
+        """Deliver a validated explanation, then one final response/state transaction.
+
+        Closing this iterator cancels and joins the turn; no orphan worker can
+        publish a late visual after the host has reset the conversation.
+        """
+        events = asyncio.Queue()
+        callback = kwargs.pop("on_explanation", None)
+
+        def publish(text):
+            if callback is not None:
+                callback(text)
+            events.put_nowait({"explanation": text})
+
+        task = asyncio.create_task(self.run(messages, on_explanation=publish, **kwargs))
+        getter = None
+        try:
+            while not task.done() or not events.empty():
+                if not events.empty():
+                    yield events.get_nowait()
+                    continue
+                getter = asyncio.create_task(events.get())
+                done, _ = await asyncio.wait((task, getter), return_when=asyncio.FIRST_COMPLETED)
+                if getter in done:
+                    yield getter.result()
+                    getter = None
+                else:
+                    getter.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await getter
+                    getter = None
+            output, state = await task
+            yield {"output": output, "state": state}
+        finally:
+            if getter is not None:
+                getter.cancel()
+                with suppress(asyncio.CancelledError):
+                    await getter
+            if not task.done():
+                task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+    def _capabilities(self):
+        available = {"research": self.research is not None, "image_search": self.image_finder is not None,
+                     "image_generation": self.image_generator is not None, "mcp": False}
+        return {key: {"available": value, "authorized": value and external_allowed(key)}
+                for key, value in available.items()}
+
+    def _request_external_permission(self, messages, state, capabilities, purpose, primary="A"):
+        # Kept only in host-owned session state, excluded from model context.
+        capabilities = sorted(set(capabilities) & EXTERNAL_CAPABILITIES)
+        state["pending_external"] = {"messages": deepcopy(messages), "capabilities": capabilities,
+                                     "purpose": purpose[:400], "granted": sorted(EXTERNAL_PERMISSIONS.get())}
+        labels = {"research": "联网查资料", "image_search": "联网搜索图片",
+                  "image_generation": "调用外部生图服务", "mcp": "通过 MCP 调用外部服务"}
+        actions = "、".join(labels[key] for key in capabilities)
+        message = f"为了继续解释这个问题，需要{actions}。外部服务会收到与本题相关的查询词或图示描述；授权仅用于这次请求。"
+        return reply(message, primary, {"kind": "question", "text":
+            "是否允许本次外部访问？\n1. 允许本次外部访问\n2. 先不联网，继续讲解"}), state
+
+    def _initial_explanation(self, decision, plan, state, memory_enabled):
+        text = decision.get("initial_explanation")
+        if (not text or plan["intent"]["primary"] not in EXPLAIN_INTENTS
+                or not plan["visual_request"] or plan.get("visual_source") not in (None, "local")
+                or plan["research_query"] or plan["quiz_action"] != "none"
+                or plan["end_task"] or plan["pause_task"] or (state.get("quiz") or {}).get("awaiting")):
+            return None
+        # Early output cannot refer to absent artifacts, sources or successful
+        # tool execution. These guards complement (not replace) teaching evaluation.
+        if re.search(r"https?://|/learning-artifacts/|!\[|[？?]|(?:图|检索|查证).{0,5}(?:已|完成|成功)|(?:已|已经).{0,5}(?:画好|生成|查到|核实)", text):
+            return None
+        output = {"schema_version": "1.0", "intent": deepcopy(plan["intent"]),
+                  "message": text.strip(), "next_step": None}
+        try:
+            self._validate_response(output, plan["intent"], None)
+            if self._respond_problem(output, state, memory_enabled):
+                return None
+        except ContractError:
+            return None
+        sink = EXPLANATION_SINK.get()
+        if sink is not None:
+            sink(output)
+        return output["message"]
+
     def reset_session(self, session_id: str) -> None:
         """Drop this conversation's in-memory replays so a reopened page starts clean.
 
@@ -238,6 +348,16 @@ class LearningPipeline:
 
     async def _execute(self, messages, session_id, state, event_id, memory_key, returning_visitor, on_delta=None):
         text = messages[-1]["text"].strip()
+        pending = state.pop("pending_external", None)
+        if pending and text in ("允许本次外部访问", "1", "先不联网，继续讲解", "2"):
+            if text in ("允许本次外部访问", "1"):
+                EXTERNAL_PERMISSIONS.set((frozenset(pending.get("granted", ())) |
+                                          frozenset(pending["capabilities"])) & EXTERNAL_CAPABILITIES)
+            else:
+                EXTERNAL_PERMISSIONS.set(frozenset(pending.get("granted", ())) & EXTERNAL_CAPABILITIES)
+                EXTERNAL_DECLINED.set(True)
+            messages = deepcopy(pending["messages"])
+            text = messages[-1]["text"].strip()
         # Plain-language record controls map onto the same program commands.
         pending_forget = state.pop("pending_forget", False)
         if text in RECORD_ON:
@@ -373,8 +493,19 @@ class LearningPipeline:
         if prefix is None and text in SKIP_QUESTION and waiting.get("awaiting") and not waiting.get("finished"):
             return await self._replace_question(messages, session_id, state, memory_key)
 
-        output, state = await self._teach(messages, session_id, state, event_id, memory_key,
-                                          returning_visitor, on_delta)
+        sink_token = None
+        sink = EXPLANATION_SINK.get()
+        if prefix and sink is not None:
+            # Onboarding's closing sentence is part of the same immutable
+            # prefix, including when a later stage fails after early delivery.
+            sink_token = EXPLANATION_SINK.set(lambda output: sink(
+                {**output, "message": prefix + "\n\n" + output["message"]}))
+        try:
+            output, state = await self._teach(messages, session_id, state, event_id, memory_key,
+                                              returning_visitor, on_delta)
+        finally:
+            if sink_token is not None:
+                EXPLANATION_SINK.reset(sink_token)
         if prefix:
             output["message"] = prefix + "\n\n" + output["message"]
             validate(output, self.response_schema)
@@ -389,7 +520,7 @@ class LearningPipeline:
 
         visible_state = deepcopy({key: value for key, value in state.items()
                                   if key not in ("last_event", "last_input", "last_response", "last_execution",
-                                                 "context")})
+                                                 "context", "pending_external")})
         # Answer keys are private program state, never routing or public-response context.
         quiz = visible_state.get("quiz")
         if quiz and quiz.get("awaiting"):
@@ -416,6 +547,7 @@ class LearningPipeline:
             "learner": learner_card(state, memory, memory_enabled=memory_enabled),
             "state": visible_state, "memory": memory_view,
             "memory_enabled": memory_enabled, "first_meeting": first_meeting,
+            "capabilities": self._capabilities(), "external_declined": EXTERNAL_DECLINED.get(),
         }
         if explicit_visual_quote(text) is not None:
             # Said up front: a full direct answer here would only be thrown
@@ -477,6 +609,30 @@ class LearningPipeline:
 
         plan, tool_results = select_tools(decision["plan"], messages[-1]["text"], memory_enabled=memory_enabled)
         primary = plan["intent"]["primary"]
+        required = set()
+        if plan["research_query"]:
+            required.add("research")
+        source = plan.get("visual_source") or "local"
+        if plan["visual_request"] and source in ("web", "generated"):
+            capability = "image_search" if source == "web" else "image_generation"
+            if self._capabilities()[capability]["available"]:
+                required.add(capability)
+        missing = {capability for capability in required if not external_allowed(capability)}
+        if missing and not EXTERNAL_DECLINED.get():
+            return self._request_external_permission(messages, state, missing,
+                                                     plan["task_summary"] or text, primary)
+        if missing:
+            # A declined request cannot be re-enabled by a model plan. Continue
+            # from existing knowledge/local drawings and expose the limitation.
+            if "research" in missing:
+                plan.update(research_query=None, search_queries=None)
+                plan["tool_reasons"]["research"] = None
+                tool_results["research"] = "skipped_policy"
+            if missing & {"image_search", "image_generation"}:
+                plan["visual_source"] = "local"
+            plan.update(visual_uses_research=False, quiz_uses_research=False)
+        initial_explanation = (self._initial_explanation(decision, plan, state, memory_enabled)
+                               if not missing else None)
         self._apply_task(state, primary, plan)
         self._track_tasks(state, previous_task, previous_quiz, current_turn, text)
         brief = brief_card(state, memory, plan["participant"])
@@ -495,7 +651,7 @@ class LearningPipeline:
         running = {}
 
         async def run_research():
-            if not plan["research_query"]:
+            if not plan["research_query"] or not external_allowed("research"):
                 return None
             try:
                 found = await self.research.run(plan["research_query"], plan["search_queries"])
@@ -514,6 +670,8 @@ class LearningPipeline:
                                                    image_finder=self.image_finder).generate(
                 session_id, {
                     "goal": plan["visual_request"], "research": found,
+                    "visual_source": plan.get("visual_source") or "local",
+                    "initial_explanation": initial_explanation, "capabilities": self._capabilities(),
                     "learning_goal": (plan["task_summary"] or "")[:400],
                     "recent_messages": sub_window,
                     "profile": memory_view.get("profile", {}),
@@ -584,6 +742,8 @@ class LearningPipeline:
             quiz_view["new_question_has_picture"] = True
         response_input = {
             "phase": "respond", "messages": respond_window,
+            "initial_explanation": initial_explanation,
+            "capabilities": self._capabilities(), "external_declined": EXTERNAL_DECLINED.get(),
             "context_notes": notes_now or empty_notes(),
             "learner": learner_card(state, memory, memory_enabled=memory_enabled),
             "plan": plan, "memory": memory_view,
@@ -603,6 +763,13 @@ class LearningPipeline:
             output = await self.runner("coordinator", response_input, self.response_schema)
             if self._respond_problem(output, state, memory_enabled):
                 raise ContractError("respond_correction_rejected")
+        if initial_explanation:
+            # The delivered explanation is an immutable prefix. A model that
+            # repeats that exact prefix does not cause duplicate visible text.
+            supplement = output["message"].strip()
+            if supplement.startswith(initial_explanation):
+                supplement = supplement[len(initial_explanation):].lstrip()
+            output["message"] = initial_explanation + ("\n\n" + supplement if supplement else "")
         stopping = plan["end_task"] or plan["pause_task"] or plan["quiz_action"] == "stop"
         self._validate_response(output, plan["intent"], research, stopping=stopping)
         if stopping:
@@ -623,11 +790,10 @@ class LearningPipeline:
                     # A practice set is done: ask once whether to compile notes.
                     output["next_step"] = {"kind": "question", "text": NOTES_OFFER}
                     offer_notes = True
-        # A step-by-step scene already ends with its own observation question;
-        # a second, graded question after the reply only adds waiting time.
-        scene_asks = artifact is not None and "scene" in (
-            (visual_context or {}).get("kind"), (visual_context or {}).get("companion_kind"))
-        if (check and not stopping and primary in EXPLAIN_INTENTS and not scene_asks
+        # Every accepted visual can have a meaningful observation/action step;
+        # preserve it instead of replacing it with an unrelated practice offer.
+        visual_asks = artifact is not None and output.get("next_step") is not None
+        if (check and not stopping and primary in EXPLAIN_INTENTS and not visual_asks
                 and tool_results["quiz"] in ("not_requested", "skipped_policy")):
             self._offer_check(output, check, state, brief)
 
@@ -938,7 +1104,7 @@ class LearningPipeline:
 
     async def _question_picture(self, session_id, question):
         """Draw the picture a question asks about; None when it cannot be drawn."""
-        if self.image_generator is None or session_id is None:
+        if self.image_generator is None or session_id is None or not external_allowed("image_generation"):
             return None
         spec = {"kind": "illustration", "title": "题目配图",
                 "prompt": question["image"]["prompt"], "alt": question["image"]["alt"]}

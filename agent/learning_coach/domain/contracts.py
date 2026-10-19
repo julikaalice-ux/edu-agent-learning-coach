@@ -43,7 +43,7 @@ TOOL_REASON_CODES = {
     "research": ("explicit_lookup", "time_sensitive", "fact_check", "knowledge_gap"),
     "quiz": ("explicit_practice", "accepted_check", "continue_practice"),
     "notes": ("profile_update", "learning_evidence", "error_record", "review_plan"),
-    "visual": ("explicit_visual", "comparison", "process", "function", "active_recall"),
+    "visual": ("explicit_visual", "comparison", "process", "structure", "function", "active_recall"),
 }
 TOOL_REASONS_SCHEMA = object_schema({
     name: {"anyOf": [
@@ -57,6 +57,7 @@ PLAN_SCHEMA = object_schema({
     "research_query": OPTIONAL_TEXT,
     "search_queries": SEARCH_QUERIES,
     "visual_request": OPTIONAL_TEXT,
+    "visual_source": {"enum": [None, "local", "web", "generated"]},
     "observe_learning": {"type": "boolean"},
     "task_summary": OPTIONAL_TEXT,
     "pause_task": {"type": "boolean"},
@@ -97,6 +98,7 @@ def decision_schema(response_schema):
         object_schema({
             "mode": {"type": "string", "const": "tools"},
             "plan": PLAN_SCHEMA,
+            "initial_explanation": OPTIONAL_TEXT,
             "context_notes": CONTEXT_UPDATE_SCHEMA,
             "check_question": CHECK_SCHEMA,
         }),

@@ -162,7 +162,7 @@ class StructuredRunnerTests(unittest.IsolatedAsyncioTestCase):
         stages = [record.getMessage() for record in logs.records if record.getMessage().startswith("agent_stage ")]
         self.assertEqual(len(stages), 2)
         self.assertRegex(stages[0], r"role=coordinator phase=decide attempt=1 outcome=invalid_output "
-                                    r"estimated_input_tokens=\d+ .* elapsed_ms=\d+$")
+                                    r"estimated_input_tokens=\d+ .* elapsed_ms=\d+ invalid_at=invalid_json$")
         self.assertRegex(stages[1], r"role=coordinator phase=decide attempt=2 outcome=ok "
                                     r"estimated_input_tokens=\d+ .* elapsed_ms=\d+$")
         self.assertNotIn("PRIVATE", " ".join(logs.output))
@@ -478,6 +478,9 @@ class FiveRoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     store.close()
 
     async def test_real_sdk_pipeline_persists_notes_and_serves_visual(self):
+        from learning_coach.service.execution import EXTERNAL_PERMISSIONS
+        token = EXTERNAL_PERMISSIONS.set(frozenset({"research"}))
+        self.addCleanup(EXTERNAL_PERMISSIONS.reset, token)
         class Provider:
             def __init__(self):
                 self.calls = []
@@ -507,7 +510,7 @@ class FiveRoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     role = "coordinator"
                     answer = {"intent": FINAL["intent"], "research_query": "water freezing expansion",
                               "search_queries": ["water freezing expansion", "ordinary ice open lattice density"],
-                              "visual_request": "展示水和冰的结构差异", "observe_learning": True,
+                              "visual_request": "展示水和冰的结构差异", "visual_source": "local", "observe_learning": True,
                               "task_summary": "理解水结冰体积变化", "pause_task": False, "end_task": False,
                               "quiz_action": "none", "quiz_topic": None, "quiz_total": 1,
                               "difficulty": "简单", "participant": "learner",
@@ -519,7 +522,7 @@ class FiveRoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         "notes": {"code": "profile_update", "evidence_quote": quote},
                         "visual": {"code": "explicit_visual", "evidence_quote": quote},
                     }
-                    answer = {"mode": "tools", "plan": answer, "context_notes": None, "check_question": None}
+                    answer = {"mode": "tools", "plan": answer, "initial_explanation": None, "context_notes": None, "check_question": None}
                 elif data.get("phase") == "respond":
                     role = "coordinator"
                     self.response_payload = deepcopy(data)

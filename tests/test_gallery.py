@@ -1,6 +1,7 @@
 """Web-picture gallery pages, and the faster visual flow around them."""
 
 import asyncio
+from contextlib import contextmanager
 from copy import deepcopy
 import json
 from pathlib import Path
@@ -22,9 +23,18 @@ from learning_coach.domain.contracts import ContractError, validate
 from learning_coach.domain.teaching_visuals import gallery_arrangement, visual_handoff
 from learning_coach.domain.visual_contracts import VISUAL_SCHEMA
 from learning_coach.domain.visual_quality import gallery_problem, validate_gallery_review
-from learning_coach.service.execution import StageFailure
+from learning_coach.service.execution import EXTERNAL_PERMISSIONS, StageFailure
 from learning_coach.service.pipeline import CHECK_OFFER
 from learning_coach.service.visual_generation import VisualGenerationService
+
+
+@contextmanager
+def authorized_images(capability="image_search"):
+    token = EXTERNAL_PERMISSIONS.set(frozenset({capability}))
+    try:
+        yield
+    finally:
+        EXTERNAL_PERMISSIONS.reset(token)
 
 
 def panel(label, *, time=None):
@@ -175,15 +185,18 @@ class GalleryServiceTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.artifacts = ArtifactStore(Path(self.temp.name) / "artifacts", renderer=render_visual)
+        # These tests exercise already-authorized provider/review behavior.
+        self.permission = EXTERNAL_PERMISSIONS.set(frozenset({"image_search"}))
 
     def tearDown(self):
+        EXTERNAL_PERMISSIONS.reset(self.permission)
         self.temp.cleanup()
 
     def service(self, runner, finder):
         return VisualGenerationService(runner, self.artifacts, image_finder=finder)
 
     def payload(self, goal="看看植物细胞和动物细胞长什么样"):
-        return {"goal": goal, "research": None, "recent_messages": []}
+        return {"goal": goal, "research": None, "recent_messages": [], "visual_source": "web"}
 
     async def test_reviewer_sees_candidates_and_picks_one_per_panel(self):
         finder = FakeFinder([[picture(), picture("bocha", "Plant cell 2")], [picture(title="Animal cell")]])
@@ -258,8 +271,9 @@ class FasterVisualFlowTests(unittest.IsolatedAsyncioTestCase):
                                    gallery_reviews=[gallery_review(["p0c0"], verdict="revise"),
                                                     gallery_review(["p0c0"])])
             artifacts = ArtifactStore(Path(temp.name) / "artifacts", renderer=render_visual)
-            artifact, _ = await VisualGenerationService(runner, artifacts, image_finder=finder).generate(
-                "s", {"goal": "看看植物细胞", "research": None}, learner_text="看看植物细胞")
+            with authorized_images():
+                artifact, _ = await VisualGenerationService(runner, artifacts, image_finder=finder).generate(
+                    "s", {"goal": "看看植物细胞", "research": None, "visual_source": "web"}, learner_text="看看植物细胞")
             self.assertIsNotNone(artifact)
             self.assertEqual(len(finder.calls), 1)
         finally:
@@ -288,27 +302,34 @@ class FasterVisualFlowTests(unittest.IsolatedAsyncioTestCase):
             def prepare(self, session_id, spec, image=None):
                 return super().prepare(session_id, spec)
         runner = FakeRunner(visuals=[picture_spec, picture_spec], visual_reviews=[review("revise"), review()])
-        artifact, _ = await VisualGenerationService(runner, ImageArtifacts(), generate).generate(
-            "s", {"goal": "超市的画面", "research": None}, learner_text="画一个超市")
+        with authorized_images("image_generation"):
+            artifact, _ = await VisualGenerationService(runner, ImageArtifacts(), generate).generate(
+                "s", {"goal": "超市的画面", "research": None, "visual_source": "generated"}, learner_text="画一个超市")
         self.assertIsNotNone(artifact)
         self.assertEqual(len(calls), 1)  # the rejected first draft cost no picture
 
-    async def test_scene_turn_skips_the_extra_check_question(self):
+    async def test_visual_observation_is_preserved_and_missing_step_can_offer_check(self):
         temp = tempfile.TemporaryDirectory()
         store = LearningStore(Path(temp.name) / "notes.sqlite3")
         try:
-            for visual, expected in ((scene("水的三态"), 0), (VISUAL, 1)):
+            cases = ((scene("水的三态"), {"kind": "question", "text": "第二步与第一步相比发生了什么变化？"}),
+                     (VISUAL, {"kind": "task", "text": "对照图中的两列，找出分子与分母分别表示什么。"}),
+                     (VISUAL, None))
+            for index, (visual, next_step) in enumerate(cases):
                 decision = {"mode": "tools", "plan": plan(visual_request="画图讲水的三态"),
                             "check_question": {"topic": "水的三态", "difficulty": "简单"}}
                 decision["plan"]["tool_reasons"] = {"research": None, "quiz": None, "notes": None,
                                                     "visual": {"code": "explicit_visual", "evidence_quote": "画图"}}
-                runner = FakeRunner([decision], visuals=[visual])
+                response = {**FakeRunner.default_reply(decision["plan"]["intent"]), "next_step": next_step}
+                runner = FakeRunner([decision], visuals=[visual], replies=[response])
                 pipeline = LearningPipeline(runner, FakeResearch(), store, FakeArtifacts(), RESPONSE_SCHEMA)
-                output, _ = await pipeline.run(messages("画图讲水的三态"), session_id=f"t{expected}")
+                output, _ = await pipeline.run(messages("画图讲水的三态"), session_id=f"t{index}")
                 with self.subTest(kind=visual["kind"]):
                     self.assertEqual(runner.calls_for("quizzer"), [])  # a check is only offered, never asked here
                     offered = (output["next_step"] or {}).get("text") == CHECK_OFFER
-                    self.assertEqual(offered, bool(expected))
+                    self.assertEqual(offered, next_step is None)
+                    if next_step is not None:
+                        self.assertEqual(output["next_step"], next_step)
         finally:
             store.close()
             temp.cleanup()

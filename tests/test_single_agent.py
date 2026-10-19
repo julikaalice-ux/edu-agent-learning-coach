@@ -140,7 +140,8 @@ class SingleAgentTests(unittest.IsolatedAsyncioTestCase):
         provider = Provider(SOURCES)
         agent = ScriptedAgent([("search", {"question": "水结冰为什么膨胀", "queries": ["水 结冰 膨胀", "冰 密度"]}),
                                ("record_claims", claims_from_sources), final()])
-        output, state = await self.pipeline(agent, provider).run(messages("查一下水结冰为什么膨胀"), session_id="s")
+        output, state = await self.pipeline(agent, provider).run(
+            messages("查一下水结冰为什么膨胀"), session_id="s", external_permissions={"research"})
         self.assertEqual(provider.queries, ["水 结冰 膨胀", "冰 密度"])
         self.assertEqual(state["last_execution"]["research"], "verified")
         self.assertIn("参考资料：", output["message"])
@@ -148,7 +149,8 @@ class SingleAgentTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_search_without_checking_claims_is_marked_unverified(self):
         agent = ScriptedAgent([("search", {"question": "量子纠缠", "queries": ["量子纠缠"]}), final()])
-        output, state = await self.pipeline(agent, Provider(SOURCES)).run(messages("讲讲量子纠缠"), session_id="s")
+        output, state = await self.pipeline(agent, Provider(SOURCES)).run(
+            messages("讲讲量子纠缠"), session_id="s", external_permissions={"research"})
         self.assertEqual(state["last_execution"]["research"], "unavailable")
         self.assertIn("本次未取得可核查资料", output["message"])
 

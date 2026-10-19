@@ -31,6 +31,7 @@ from learning_coach.domain.routing import INTENT_PRACTICE
 from learning_coach.domain.teaching_visuals import visual_handoff
 from learning_coach.domain.visual_contracts import VISUAL_SCHEMA
 from learning_coach.domain.visual_quality import gallery_problem, needs_explanatory_visual
+from learning_coach.service.execution import EXTERNAL_DECLINED, external_allowed
 from learning_coach.service.pipeline import (NOTES_OFFER, PICTURE_TIMEOUT_SECONDS, QUIZ_PICTURE_LINK,
                                              LearningPipeline, default_participant, empty_learning_notes,
                                              render_question)
@@ -85,6 +86,7 @@ class _Turn:
         self.claims, self.overall = None, None
         self.visual_drafts, self.artifact, self.visual_context = 0, None, None
         self.question, self.picture, self.rejects = None, None, 0
+        self.denied_capabilities = set()
 
     def research(self):
         """Same shape as ResearchService.run(), or None when nothing was searched."""
@@ -112,7 +114,7 @@ class SingleAgentPipeline(LearningPipeline):
         self.turn_schema = single_turn_schema(response_schema)
 
     async def run_stream(self, messages, *, session_id, state=None, turn_id=None,
-                         learner_id=None, returning_visitor=False):
+                         learner_id=None, returning_visitor=False, external_permissions=None):
         """Run one turn while streaming the reply's message text.
 
         Yields {"delta": text} events as the final message is written, then a
@@ -127,26 +129,33 @@ class SingleAgentPipeline(LearningPipeline):
 
         task = asyncio.create_task(self.run(
             messages, session_id=session_id, state=state, turn_id=turn_id,
-            learner_id=learner_id, returning_visitor=returning_visitor, on_delta=on_delta))
+            learner_id=learner_id, returning_visitor=returning_visitor, on_delta=on_delta,
+            external_permissions=external_permissions))
         getter = asyncio.create_task(queue.get())
-        while True:
-            finished, _ = await asyncio.wait({task, getter}, return_when=asyncio.FIRST_COMPLETED)
-            # The getter is drained first: it can complete in the same batch as
-            # the run task, and its delta must not be lost to the break.
-            if getter in finished:
-                yield {"delta": getter.result()}
-                getter = asyncio.create_task(queue.get())
-                continue
-            if task in finished:
-                getter.cancel()
-                break
-        while True:
-            try:
-                yield {"delta": queue.get_nowait()}
-            except asyncio.QueueEmpty:
-                break
-        output, state = task.result()
-        yield {"output": output, "state": state}
+        try:
+            while True:
+                finished, _ = await asyncio.wait({task, getter}, return_when=asyncio.FIRST_COMPLETED)
+                # Drain a delta that completed together with the final task.
+                if getter in finished:
+                    yield {"delta": getter.result()}
+                    getter = asyncio.create_task(queue.get())
+                    continue
+                if task in finished:
+                    break
+            while True:
+                try:
+                    yield {"delta": queue.get_nowait()}
+                except asyncio.QueueEmpty:
+                    break
+            output, state = task.result()
+            yield {"output": output, "state": state}
+        finally:
+            # Closing a chat stream cancels its workers, including a suspended
+            # model/tool call; no abandoned turn may commit a later result.
+            for worker in (getter, task):
+                if not worker.done():
+                    worker.cancel()
+            await asyncio.gather(getter, task, return_exceptions=True)
 
     # Program-triggered drafts (“换一题”, “整理笔记”) go to the same single agent.
     async def _draft_notes(self, payload):
@@ -181,8 +190,17 @@ class SingleAgentPipeline(LearningPipeline):
         return info, evidence
 
     def _tools(self, turn, session_id, state, learner_text):
+        def needs_permission(capability, action):
+            turn.denied_capabilities.add(capability)
+            if EXTERNAL_DECLINED.get():
+                return _problem("permission_declined", f"本次未授权{action}。继续用已有知识和本地图解说明，不再询问授权。")
+            return {**_problem("permission_required", f"{action}需要学习者明确授权。请说明用途并征求本次授权，或继续使用已有知识和本地图解。"),
+                    "required_capability": capability}
+
         async def search(question, queries):
             turn.calls.append("search")
+            if not external_allowed("research"):
+                return needs_permission("research", "联网检索")
             if turn.searches >= MAX_SEARCHES:
                 return _problem("search_limit", "本轮已经检索过两次，用已有资料继续。")
             turn.searches += 1
@@ -227,6 +245,8 @@ class SingleAgentPipeline(LearningPipeline):
             try:
                 image = None
                 if spec["kind"] == "illustration":
+                    if not external_allowed("image_generation"):
+                        return needs_permission("image_generation", "调用外部图片生成服务")
                     if self.image_generator is None:
                         raise RuntimeError("image_backend_unavailable")
                     image = await asyncio.wait_for(self.image_generator(spec["prompt"]),
@@ -252,6 +272,8 @@ class SingleAgentPipeline(LearningPipeline):
             # (best-ranked, Commons first) candidate.
             if self.image_finder is None:
                 return _problem("gallery_unavailable", "这个环境不能用网络图片，请改用程序画的图。")
+            if not external_allowed("image_search"):
+                return needs_permission("image_search", "联网搜图")
             problem = gallery_problem(spec, explanatory)
             if problem:
                 return _problem(problem[0]["code"], problem[0]["message"])
@@ -329,6 +351,9 @@ class SingleAgentPipeline(LearningPipeline):
         ]
 
     async def _teach(self, messages, session_id, state, event_id, memory_key, returning_visitor, on_delta=None):
+        # An authorization pause must not consume an answer or advance a quiz:
+        # the original learner turn will run again once consent is resolved.
+        permission_baseline = deepcopy(state)
         text = messages[-1]["text"].strip()
         budgets = self.budgets
         numbered = number_turns(messages)
@@ -346,7 +371,7 @@ class SingleAgentPipeline(LearningPipeline):
 
         visible_state = deepcopy({key: value for key, value in state.items()
                                   if key not in ("last_event", "last_input", "last_response", "last_execution",
-                                                 "context")})
+                                                 "context", "pending_external")})
         quiz = visible_state.get("quiz")
         if quiz and quiz.get("awaiting"):
             quiz["awaiting"] = public_quiz(quiz["awaiting"])
@@ -358,6 +383,14 @@ class SingleAgentPipeline(LearningPipeline):
             "state": visible_state, "memory": memory_slice(memory, focus, budgets.memory),
             "memory_enabled": memory_enabled, "first_meeting": first_meeting,
             "quiz_feedback": quiz_feedback,
+            "external_declined": EXTERNAL_DECLINED.get(),
+            "capabilities": {
+                "research": {"available": self.provider is not None, "authorized": self.provider is not None and external_allowed("research")},
+                "image_search": {"available": self.image_finder is not None, "authorized": self.image_finder is not None and external_allowed("image_search")},
+                "image_generation": {"available": self.image_generator is not None, "authorized": self.image_generator is not None and external_allowed("image_generation")},
+                "mcp": {"available": False, "authorized": False},
+                "local_visual": {"available": self.artifacts is not None, "authorized": True},
+            },
         }
         turn = _Turn()
         tools = self._tools(turn, session_id, state, text)
@@ -366,6 +399,10 @@ class SingleAgentPipeline(LearningPipeline):
         else:
             drafted = await self.agent("teach", payload, self.turn_schema, tools)
         result = validate(drafted, self.turn_schema)
+        if turn.denied_capabilities and not EXTERNAL_DECLINED.get():
+            return self._request_external_permission(
+                messages, permission_baseline, sorted(turn.denied_capabilities),
+                "为当前问题补充外部资料或图片", result["response"]["intent"]["primary"])
         output, task = result["response"], result["task"]
         primary = output["intent"]["primary"]
         stopping = task["end_task"] or task["pause_task"] or result["stop_quiz"]

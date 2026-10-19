@@ -3,7 +3,7 @@
 The Space runs space/app.py next to the learning_coach package, flat:
 
     build/space/
-        app.py  Dockerfile  requirements.txt  README.md
+        app.py  ui.js  Dockerfile  requirements.txt  README.md
         learning_coach/  prompts/  response.schema.json
 
 Usage:  python scripts/build_space.py [output-folder]
@@ -17,7 +17,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "agent"
-SPACE_FILES = ("app.py", "Dockerfile", "requirements.txt", "README.md")
+SPACE_FILES = ("app.py", "ui.js", "Dockerfile", "requirements.txt", "README.md")
 RUNTIME_FILES = ("response.schema.json",)
 RUNTIME_DIRS = ("learning_coach", "prompts")
 SKIP = shutil.ignore_patterns("__pycache__", "*.pyc", ".env", "*.env", ".learning-coach", ".DS_Store")

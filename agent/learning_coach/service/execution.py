@@ -18,5 +18,17 @@ BUDGET = ContextVar("learning_coach_budget", default=None)
 CALL_RESERVE = ContextVar("learning_coach_call_reserve", default=0)
 
 
+# Per-turn authorization is supplied by the host or a program-owned permission
+# question. Model plans and backend availability never grant permission.
+EXTERNAL_CAPABILITIES = frozenset({"research", "image_search", "image_generation", "mcp"})
+EXTERNAL_PERMISSIONS = ContextVar("learning_coach_external_permissions", default=frozenset())
+EXTERNAL_DECLINED = ContextVar("learning_coach_external_declined", default=False)
+EXPLANATION_SINK = ContextVar("learning_coach_explanation_sink", default=None)
+
+
+def external_allowed(capability: str) -> bool:
+    return capability in EXTERNAL_CAPABILITIES and capability in EXTERNAL_PERMISSIONS.get()
+
+
 class StageFailure(RuntimeError):
     """A bounded model stage could not produce an accepted result."""

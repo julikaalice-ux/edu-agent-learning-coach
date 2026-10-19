@@ -172,10 +172,11 @@ class TeachingVisualPipelineTests(unittest.IsolatedAsyncioTestCase):
                 return super().prepare(session_id, spec)
         self.artifacts = ImageArtifacts()
         picture = {"kind": "illustration", "title": "松树外观", "prompt": "a pine tree", "alt": "松树的外观配图"}
-        runner = FakeRunner([plan(visual_request="松树外观配图")], visuals=[picture])
+        runner = FakeRunner([plan(visual_request="松树外观配图", visual_source="generated")], visuals=[picture])
         async def image_generator(prompt):
             return TINY_PNG
-        await self.pipeline(runner, image_generator).run(messages("给我松树外观配图"), session_id="s")
+        await self.pipeline(runner, image_generator).run(
+            messages("给我松树外观配图"), session_id="s", external_permissions={"image_generation"})
         self.assertEqual(self.artifacts.image, TINY_PNG)
         self.assertEqual(len(self.artifacts.committed), 1)
         review_input = runner.calls_for("verifier", "visual_review")[0]
@@ -246,7 +247,8 @@ class TeachingVisualPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.research = FakeResearch({"overall": "likely", "sources": [{"id": "s1", "title": "未核实", "url": "https://example.org/a"}],
                                       "claims": [{"text": "未核实的说法", "status": "likely"}]})
         runner = FakeRunner([plan(visual_request="解释资料", research_query="查证资料")])
-        _, state = await self.pipeline(runner).run(messages("查证后画图"), session_id="s")
+        _, state = await self.pipeline(runner).run(
+            messages("查证后画图"), session_id="s", external_permissions={"research"})
         self.assertIsNone(runner.calls_for("visualizer")[0]["research"])
         self.assertIsNone(runner.calls_for("verifier", "visual_review")[0]["research"])
         self.assertEqual(state["last_execution"]["tools"]["visual"], "published")
