@@ -73,3 +73,43 @@ export async function sendTurn(request: TurnRequest): Promise<TurnResponse> {
   }
   return (await response.json()) as TurnResponse;
 }
+
+/** 流式：onDelta 逐段收到回复文本，resolve 时返回完整结果。 */
+export async function streamTurn(
+  request: TurnRequest,
+  onDelta: (text: string) => void,
+): Promise<TurnResponse> {
+  const response = await fetch("/turn", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...request, stream: true }),
+  });
+  if (!response.ok || !response.body) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error((body as { error?: string }).error || `http_${response.status}`);
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let result: TurnResponse | null = null;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const frames = buffer.split("\n\n");
+    buffer = frames.pop() ?? "";
+    for (const frame of frames) {
+      const line = frame.split("\n").find((item) => item.startsWith("data:"));
+      if (!line) continue;
+      try {
+        const payload = JSON.parse(line.slice(5).trim());
+        if (payload.delta) onDelta(payload.delta);
+        if (payload.done) result = payload;
+      } catch {
+        /* 忽略不完整的帧 */
+      }
+    }
+  }
+  if (!result) throw new Error("stream_incomplete");
+  return result;
+}

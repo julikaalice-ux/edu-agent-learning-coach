@@ -1,7 +1,35 @@
 import { useEffect, useRef, useState } from "react";
 import { GreetingScene } from "./components/GreetingScene";
 import { ChatScene } from "./components/ChatScene";
-import { emptySession, sendTurn, type ChatMessage, type Session } from "./lib/api";
+import { emptySession, streamTurn, type ChatMessage, type Mistake, type Session } from "./lib/api";
+
+const ERROR_CATEGORIES = ["概念性误解", "步骤性跳跃", "审题偏差", "迁移失败"];
+
+/** 从教练回复里提取错题（答错反馈）与笔记（整理完成）信号。 */
+function extractLearning(text: string, messages: ChatMessage[]) {
+  const mistakes: Mistake[] = [];
+  const category = ERROR_CATEGORIES.find((item) => text.includes(item)) ?? "";
+  if ((category || text.includes("选错了") || text.includes("答错了")) && messages.length) {
+    const answer = [...messages].reverse().find((item) => item.role === "user");
+    const question = [...messages]
+      .reverse()
+      .find((item) => item.role === "assistant" && /[A-D]\.\s/.test(item.content));
+    mistakes.push({
+      concept: question ? question.content.slice(0, 24) : answer?.content.slice(0, 24) ?? "本次练习",
+      category: category || "原因待确认",
+      question: question?.content ?? answer?.content ?? "",
+      at: Date.now(),
+    });
+  }
+  let noteLabel = "";
+  if (text.includes("整理好了")) {
+    const topic = [...messages]
+      .reverse()
+      .find((item) => item.role === "user" && /考|练习|复习/.test(item.content));
+    noteLabel = topic ? topic.content.slice(0, 24) : "本次整理的知识点";
+  }
+  return { mistakes, noteLabel };
+}
 
 const WELCOME: ChatMessage = {
   role: "assistant",
@@ -75,32 +103,51 @@ export default function App() {
     setSession((prev) => ({
       ...prev,
       options: [],
-      messages: [...prev.messages, { role: "user", content: text, at: Date.now() }],
+      messages: [
+        ...prev.messages,
+        { role: "user", content: text, at: Date.now() },
+        { role: "assistant", content: "", at: Date.now() },
+      ],
     }));
     try {
-      const reply = await sendTurn({ conversation: session.conversation, input: text });
-      setSession((prev) => ({
-        ...prev,
-        conversation: reply.conversation,
-        options: reply.options,
-        messages: [
-          ...prev.messages,
-          { role: "assistant", content: reply.text, at: Date.now() },
-        ],
-      }));
+      const reply = await streamTurn(
+        { conversation: session.conversation, input: text },
+        (delta) => {
+          setSession((prev) => {
+            const messages = [...prev.messages];
+            const last = messages[messages.length - 1];
+            messages[messages.length - 1] = { ...last, content: last.content + delta };
+            return { ...prev, messages };
+          });
+        },
+      );
+      const { mistakes, noteLabel } = extractLearning(reply.text, session.messages);
+      setSession((prev) => {
+        const messages = [...prev.messages];
+        const last = messages[messages.length - 1];
+        messages[messages.length - 1] = { ...last, content: reply.text };
+        const notes = noteLabel
+          ? { ...prev.notes, concepts: [...prev.notes.concepts, { label: noteLabel, status: "刚整理" }] }
+          : prev.notes;
+        return {
+          ...prev,
+          conversation: reply.conversation,
+          options: reply.options,
+          mistakes: [...prev.mistakes, ...mistakes],
+          notes,
+          messages,
+        };
+      });
     } catch (error) {
-      setSession((prev) => ({
-        ...prev,
-        options: [],
-        messages: [
-          ...prev.messages,
-          {
-            role: "assistant",
-            content: `这次连接没有成功（${error instanceof Error ? error.message : "未知错误"}），请稍后再试。`,
-            at: Date.now(),
-          },
-        ],
-      }));
+      setSession((prev) => {
+        const messages = [...prev.messages];
+        const last = messages[messages.length - 1];
+        messages[messages.length - 1] = {
+          ...last,
+          content: `这次连接没有成功（${error instanceof Error ? error.message : "未知错误"}），请稍后再试。`,
+        };
+        return { ...prev, messages };
+      });
     } finally {
       setThinking(false);
     }

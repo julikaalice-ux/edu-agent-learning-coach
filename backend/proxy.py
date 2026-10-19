@@ -28,7 +28,7 @@ ENDPOINT = os.environ.get("AGENT_ENDPOINT", DEFAULT_ENDPOINT)
 TOKEN_LOCK = threading.Lock()
 _TOKEN = {"value": None, "expires": 0}
 
-OPTION_LINE = re.compile(r"^\s*\d+\.\s*(.+?)\s*$", re.MULTILINE)
+OPTION_LINE = re.compile(r"^\s*(?:[A-D]|\d+)\.\s*(.+?)\s*$", re.MULTILINE)
 QUESTION_LINES = re.compile(r"(A|B|C|D)\.\s", re.MULTILINE)
 
 
@@ -61,6 +61,56 @@ def call(path: str, body: dict | None = None, method: str | None = None) -> dict
             return json.loads(response.read())
     except urllib.error.HTTPError as error:
         raise RuntimeError(f"agent_http_{error.code}") from error
+
+
+def stream_events(conversation: str, user_input: str):
+    """把上游 SSE 转成简化事件：逐段 {"delta"}，最后 {"done"}。
+
+    上游 events: response.output_text.delta（增量文本）与 response.completed
+    （完整输出）；代理只透传可见文本，其余事件丢弃。
+    """
+    url = f"{ENDPOINT}/responses?api-version=v1"
+    body = json.dumps({"conversation": conversation, "input": user_input, "stream": True}).encode()
+    request = urllib.request.Request(url, data=body, method="POST",
+                                     headers={"Authorization": f"Bearer {get_token()}",
+                                              "Content-Type": "application/json"})
+    with urllib.request.urlopen(request, timeout=300) as response:
+        event, data_lines = None, []
+        for raw in response:
+            line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+            if not line:
+                if event and data_lines:
+                    yield event, "\n".join(data_lines)
+                event, data_lines = None, []
+                continue
+            if line.startswith("event:"):
+                event = line[len("event:"):].strip()
+            elif line.startswith("data:"):
+                data_lines.append(line[len("data:"):].strip())
+
+
+def stream_reply(conversation: str, user_input: str):
+    """逐段产出回复文本，最后产出 (conversation, 全文)。"""
+    full = []
+    for event, data in stream_events(conversation, user_input):
+        if event == "response.output_text.delta":
+            try:
+                delta = json.loads(data).get("delta", "")
+            except json.JSONDecodeError:
+                continue
+            if delta:
+                full.append(delta)
+                yield {"delta": delta}
+        elif event == "response.completed":
+            try:
+                payload = json.loads(data)
+                text = extract_text(payload.get("response") or payload)
+                if text:
+                    full = [text]
+            except json.JSONDecodeError:
+                pass
+    yield {"done": True, "conversation": conversation,
+           "text": "".join(full).strip() or "这次处理没有顺利完成，请再试一次。"}
 
 
 def extract_text(payload: dict) -> str:
@@ -128,6 +178,24 @@ class Handler(BaseHTTPRequestHandler):
                 if not conversation:
                     self._reply(502, {"error": "conversation_create_failed"})
                     return
+            if payload.get("stream"):
+                # 简化 SSE：{delta} 逐段，最后 {done} 带全文与选项。
+                self.send_response(200)
+                self._cors()
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                for event in stream_reply(conversation, user_input):
+                    if "delta" in event:
+                        frame = json.dumps({"delta": event["delta"]}, ensure_ascii=False)
+                    else:
+                        frame = json.dumps({"done": True, "conversation": event["conversation"],
+                                            "text": event["text"],
+                                            "options": extract_options(event["text"])},
+                                           ensure_ascii=False)
+                    self.wfile.write(f"data: {frame}\n\n".encode())
+                    self.wfile.flush()
+                return
             result = call("responses", {"conversation": conversation, "input": user_input})
             text = extract_text(result) or "这次处理没有顺利完成，请再试一次。"
             self._reply(200, {"conversation": conversation, "text": text,
