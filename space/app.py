@@ -31,6 +31,7 @@ import asyncio
 from contextlib import aclosing, suppress
 import hmac
 from html import escape
+import json
 import logging
 import os
 import re
@@ -62,6 +63,11 @@ ROOT = _find_root()
 sys.path.insert(0, str(ROOT))
 
 import gradio as gr
+
+try:  # 部署环境（Space）有 fastapi；本地测试环境没有，不影响 Gradio 路径
+    from fastapi import Request as FastAPIRequest
+except ImportError:  # pragma: no cover
+    FastAPIRequest = None
 
 try:
     from dotenv import load_dotenv
@@ -643,5 +649,85 @@ def build_app() -> gr.Blocks:
     return demo
 
 
+def run_combined(port: int) -> None:
+    """同一容器服务三样：新前端（根路径静态）、/turn 代理、原 Gradio（/legacy 备用）。
+
+    前端构建产物在 ui/（build_space 复制 frontend/dist），代理模块是
+    同目录的 proxy.py（build_space 从 backend/ 复制）。
+    """
+    from fastapi import FastAPI
+    from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+    from fastapi.staticfiles import StaticFiles
+    import uvicorn
+
+    import proxy as space_proxy  # noqa: E402  (build_space 复制到本目录)
+
+    ui_dir = Path(__file__).with_name("ui")
+    fastapi_app = FastAPI()
+
+    # 备用旧界面：挂到 /legacy
+    demo = build_app()
+    gr.mount_gradio_app(fastapi_app, demo, path="/legacy")
+
+    @fastapi_app.post("/turn")
+    async def turn(request: FastAPIRequest):
+        payload = await request.json()
+        if not TURN_LIMIT.take():
+            return JSONResponse(status_code=200, content={
+                "conversation": None, "text": LIMIT_TEXT, "options": []})
+        user_input = str(payload.get("input", "")).strip()
+        if not user_input:
+            return JSONResponse(status_code=400, content={"error": "empty_input"})
+        conversation = payload.get("conversation")
+        if not conversation:
+            try:
+                conversation = space_proxy.call("conversations", {}).get("id")
+            except Exception as error:
+                return JSONResponse(status_code=502, content={"error": type(error).__name__})
+            if not conversation:
+                return JSONResponse(status_code=502, content={"error": "conversation_create_failed"})
+        try:
+            if payload.get("stream"):
+                async def events():
+                    for event in space_proxy.stream_reply(conversation, user_input):
+                        if "delta" in event:
+                            frame = json.dumps({"delta": event["delta"]}, ensure_ascii=False)
+                        else:
+                            frame = json.dumps({"done": True, "conversation": event["conversation"],
+                                                "text": event["text"],
+                                                "options": space_proxy.extract_options(event["text"])},
+                                               ensure_ascii=False)
+                        yield f"data: {frame}\n\n"
+                return StreamingResponse(events(), media_type="text/event-stream",
+                                         headers={"Cache-Control": "no-cache"})
+            result = space_proxy.call("responses", {"conversation": conversation, "input": user_input})
+            text = space_proxy.extract_text(result) or "这次处理没有顺利完成，请再试一次。"
+            return JSONResponse(status_code=200, content={
+                "conversation": conversation, "text": text,
+                "options": space_proxy.extract_options(text)})
+        except Exception as error:
+            return JSONResponse(status_code=502, content={"error": type(error).__name__})
+
+    @fastapi_app.get("/artifact/{token}")
+    async def artifact(token: str):
+        document = PIPELINE.artifacts.get(token)
+        if document is None:
+            return JSONResponse(status_code=404, content={"error": "not_found"})
+        return HTMLResponse(document, headers={
+            "Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff", "X-Frame-Options": "SAMEORIGIN",
+            "Content-Security-Policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+                                       "img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'; sandbox allow-scripts",
+        })
+
+    if ui_dir.is_dir():
+        fastapi_app.mount("/", StaticFiles(directory=str(ui_dir), html=True), name="ui")
+    uvicorn.run(fastapi_app, host="0.0.0.0", port=port, log_level="warning")
+
+
 if __name__ == "__main__":
-    build_app().launch(server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 8000)))
+    port = int(os.environ.get("PORT", 8000))
+    if Path(__file__).with_name("ui").is_dir():
+        run_combined(port)
+    else:
+        build_app().launch(server_name="0.0.0.0", server_port=port)

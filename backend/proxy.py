@@ -17,6 +17,7 @@ import re
 import subprocess
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -33,12 +34,34 @@ QUESTION_LINES = re.compile(r"(A|B|C|D)\.\s", re.MULTILINE)
 
 
 def get_token() -> str:
-    """Azure CLI scope 形式的令牌，按到期前 5 分钟缓存。"""
+    """令牌来源：服务主体环境变量（Space/部署环境）优先，其次 Azure CLI scope 形式（本地）。
+
+    按到期前 5 分钟缓存。
+    """
     import time
 
     with TOKEN_LOCK:
         if _TOKEN["value"] and _TOKEN["expires"] - time.time() > 300:
             return _TOKEN["value"]
+        tenant = os.environ.get("AZURE_TENANT_ID", "").strip()
+        client = os.environ.get("AZURE_CLIENT_ID", "").strip()
+        secret = os.environ.get("AZURE_CLIENT_SECRET", "").strip()
+        if tenant and client and secret:
+            data = urllib.parse.urlencode({
+                "client_id": client, "client_secret": secret,
+                "grant_type": "client_credentials", "scope": SCOPE,
+            }).encode()
+            request = urllib.request.Request(
+                f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token",
+                data=data, method="POST")
+            try:
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    payload = json.loads(response.read())
+                _TOKEN["value"] = payload["accessToken"]
+                _TOKEN["expires"] = int(time.time()) + int(payload.get("expires_in", 3600))
+                return _TOKEN["value"]
+            except (urllib.error.URLError, KeyError, ValueError):
+                pass  # 服务主体失败时回退到 CLI
         result = subprocess.run(
             ["az", "account", "get-access-token", "--scope", SCOPE, "--output", "json"],
             capture_output=True, text=True, check=False, timeout=60)

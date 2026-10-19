@@ -1,6 +1,59 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import type { ChatMessage, Mistake, OptionCard, SessionNotes, SessionSettings } from "../lib/api";
 import { STAGE_OPTIONS, WHO_OPTIONS } from "../lib/api";
+
+/** 互动图 / 题目配图 / 普通链接 / 纯文本的消息渲染。 */
+const PART_PATTERN = /\[(打开互动图|看题目配图)\]\(\/artifact\/([A-Za-z0-9_-]+)\)|\[([^\]]+)\]\(([^)]+)\)/g;
+
+function MessageContent({ text }: { text: string }) {
+  const normalized = text.replace(/http:\/\/localhost:8088\/artifacts\//g, "/artifact/");
+  const nodes: ReactNode[] = [];
+  let last = 0;
+  let key = 0;
+  PART_PATTERN.lastIndex = 0;
+  for (let match = PART_PATTERN.exec(normalized); match; match = PART_PATTERN.exec(normalized)) {
+    if (match.index > last) {
+      nodes.push(<span key={key++}>{normalized.slice(last, match.index)}</span>);
+    }
+    if (match[1]) {
+      nodes.push(
+        match[1] === "打开互动图" ? (
+          <iframe
+            key={key++}
+            src={`/artifact/${match[2]}`}
+            title="互动图"
+            sandbox="allow-scripts"
+            className="mt-2 block h-[460px] w-full rounded-xl border border-line bg-white"
+          />
+        ) : (
+          <img
+            key={key++}
+            src={`/artifact/${match[2]}`}
+            alt="题目配图"
+            className="mt-2 block max-h-80 rounded-xl border border-line bg-white"
+          />
+        ),
+      );
+    } else if (match[3] && match[4]) {
+      nodes.push(
+        <a
+          key={key++}
+          href={match[4]}
+          target="_blank"
+          rel="noreferrer"
+          className="text-moss underline underline-offset-4"
+        >
+          {match[3]}
+        </a>,
+      );
+    }
+    last = match.index + match[0].length;
+  }
+  if (last < normalized.length) {
+    nodes.push(<span key={key++}>{normalized.slice(last)}</span>);
+  }
+  return <div className="whitespace-pre-wrap break-words">{nodes}</div>;
+}
 
 export type MenuKey = "workbench" | "mistakes" | "notes" | "settings";
 
@@ -81,7 +134,7 @@ function Workbench({ messages, options, thinking, input, onInput, onSend }: Chat
                   : "rounded-bl-md border border-line bg-white text-ink"
               }`}
             >
-              {turn.content}
+              <MessageContent text={turn.content} />
             </div>
           </div>
         ))}

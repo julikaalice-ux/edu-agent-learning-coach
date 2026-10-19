@@ -39,5 +39,12 @@ def build(out: Path) -> Path:
 if __name__ == "__main__":
     target = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "build/space"
     folder = build(target.resolve())
+    # 新前端（frontend/dist）与代理模块一并打包，Space 同容器服务三者。
+    dist = ROOT / "frontend" / "dist"
+    if dist.is_dir():
+        shutil.copytree(dist, folder / "ui", dirs_exist_ok=True)
+    else:
+        print("提示：frontend/dist 不存在，先运行 (cd frontend && npm run build) 再打包。")
+    shutil.copy2(ROOT / "backend" / "proxy.py", folder / "proxy.py")
     count = sum(1 for path in folder.rglob("*") if path.is_file())
     print(f"Space folder ready: {folder} ({count} files)")
