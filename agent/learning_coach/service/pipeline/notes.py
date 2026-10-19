@@ -7,7 +7,8 @@ from learning_coach.domain.context import brief_card, learner_messages, memory_s
 from learning_coach.domain.note_contracts import NOTES_SCHEMA
 from learning_coach.domain.routing import INTENT_CHAT
 from learning_coach.service.execution import StageFailure
-from learning_coach.service.pipeline.state import Key, memory_enabled
+from learning_coach.service.pipeline.shell import USER
+from learning_coach.service.pipeline.state import NOTES_FOR_QUESTIONS, Key, memory_enabled
 from learning_coach.service.pipeline.texts import NEXT_TOPIC, question, reply
 from learning_coach.service.ports import StorageError
 
@@ -36,12 +37,12 @@ class NotesService:
             return reply("这次对话里还没有新的内容可以整理。", INTENT_CHAT, question(NEXT_TOPIC)), state
         turns = {item["turn"] for item in shown}
         # Evidence must quote what the learner actually said in these turns.
-        said = "\n".join(item["text"] for item in earlier if item["role"] == "user" and item["turn"] in turns)
+        said = "\n".join(item["text"] for item in earlier if item["role"] == USER and item["turn"] in turns)
         memory = self.deps.store.snapshot(turn.memory_key)
         payload = {
             "learner_messages": shown,
             "evidence_turns": [item for item in context.get("evidence_turns", []) if item in turns],
-            "context_notes": note_slice(context.get("notes"), "covered", "stuck"),
+            "context_notes": note_slice(context.get("notes"), *NOTES_FOR_QUESTIONS),
             "quiz_results": context.get("quiz_results", []),
             "learner": brief_card(state, memory),
             "memory": memory_slice(memory, " ".join(item["text"] for item in shown)[-FOCUS_CHARS:],

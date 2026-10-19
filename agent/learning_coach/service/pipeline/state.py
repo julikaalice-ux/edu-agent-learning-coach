@@ -16,9 +16,11 @@ are. Grouped by what they are for:
 
 from copy import deepcopy
 from dataclasses import dataclass
+from enum import StrEnum
 
-from learning_coach.domain.contracts import public_quiz
+from learning_coach.domain.contracts import Participant, QuizAction, public_quiz
 from learning_coach.domain.note_contracts import SCHEMA_VERSION as NOTES_VERSION
+from learning_coach.domain.onboarding import WHO_COMPANION
 from learning_coach.domain.routing import INTENT_CHAT
 
 
@@ -49,6 +51,17 @@ class Key:
     LAST_EXECUTION = "last_execution"
 
 
+class Mode(StrEnum):
+    """last_execution["mode"]: which kind of turn ran."""
+    ANSWER = "answer"                    # the coordinator replied directly
+    TOOLS = "tools"                      # tools ran, then the coordinator replied
+    CHECK_QUESTION = "check_question"    # the learner took a check offer
+    SINGLE = "single"                    # the single-agent baseline
+
+
+# state["resume_stage"]: whether the active task is being worked on or paused.
+TASK_ACTIVE, TASK_PAUSED = "active", "paused"
+
 # Kept out of everything a model sees.
 PRIVATE_KEYS = (Key.LAST_EVENT, Key.LAST_INPUT, Key.LAST_RESPONSE, Key.LAST_EXECUTION, Key.CONTEXT,
                 Key.PENDING_EXTERNAL)
@@ -61,6 +74,9 @@ KEEP_QUIZ_RESULTS = 5
 KEEP_FINISHED_TASKS = 5
 KEEP_PAUSED_TASKS = 5
 GOAL_CHARS = 300
+# Which parts of the conversation notes a sub-agent sees.
+NOTES_FOR_QUESTIONS = ("covered", "stuck")      # quiz writer, notes agent
+NOTES_FOR_VISUALS = ("covered", "requests")     # visual designer
 OFFER_EXPLANATION_CHARS = 3000  # the explanation a check question is written from
 
 
@@ -73,7 +89,7 @@ class Memory:
 
 def empty_snapshot() -> dict:
     """What the program reads when records are off."""
-    return {"schema_version": "1.0", "profile": {}, "concepts": [], "error_records": [], "review_plan": []}
+    return {"schema_version": NOTES_VERSION, "profile": {}, "concepts": [], "error_records": [], "review_plan": []}
 
 
 def empty_learning_notes() -> dict:
@@ -104,9 +120,10 @@ def waiting_question(state) -> dict | None:
 def default_participant(state) -> str:
     """Who answers a new question when no plan says so: a companion only when one said so."""
     quiz = state.get(Key.QUIZ) or {}
-    if quiz.get("participant") in ("learner", "companion_report", "unknown") and not quiz.get("finished"):
+    if quiz.get("participant") in set(Participant) and not quiz.get("finished"):
         return quiz["participant"]
-    return "companion_report" if (state.get(Key.ONBOARDING) or {}).get("who") == "companion" else "learner"
+    return (Participant.COMPANION if (state.get(Key.ONBOARDING) or {}).get("who") == WHO_COMPANION
+            else Participant.LEARNER)
 
 
 def model_view(state) -> dict:
@@ -122,14 +139,14 @@ def model_view(state) -> dict:
 
 def apply_task(state, primary, task):
     """Start, pause, resume or end the current task as the decision says."""
-    if task["end_task"] or task.get("quiz_action") == "stop":
+    if task["end_task"] or task.get("quiz_action") == QuizAction.STOP:
         state.pop(Key.QUIZ, None)
         state[Key.ACTIVE_TASK] = None
         state[Key.PENDING_TASKS] = []
         state.pop(Key.RESUME_STAGE, None)
     elif primary == INTENT_CHAT or task["pause_task"]:
         if state.get(Key.ACTIVE_TASK):
-            state[Key.RESUME_STAGE] = "paused"
+            state[Key.RESUME_STAGE] = TASK_PAUSED
         if task["task_summary"]:
             pending = state.setdefault(Key.PENDING_TASKS, [])
             if task["task_summary"] not in pending:
@@ -137,7 +154,7 @@ def apply_task(state, primary, task):
             state[Key.PENDING_TASKS] = pending[-KEEP_PAUSED_TASKS:]
     elif task["task_summary"]:
         state[Key.ACTIVE_TASK] = task["task_summary"]
-        state[Key.RESUME_STAGE] = "active"
+        state[Key.RESUME_STAGE] = TASK_ACTIVE
         state[Key.PENDING_TASKS] = [item for item in state.get(Key.PENDING_TASKS, [])
                                     if item != task["task_summary"]]
 

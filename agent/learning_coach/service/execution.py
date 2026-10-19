@@ -2,6 +2,7 @@
 
 from contextvars import ContextVar
 from dataclasses import dataclass
+from enum import StrEnum
 
 
 DEFAULT_CALL_BUDGET = 12  # model calls allowed per turn; pipeline.py sets it per request
@@ -20,7 +21,14 @@ CALL_RESERVE = ContextVar("learning_coach_call_reserve", default=0)
 
 # Per-turn authorization is supplied by the host or a program-owned permission
 # question. Model plans and backend availability never grant permission.
-EXTERNAL_CAPABILITIES = frozenset({"research", "image_search", "image_generation", "mcp"})
+class Capability(StrEnum):
+    RESEARCH = "research"
+    IMAGE_SEARCH = "image_search"
+    IMAGE_GENERATION = "image_generation"
+    MCP = "mcp"
+
+
+EXTERNAL_CAPABILITIES = frozenset(Capability)
 EXTERNAL_PERMISSIONS = ContextVar("learning_coach_external_permissions", default=frozenset())
 EXTERNAL_DECLINED = ContextVar("learning_coach_external_declined", default=False)
 EXPLANATION_SINK = ContextVar("learning_coach_explanation_sink", default=None)

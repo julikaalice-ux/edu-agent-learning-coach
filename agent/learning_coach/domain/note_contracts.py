@@ -11,6 +11,8 @@ ERROR_LABELS = {"conceptual": "概念性误解", "step_skipping": "步骤性跳�
 # Earlier stored names and the type each now counts as.
 LEGACY_ERROR_CATEGORIES = {"procedural": "step_skipping", "careless": "misreading",
                            "negative_transfer": "conceptual"}
+# Who a profile entry came from: the learner, or a companion speaking for them.
+SELF_REPORT, COMPANION_REPORT = "self_report", "companion_report"
 PROFILE_KEYS = (
     "learning_stage", "age_band", "learning_goal", "prior_knowledge",
     "preferred_language", "available_time", "accessibility_needs",
@@ -35,7 +37,7 @@ NOTES_SCHEMA = _object({
     "profile": _array(_object({
         "key": {"type": "string", "enum": list(PROFILE_KEYS)},
         "value": _string(),
-        "origin": {"type": "string", "enum": ["self_report", "companion_report"]},
+        "origin": {"type": "string", "enum": [SELF_REPORT, COMPANION_REPORT]},
         "evidence_quote": _string(4000),
     })),
     "concepts": _array(_object({

@@ -35,7 +35,7 @@ from learning_coach.service.pipeline.teach import Teacher
 from learning_coach.service.pipeline.texts import (CHECK_OFFER, NOTES_OFFER, QUIZ_PICTURE_LINK, render_question,
                                                    reply)
 from learning_coach.service.ports import (AgentRunner, ResearchPort, LearningMemory, Artifacts, ImageFinder,
-                                          ImageGenerator)
+                                          ImageGenerator, Role)
 
 __all__ = ["LearningPipeline", "CHECK_OFFER", "NOTES_OFFER", "QUIZ_PICTURE_LINK", "PICTURE_TIMEOUT_SECONDS",
            "correct_choice", "default_participant", "empty_learning_notes", "last_forget", "render_question",
@@ -228,8 +228,8 @@ class LearningPipeline:
 
     async def _draft_notes(self, payload):
         """The notes agent writes the draft; the program checks and writes it."""
-        return await self.runner("notes", payload, NOTES_SCHEMA)
+        return await self.runner(Role.NOTES, payload, NOTES_SCHEMA)
 
     async def _draft_question(self, request):
         """The quiz writer drafts one question; the program checks it."""
-        return await self.runner("quizzer", request, QUIZ_SCHEMA)
+        return await self.runner(Role.QUIZZER, request, QUIZ_SCHEMA)

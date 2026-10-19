@@ -36,6 +36,7 @@ TURN_TIMEOUT_SECONDS = 180      # a whole turn, all agents included
 REPLAY_CACHE_SIZE = 2048        # accepted turns kept for transport replays
 SESSION_CACHE_SIZE = 512        # recent session states kept in memory
 
+USER, ASSISTANT = "user", "assistant"   # the two message roles kept in the history
 TURN_FAILED = "这次处理没有顺利完成，学习记录和进度没有继续推进。"
 # Errors a turn may end with; anything else is a bug and propagates.
 TURN_ERRORS = (StageFailure, ContractError, TimeoutError, OSError, ValueError, StorageError)
@@ -65,7 +66,7 @@ class Turn:
 
 def clean_history(messages) -> list:
     return [{"role": m["role"], "text": m["text"][:MAX_MESSAGE_CHARS]} for m in messages[-MAX_HISTORY:]
-            if m.get("role") in ("user", "assistant") and isinstance(m.get("text"), str)]
+            if m.get("role") in (USER, ASSISTANT) and isinstance(m.get("text"), str)]
 
 
 class TurnShell:
@@ -88,7 +89,7 @@ class TurnShell:
         if not grants <= EXTERNAL_CAPABILITIES:
             raise ValueError("unknown_external_permission")
         clean = clean_history(messages)
-        if not clean or clean[-1]["role"] != "user" or not clean[-1]["text"].strip():
+        if not clean or clean[-1]["role"] != USER or not clean[-1]["text"].strip():
             return reply("请告诉我你现在想学什么。", step=question("你想从哪个问题开始？")), deepcopy(state or {})
         # A history fingerprint distinguishes a transport replay from a real later answer.
         fingerprint = hashlib.sha256(json.dumps(clean, ensure_ascii=False, sort_keys=True).encode()).hexdigest()

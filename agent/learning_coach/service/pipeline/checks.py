@@ -5,6 +5,7 @@ import re
 from learning_coach.domain.contracts import ContractError, validate
 from learning_coach.domain.routing import INTENT_UNCLEAR
 from learning_coach.service.pipeline.state import Key
+from learning_coach.service.pipeline.texts import STEP_QUESTION
 
 _LEADING_REFERENCE = re.compile(r"^[这那它](?:些|们)?")
 _CLAIMS_SAVED = re.compile(r"已(?:记下|记录|保存)|(?:先|马上|替你|帮你)(?:记下|记录|保存)|(?:记下|保存)(?:了|啦|哦)|记住(?:了|啦)|记好(?:了|啦)")
@@ -58,7 +59,7 @@ def validate_response(output, schema, intent, research, *, stopping=False):
     if output["intent"] != intent:
         raise ContractError("intent_changed_after_routing")
     if (not stopping and intent["primary"] == INTENT_UNCLEAR
-            and (not output["next_step"] or output["next_step"]["kind"] != "question")):
+            and (not output["next_step"] or output["next_step"]["kind"] != STEP_QUESTION)):
         raise ContractError("clarification_requires_question")
     allowed = {source["url"] for source in (research or {}).get("sources", [])}
     for url in _URL.findall(output["message"] + (output["next_step"] or {}).get("text", "")):

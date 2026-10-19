@@ -9,26 +9,36 @@ import asyncio
 from copy import deepcopy
 import logging
 
-from learning_coach.domain.contracts import (QUIZ_SCHEMA, ContractError, check_question, public_quiz,
-                                             selected_choice, validate)
+from learning_coach.domain.contracts import (QUIZ_SCHEMA, ContractError, Participant, QuizAction, QuizKind,
+                                             check_question, public_quiz, selected_choice, validate)
 from learning_coach.domain.context import brief_card, note_slice, number_turns, recent_window
 from learning_coach.domain.note_contracts import ERROR_LABELS
 from learning_coach.domain.routing import (INTENT_CHAT, INTENT_PRACTICE, QUIZ_INTENTS, conservative_participant,
                                            empty_results)
 from learning_coach.domain.visual_contracts import VISUAL_SCHEMA
-from learning_coach.service.execution import StageFailure, external_allowed
+from learning_coach.service.execution import Capability, StageFailure, external_allowed
 from learning_coach.service.pipeline.checks import correct_choice, gives_away
-from learning_coach.service.pipeline.state import (KEEP_ERRORS, KEEP_QUESTIONS, OFFER_EXPLANATION_CHARS, Key,
+from learning_coach.service.pipeline.state import (KEEP_ERRORS, KEEP_QUESTIONS, NOTES_FOR_QUESTIONS,
+                                                   OFFER_EXPLANATION_CHARS, Key, Mode,
                                                    default_participant, empty_learning_notes, read_memory)
 from learning_coach.service.pipeline.texts import (CHECK_OFFER, QUIZ_PICTURE_LINK, question, render_question,
                                                    reply)
-from learning_coach.service.ports import StorageError
+from learning_coach.service.ports import CallPhase, StorageError
 
 LOG = logging.getLogger(__name__)
 
 PICTURE_TIMEOUT_SECONDS = 60
 MAX_REJECTED_DRAFTS = 2     # sound-question tries; one more only to drop an undrawable picture
+# Corrections the quiz writer gets back (named in its prompt).
 NO_PICTURE = "picture_not_available_write_text_only"
+REPEATED = "repeated_question"
+ANSWER_IN_EXPLANATION = "answer_in_explanation"
+CHECK_QUESTIONS = 1         # a check is a single question
+REPEATED_ERROR_AT = 2       # the same suspected error this many times counts as repeated
+# How the learning records name who answered.
+ACTOR = {Participant.LEARNER: "learner", Participant.COMPANION: "companion", Participant.UNKNOWN: "unknown"}
+QUIZ_EVIDENCE = "quiz"      # the records' evidence kind for a graded answer
+PICTURE_KIND = "illustration"  # a question picture is an AI picture
 
 
 def new_quiz(*, kind, topic, total, difficulty, participant, history) -> dict:
@@ -60,20 +70,22 @@ class QuizService:
         if plan["intent"]["primary"] not in QUIZ_INTENTS or plan["end_task"] or plan["pause_task"]:
             return None, None, None
         action = plan["quiz_action"]
-        if action not in ("start", "continue"):
+        if action not in (QuizAction.START, QuizAction.CONTINUE):
             return None, None, None
         quiz = state.get(Key.QUIZ)
         # A check question left unanswered gives way to a practice set the learner asked for.
-        replace_check = action == "start" and quiz and quiz.get("kind") == "check" and not quiz.get("finished")
+        replace_check = (action == QuizAction.START and quiz and quiz.get("kind") == QuizKind.CHECK
+                         and not quiz.get("finished"))
         # continue without an active quiz is degraded to start: the learner
         # asked for more practice, so a missing state record must not kill the turn.
         if not quiz or quiz.get("finished") or replace_check:
             if not plan["quiz_topic"]:
                 return {"needs_topic": True}, None, None
-            quiz = state[Key.QUIZ] = new_quiz(kind="practice", topic=plan["quiz_topic"], total=plan["quiz_total"],
+            quiz = state[Key.QUIZ] = new_quiz(kind=QuizKind.PRACTICE, topic=plan["quiz_topic"], total=plan["quiz_total"],
                                               difficulty=plan["difficulty"], participant=plan["participant"],
                                               history=recent_questions(quiz))
-        quiz["participant"] = conservative_participant(quiz.get("participant", "unknown"), plan["participant"])
+        quiz["participant"] = conservative_participant(quiz.get("participant", Participant.UNKNOWN),
+                                                       plan["participant"])
         # Grading evidence, notes, new questions and the final reply must agree
         # on authorship, including on a normal (unrepaired) continuation.
         plan["participant"] = quiz["participant"]
@@ -88,10 +100,8 @@ class QuizService:
             quiz["correct"] += int(correct)
             quiz["awaiting"] = None
             evidence = {"concept_id": waiting["concept_id"], "correct": correct,
-                        "difficulty": quiz["difficulty"], "independent": plan["participant"] == "learner",
-                        "actor": {"learner": "learner", "companion_report": "companion",
-                                  "unknown": "unknown"}[plan["participant"]],
-                        "kind": "quiz"}
+                        "difficulty": quiz["difficulty"], "independent": plan["participant"] == Participant.LEARNER,
+                        "actor": ACTOR[plan["participant"]], "kind": QUIZ_EVIDENCE}
             feedback = {"correct": correct, "explanation": waiting["explanation"]}
             if not correct:
                 self._suspect_error(waiting, selected, quiz, state, evidence, feedback)
@@ -101,7 +111,7 @@ class QuizService:
             if not correct or quiz["finished"]:
                 return {"feedback": feedback, "answered": quiz["answered"], "correct_count": quiz["correct"],
                         "finished": quiz["finished"], "needs_review": not correct,
-                        "kind": quiz.get("kind", "practice")}, evidence, None
+                        "kind": quiz.get("kind", QuizKind.PRACTICE)}, evidence, None
         if quiz.get("finished"):
             return None, evidence, None
         return None, evidence, quiz
@@ -126,7 +136,7 @@ class QuizService:
                                        "basis": "所选选项对应的常见误解，尚未经学习者确认"}
         repeats = sum(item["concept_id"] == record["concept_id"] and item["error_type"] == record["error_type"]
                       for item in history)
-        if repeats >= 2:
+        if repeats >= REPEATED_ERROR_AT:
             feedback["repeated_error"] = True
 
     def save_evidence(self, turn, evidence, memory_enabled, output):
@@ -147,7 +157,7 @@ class QuizService:
     def request_context(self, turn, memory, participant) -> dict:
         """What the quiz writer sees besides the quiz itself."""
         return {"learner": brief_card(turn.state, memory, participant),
-                "context_notes": note_slice((turn.state.get(Key.CONTEXT) or {}).get("notes"), "covered", "stuck"),
+                "context_notes": note_slice((turn.state.get(Key.CONTEXT) or {}).get("notes"), *NOTES_FOR_QUESTIONS),
                 "recent_messages": self.recent_messages(turn)}
 
     def recent_messages(self, turn):
@@ -165,7 +175,7 @@ class QuizService:
         """
         seen = quiz.setdefault("question_history", [])
         known = {item.strip().casefold() for item in seen}
-        request = {"phase": "quiz", "kind": quiz.get("kind", "practice"), "topic": quiz["topic"],
+        request = {"phase": CallPhase.QUIZ, "kind": quiz.get("kind", QuizKind.PRACTICE), "topic": quiz["topic"],
                    "difficulty": quiz["difficulty"], "count": 1, "participant": participant,
                    "previous_questions": list(seen), "require_new_question": True}
         request.update(context or {})
@@ -176,11 +186,11 @@ class QuizService:
             draft = validate(await self.draft(request), QUIZ_SCHEMA)
             problem = check_question(draft)
             if problem is None and draft["question"].strip().casefold() in known:
-                problem = "repeated_question"
+                problem = REPEATED
             # A check question whose answer is verbatim in what the coach
             # just said is answered by copying, not by understanding.
             if problem is None and gives_away(correct_choice(draft), request.get("explanation") or ""):
-                problem = "answer_in_explanation"
+                problem = ANSWER_IN_EXPLANATION
             if problem is None and draft["image"] is not None:
                 if request.get("image_unavailable"):
                     problem = NO_PICTURE
@@ -206,9 +216,9 @@ class QuizService:
 
     async def picture(self, session_id, quiz_question):
         """Draw the picture a question asks about; None when it cannot be drawn."""
-        if self.deps.image_generator is None or session_id is None or not external_allowed("image_generation"):
+        if self.deps.image_generator is None or session_id is None or not external_allowed(Capability.IMAGE_GENERATION):
             return None
-        spec = {"kind": "illustration", "title": "题目配图",
+        spec = {"kind": PICTURE_KIND, "title": "题目配图",
                 "prompt": quiz_question["image"]["prompt"], "alt": quiz_question["image"]["alt"]}
         try:
             validate(spec, VISUAL_SCHEMA)
@@ -239,7 +249,7 @@ class QuizService:
         question, asked only if the learner takes the offer, tests exactly it.
         """
         running = state.get(Key.QUIZ) or {}
-        if running and not running.get("finished") and running.get("kind", "practice") != "check":
+        if running and not running.get("finished") and running.get("kind", QuizKind.PRACTICE) != QuizKind.CHECK:
             return False
         state[Key.CHECK_OFFER] = {"topic": check["topic"], "difficulty": check["difficulty"],
                                   "explanation": output["message"][:OFFER_EXPLANATION_CHARS],
@@ -250,7 +260,7 @@ class QuizService:
     async def ask_check(self, turn, offer):
         """The learner took the check offer: one graded question on the explanation it came with."""
         state = turn.state
-        quiz = new_quiz(kind="check", topic=offer["topic"], total=1, difficulty=offer["difficulty"],
+        quiz = new_quiz(kind=QuizKind.CHECK, topic=offer["topic"], total=CHECK_QUESTIONS, difficulty=offer["difficulty"],
                         participant=offer["participant"], history=recent_questions(state.get(Key.QUIZ)))
         memory = read_memory(state, self.deps.store, turn.memory_key).snapshot
         context = {"explanation": offer["explanation"], **self.request_context(turn, memory, offer["participant"])}
@@ -263,7 +273,7 @@ class QuizService:
                          question("接下来想了解什么？")), state
         state[Key.QUIZ] = quiz
         output = self.present(turn.session_id, "好，来一道小题，只考刚才讲的那一块。", written, picture)
-        state[Key.LAST_EXECUTION] = {"mode": "check_question", "tools": empty_results()}
+        state[Key.LAST_EXECUTION] = {"mode": Mode.CHECK_QUESTION, "tools": empty_results()}
         return output, state
 
     @staticmethod
@@ -281,7 +291,7 @@ class QuizService:
         memory = read_memory(state, self.deps.store, turn.memory_key).snapshot
         try:
             written, picture = await self.write_question(
-                quiz.get("participant", "unknown"), quiz,
+                quiz.get("participant", Participant.UNKNOWN), quiz,
                 self.request_context(turn, memory, quiz.get("participant")), session_id=turn.session_id)
         except (StageFailure, ContractError):
             LOG.warning("replacement_question_unavailable")

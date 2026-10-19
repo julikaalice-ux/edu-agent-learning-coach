@@ -1,5 +1,6 @@
 """Pure source/evidence contracts and provenance checks."""
 from difflib import SequenceMatcher
+from enum import StrEnum
 import hashlib
 import ipaddress
 import re
@@ -19,6 +20,14 @@ WEB_PORTS = {None, 80, 443}
 DUPLICATE_MIN_CHARS = 80
 DUPLICATE_SIMILARITY = 0.85
 
+
+class Evidence(StrEnum):
+    """How well a claim (or a whole search) is supported."""
+    VERIFIED = "verified"
+    LIKELY = "likely"
+    DISPUTED = "disputed"
+    UNAVAILABLE = "unavailable"
+
 def _object(properties: dict) -> dict:
     return {"type": "object", "properties": properties,
             "required": list(properties), "additionalProperties": False}
@@ -29,7 +38,8 @@ EVIDENCE_SCHEMA = _object({"source_id": {"type": "string"},
     "relation": {"type": "string", "enum": ["supports", "contradicts"]}})
 VERIFY_SCHEMA = _object({"claims": {"type": "array", "maxItems": MAX_CLAIMS,
     "items": _object({"text": {"type": "string", "minLength": 1, "maxLength": 800},
-        "status": {"type": "string", "enum": ["unavailable", "likely", "verified", "disputed"]},
+        "status": {"type": "string", "enum": [Evidence.UNAVAILABLE.value, Evidence.LIKELY.value,
+                                              Evidence.VERIFIED.value, Evidence.DISPUTED.value]},
         "evidence": {"type": "array", "maxItems": MAX_EVIDENCE, "items": EVIDENCE_SCHEMA},
         "independent": {"type": "boolean"},
         "explanation": {"type": "string", "maxLength": 800}})}})

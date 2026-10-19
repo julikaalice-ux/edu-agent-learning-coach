@@ -1,11 +1,29 @@
 """Application-owned ports. Adapters conform structurally; no SDK imports."""
 
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, Awaitable, Callable, Protocol
 
 
 class StorageError(RuntimeError):
     """An adapter could not read or write storage; contains no private details."""
+
+
+class Role(StrEnum):
+    """The five agents an AgentRunner serves."""
+    COORDINATOR = "coordinator"
+    VERIFIER = "verifier"
+    NOTES = "notes"
+    VISUALIZER = "visualizer"
+    QUIZZER = "quizzer"
+
+
+class CallPhase(StrEnum):
+    """input.phase of a request, where a role has more than one job."""
+    DECIDE = "decide"
+    RESPOND = "respond"
+    QUIZ = "quiz"
+    VISUAL_REVIEW = "visual_review"
 
 
 class AgentRunner(Protocol):

@@ -9,7 +9,7 @@ from copy import deepcopy
 
 from learning_coach.domain.routing import INTENT_CONCEPT
 from learning_coach.service.execution import (EXTERNAL_CAPABILITIES, EXTERNAL_DECLINED, EXTERNAL_PERMISSIONS,
-                                              external_allowed)
+                                              Capability, external_allowed)
 from learning_coach.service.pipeline.state import Key
 from learning_coach.service.pipeline.texts import (EXTERNAL_LABELS, EXTERNAL_NO, EXTERNAL_QUESTION, EXTERNAL_YES,
                                                    question, reply)
@@ -18,8 +18,8 @@ PURPOSE_CHARS = 400
 
 
 def capabilities(*, research, image_finder, image_generator) -> dict:
-    available = {"research": research is not None, "image_search": image_finder is not None,
-                 "image_generation": image_generator is not None, "mcp": False}
+    available = {Capability.RESEARCH: research is not None, Capability.IMAGE_SEARCH: image_finder is not None,
+                 Capability.IMAGE_GENERATION: image_generator is not None, Capability.MCP: False}
     return {key: {"available": value, "authorized": value and external_allowed(key)}
             for key, value in available.items()}
 

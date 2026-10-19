@@ -12,9 +12,16 @@ import re
 
 from learning_coach.domain.contracts import MAX_QUESTION_CHARS
 
-SELF_STAGES = ("学龄前", "小学", "初中", "高中", "大学", "已工作", "不想说")
+# Values of the onboarding record that the rest of the program reads.
+STEP_WHO, STEP_CONSENT_GUARDIAN, STEP_DONE = "who", "consent_guardian", "done"
+WHO_SELF, WHO_COMPANION = "self", "companion"          # record["who"]
+RECORDS_ON, RECORDS_OFF = "on", "off"                  # record["records"]
+BY_SELF, BY_GUARDIAN = "self", "guardian"              # record["consent_by"]
+NO_STAGE = "不想说"                                     # a stage the learner chose not to give
+
+SELF_STAGES = ("学龄前", "小学", "初中", "高中", "大学", "已工作", NO_STAGE)
 CHILD_STAGES = ("学龄前", "小学", "初中", "高中")
-MAYBE_UNDER_14 = {"学龄前", "小学", "初中", "不想说"}
+MAYBE_UNDER_14 = {"学龄前", "小学", "初中", NO_STAGE}
 GREETINGS = re.compile(r"^(?:你好|您好|嗨|哈喽|hi|hello|hey|在吗|在不在|早上好|晚上好|下午好)[!！。.~～？?\s]*$",
                        re.IGNORECASE)
 SKIP = re.compile(r"^\s*(?:跳过|先跳过|不想回答|不回答|skip)\s*$", re.IGNORECASE)
@@ -61,46 +68,45 @@ def start(first_message: str) -> dict:
     """Begin the questions; keep a real first question to answer afterwards."""
     text = first_message.strip()
     pending = None if (not text or GREETINGS.match(text) or SKIP.match(text)) else text[:MAX_QUESTION_CHARS]
-    return {"step": "who", "pending_question": pending}
+    return {"step": STEP_WHO, "pending_question": pending}
 
 
 def advance(record: dict, answer: str) -> dict:
-    """Apply one answer. Returns a new record; record["step"] == "done" when finished."""
+    """Apply one answer. Returns a new record; record["step"] == STEP_DONE when finished."""
     record = dict(record)
     if SKIP.match(answer):
-        record.update(step="done", records="off", stage=record.get("stage"), skipped=True)
+        record.update(step=STEP_DONE, records=RECORDS_OFF, stage=record.get("stage"), skipped=True)
         return record
     step = record["step"]
-    lookup = {"who": "who", "stage_self": "stage_self", "stage_child": "stage_child",
-              "guardian": "guardian", "consent_self": "consent_self",
-              "consent_guardian": "consent_guardian"}[step]
-    choice = _choose(lookup, answer)
+    if step not in QUESTIONS:
+        raise KeyError(step)
+    choice = _choose(step, answer)
     if choice is None:
         record["retry"] = True
         return record
     record.pop("retry", None)
-    if step == "who":
-        record["who"] = "self" if choice == "我自己" else "companion"
-        record["step"] = "stage_self" if record["who"] == "self" else "stage_child"
+    if step == STEP_WHO:
+        record["who"] = WHO_SELF if choice == "我自己" else WHO_COMPANION
+        record["step"] = "stage_self" if record["who"] == WHO_SELF else "stage_child"
     elif step == "stage_child":
-        record.update(stage=choice, stage_answer=answer.strip(), step="consent_guardian")
+        record.update(stage=choice, stage_answer=answer.strip(), step=STEP_CONSENT_GUARDIAN)
     elif step == "stage_self":
         record.update(stage=choice, stage_answer=answer.strip())
         record["step"] = "guardian" if choice in MAYBE_UNDER_14 else "consent_self"
     elif step == "guardian":
         if choice == "不在":
-            record.update(step="done", records="off", guardian_absent=True)
+            record.update(step=STEP_DONE, records=RECORDS_OFF, guardian_absent=True)
         else:
-            record["step"] = "consent_guardian"
+            record["step"] = STEP_CONSENT_GUARDIAN
     else:
-        record.update(step="done", records="on" if choice == "保存" else "off",
-                      consent_by="guardian" if step == "consent_guardian" else "self")
+        record.update(step=STEP_DONE, records=RECORDS_ON if choice == "保存" else RECORDS_OFF,
+                      consent_by=BY_GUARDIAN if step == STEP_CONSENT_GUARDIAN else BY_SELF)
     return record
 
 
 def closing_message(record: dict) -> str:
     # Onboarding always ends with an explicit invitation to start asking.
-    if record.get("records") == "on":
+    if record.get("records") == RECORDS_ON:
         return "好，学习进度会保存下来，下次可以接着学。想关掉随时说“关闭记录”。现在可以问问题了。"
     if record.get("guardian_absent"):
         return "好，这次先不保存学习记录，照常学习。以后家长在身边时，可以说“开启记录”。现在可以问问题了。"

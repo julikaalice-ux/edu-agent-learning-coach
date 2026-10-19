@@ -1,5 +1,6 @@
 """Internal contracts are separate from the public four-field response."""
 
+from enum import StrEnum
 import json
 import math
 
@@ -25,7 +26,43 @@ MAX_RESPONSE_CHARS = 100_000
 # Longest learner question carried between stages (onboarding, research, pipeline).
 MAX_QUESTION_CHARS = 4000
 OPTIONAL_TEXT = {"anyOf": [TEXT, {"type": "null"}]}
-DIFFICULTY = {"enum": ["简单", "中等", "困难"]}
+EASY = "简单"
+DIFFICULTY = {"enum": [EASY, "中等", "困难"]}
+
+
+class QuizAction(StrEnum):
+    NONE = "none"
+    START = "start"
+    CONTINUE = "continue"
+    STOP = "stop"
+
+
+class Participant(StrEnum):
+    """Who answers: the learner alone, a companion reporting for them, or not known."""
+    LEARNER = "learner"
+    COMPANION = "companion_report"
+    UNKNOWN = "unknown"
+
+
+class VisualSource(StrEnum):
+    LOCAL = "local"            # drawn by the program
+    WEB = "web"                # existing pictures found on the web
+    GENERATED = "generated"    # an AI picture
+
+
+class QuizKind(StrEnum):
+    PRACTICE = "practice"      # a set the learner asked for
+    CHECK = "check"            # one question on the explanation just given
+
+
+class DecisionMode(StrEnum):
+    ANSWER = "answer"          # the coordinator replies directly
+    TOOLS = "tools"            # the coordinator asks for tools first
+
+
+def values(names) -> list:
+    """The plain strings of a StrEnum, for schemas."""
+    return [member.value for member in names]
 OPTIONAL_BOOL = {"anyOf": [{"type": "boolean"}, {"type": "null"}]}
 # The coordinator writes the search queries itself when it asks for research.
 SEARCH_QUERIES = {"anyOf": [{"type": "null"}, {"type": "array", "minItems": 1, "maxItems": MAX_QUERIES,
@@ -57,16 +94,16 @@ PLAN_SCHEMA = object_schema({
     "research_query": OPTIONAL_TEXT,
     "search_queries": SEARCH_QUERIES,
     "visual_request": OPTIONAL_TEXT,
-    "visual_source": {"enum": [None, "local", "web", "generated"]},
+    "visual_source": {"enum": [None, *values(VisualSource)]},
     "observe_learning": {"type": "boolean"},
     "task_summary": OPTIONAL_TEXT,
     "pause_task": {"type": "boolean"},
     "end_task": {"type": "boolean"},
-    "quiz_action": {"enum": ["none", "start", "continue", "stop"]},
+    "quiz_action": {"enum": values(QuizAction)},
     "quiz_topic": OPTIONAL_TEXT,
     "quiz_total": {"type": "integer", "minimum": 1, "maximum": 20},
     "difficulty": DIFFICULTY,
-    "participant": {"enum": ["learner", "companion_report", "unknown"]},
+    "participant": {"enum": values(Participant)},
     "tool_reasons": TOOL_REASONS_SCHEMA,
     # Content dependencies only; the program derives the execution order.
     # null means "not stated" and gets the program's safe default.
@@ -89,14 +126,14 @@ def decision_schema(response_schema):
     """
     return {"anyOf": [
         object_schema({
-            "mode": {"type": "string", "const": "answer"},
+            "mode": {"type": "string", "const": DecisionMode.ANSWER.value},
             "response": response_schema,
             "task": TASK_SCHEMA,
             "context_notes": CONTEXT_UPDATE_SCHEMA,
             "check_question": CHECK_SCHEMA,
         }),
         object_schema({
-            "mode": {"type": "string", "const": "tools"},
+            "mode": {"type": "string", "const": DecisionMode.TOOLS.value},
             "plan": PLAN_SCHEMA,
             "initial_explanation": OPTIONAL_TEXT,
             "context_notes": CONTEXT_UPDATE_SCHEMA,

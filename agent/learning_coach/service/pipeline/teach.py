@@ -19,25 +19,36 @@ from dataclasses import dataclass, field
 import logging
 import re
 
-from learning_coach.domain.contracts import ContractError, validate
+from learning_coach.domain.contracts import (ContractError, DecisionMode, QuizAction, QuizKind, VisualSource,
+                                             validate)
 from learning_coach.domain.context import (accept_notes, brief_card, count_tokens, empty_notes, learner_card,
                                            memory_slice, note_slice, number_turns, recent_window, research_digest)
-from learning_coach.domain.routing import (EXPLAIN_INTENTS, empty_results, execution_order, explicit_visual_quote,
-                                           recover_explicit_visual_route, recover_practice_route,
-                                           recover_quiz_route, require_finished, select_tools)
-from learning_coach.service.execution import (CALL_RESERVE, EXPLANATION_SINK, EXTERNAL_DECLINED, StageFailure,
-                                              external_allowed)
+from learning_coach.domain.research_contracts import Evidence
+from learning_coach.domain.routing import (EXPLAIN_INTENTS, Status, empty_results, execution_order,
+                                           explicit_visual_quote, recover_explicit_visual_route,
+                                           recover_practice_route, recover_quiz_route, require_finished,
+                                           select_tools)
+from learning_coach.service.execution import (CALL_RESERVE, EXPLANATION_SINK, EXTERNAL_DECLINED, Capability,
+                                              StageFailure, external_allowed)
 from learning_coach.service.pipeline import permissions
 from learning_coach.service.pipeline.checks import respond_problem, validate_response
-from learning_coach.service.pipeline.state import (Key, Memory, apply_task, default_participant, mark_evidence,
-                                                   model_view, read_memory, record_quiz_result, track_tasks)
-from learning_coach.service.pipeline.texts import (NOTES_OFFER, QUIZ_PICTURE_LINK, RESEARCH_NOTES, VISUAL_FAILED,
-                                                   VISUAL_LINK, question, render_question)
+from learning_coach.service.pipeline.shell import ASSISTANT
+from learning_coach.service.pipeline.state import (NOTES_FOR_QUESTIONS, NOTES_FOR_VISUALS, Key, Memory, Mode,
+                                                   apply_task, default_participant, mark_evidence, model_view,
+                                                   read_memory, record_quiz_result, track_tasks)
+from learning_coach.service.pipeline.texts import (NOTES_OFFER, QUIZ_PICTURE_LINK, RESEARCH_NOTES, RESPONSE_VERSION,
+                                                   STEP_QUESTION, VISUAL_FAILED, VISUAL_LINK, question,
+                                                   render_question)
+from learning_coach.service.ports import CallPhase, Role
 from learning_coach.service.visual_generation import VisualGenerationService
 
 LOG = logging.getLogger(__name__)
 
 TASK_SUMMARY_CHARS = 400
+RESPOND_CALLS = 2        # calls kept back for the reply: one draft plus its format retry
+RESPOND_MIN_TURNS = 2    # the reply sees at least this many recent turns
+SOURCES_SHOWN = 3        # sources linked under a reply
+REPORT_ISSUES = 6        # review issues kept in last_execution
 # Early output cannot refer to absent artifacts, sources or successful tool
 # execution. These guards complement (not replace) teaching evaluation.
 _PREMATURE = re.compile(r"https?://|/learning-artifacts/|!\[|[？?]|(?:图|检索|查证).{0,5}(?:已|完成|成功)"
@@ -99,7 +110,7 @@ class Teacher:
     async def run(self, turn):
         view = self.look(turn)
         decision = await self.decide(turn, view)
-        if decision.value["mode"] == "answer":
+        if decision.value["mode"] == DecisionMode.ANSWER:
             return self.answer(turn, view, decision)
         proposed, tools = select_tools(decision.value["plan"], turn.messages[-1]["text"],
                                        memory_enabled=view.memory.enabled)
@@ -127,7 +138,7 @@ class Teacher:
         # First meeting: the client has not seen this learner before, there is no
         # reply yet in this conversation and nothing remembered.
         first_meeting = (not turn.returning_visitor and Key.ONBOARDING not in state
-                         and not any(item["role"] == "assistant" for item in turn.messages)
+                         and not any(item["role"] == ASSISTANT for item in turn.messages)
                          and not (memory.snapshot.get("profile") or memory.snapshot.get("concepts")))
         focus = " ".join(filter(None, (state.get(Key.ACTIVE_TASK), (state.get(Key.QUIZ) or {}).get("topic"),
                                        turn.text)))
@@ -141,7 +152,7 @@ class Teacher:
     async def decide(self, turn, view) -> Decision:
         state, budgets, text = turn.state, self.deps.budgets, turn.text
         decide_input = {
-            "phase": "decide", "messages": view.window,
+            "phase": CallPhase.DECIDE, "messages": view.window,
             "context_notes": view.context.get("notes") or empty_notes(),
             "learner": learner_card(state, view.memory.snapshot, memory_enabled=view.memory.enabled),
             "state": model_view(state), "memory": view.memory_view,
@@ -152,7 +163,7 @@ class Teacher:
             # Said up front: a full direct answer here would only be thrown
             # away by the visual route repair below (about 20 s of writing).
             decide_input["visual_required"] = True
-        value = validate(await self.deps.runner("coordinator", decide_input, self.decision_schema), self.decision_schema)
+        value = validate(await self.deps.runner(Role.COORDINATOR, decide_input, self.decision_schema), self.decision_schema)
         view.context["notes"], note_problems = accept_notes(
             value.get("context_notes"), view.context.get("notes"), view.numbered, budgets.notes)
         # Read before any routing repair: repaired decisions are rebuilt without it.
@@ -203,7 +214,7 @@ class Teacher:
             # A single decide call cannot be redrafted here, so failing the
             # turn is safer than publishing a waiting question's answer.
             raise ContractError("answer_visible_before_answer")
-        state[Key.LAST_EXECUTION] = {"mode": "answer", "tools": empty_results(), "context": decision.report}
+        state[Key.LAST_EXECUTION] = {"mode": Mode.ANSWER, "tools": empty_results(), "context": decision.report}
         if offered:
             state[Key.LAST_EXECUTION]["check_offered"] = True
         return output, state
@@ -217,21 +228,21 @@ class Teacher:
         if missing:
             # A declined request cannot be re-enabled by a model plan. Continue
             # from existing knowledge/local drawings and expose the limitation.
-            if "research" in missing:
+            if Capability.RESEARCH in missing:
                 plan.update(research_query=None, search_queries=None)
                 plan["tool_reasons"]["research"] = None
-                tools["research"] = "skipped_policy"
-            if missing & {"image_search", "image_generation"}:
-                plan["visual_source"] = "local"
+                tools["research"] = Status.SKIPPED
+            if missing & {Capability.IMAGE_SEARCH, Capability.IMAGE_GENERATION}:
+                plan["visual_source"] = VisualSource.LOCAL
             plan.update(visual_uses_research=False, quiz_uses_research=False)
         initial = None if missing else self._initial_explanation(decision.value, plan, state, view.memory.enabled)
         apply_task(state, primary, plan)
         track_tasks(state, decision.previous_task, decision.previous_quiz, view.current_turn, text)
         brief = brief_card(state, view.memory.snapshot, plan["participant"])
-        if tools["notes"] == "pending":
+        if tools["notes"] == Status.PENDING:
             # Learning evidence is only marked here; notes are compiled after a
             # quiz set when the learner agrees, from the learner's own words.
-            tools["notes"] = "deferred"
+            tools["notes"] = Status.DEFERRED
             mark_evidence(view.context, view.current_turn)
         # Grading is program state and needs no model; do it first so the evidence is ready.
         quiz_context, quiz_evidence, pending_quiz = self.quiz.grade(plan, text, state)
@@ -243,10 +254,10 @@ class Teacher:
         """External capabilities this plan needs but the turn has not been granted."""
         required = set()
         if plan["research_query"]:
-            required.add("research")
-        source = plan.get("visual_source") or "local"
-        if plan["visual_request"] and source in ("web", "generated"):
-            capability = "image_search" if source == "web" else "image_generation"
+            required.add(Capability.RESEARCH)
+        source = plan.get("visual_source") or VisualSource.LOCAL
+        if plan["visual_request"] and source in (VisualSource.WEB, VisualSource.GENERATED):
+            capability = Capability.IMAGE_SEARCH if source == VisualSource.WEB else Capability.IMAGE_GENERATION
             if self.capabilities()[capability]["available"]:
                 required.add(capability)
         return {capability for capability in required if not external_allowed(capability)}
@@ -255,13 +266,13 @@ class Teacher:
         """Deliver the coordinator's explanation now while a local visual is drawn; its text, or None."""
         text = decision.get("initial_explanation")
         if (not text or plan["intent"]["primary"] not in EXPLAIN_INTENTS
-                or not plan["visual_request"] or plan.get("visual_source") not in (None, "local")
-                or plan["research_query"] or plan["quiz_action"] != "none"
+                or not plan["visual_request"] or plan.get("visual_source") not in (None, VisualSource.LOCAL)
+                or plan["research_query"] or plan["quiz_action"] != QuizAction.NONE
                 or plan["end_task"] or plan["pause_task"] or (state.get(Key.QUIZ) or {}).get("awaiting")):
             return None
         if _PREMATURE.search(text):
             return None
-        output = {"schema_version": "1.0", "intent": deepcopy(plan["intent"]),
+        output = {"schema_version": RESPONSE_VERSION, "intent": deepcopy(plan["intent"]),
                   "message": text.strip(), "next_step": None}
         try:
             validate_response(output, self.deps.response_schema, plan["intent"], None)
@@ -286,18 +297,18 @@ class Teacher:
         running = {}
 
         async def run_research():
-            if not plan.value["research_query"] or not external_allowed("research"):
+            if not plan.value["research_query"] or not external_allowed(Capability.RESEARCH):
                 return None
             try:
                 found = await self.deps.research.run(plan.value["research_query"], plan.value["search_queries"])
             except (StageFailure, OSError, TimeoutError, ValueError):
-                found = {"overall": "unavailable", "sources": [], "claims": [],
+                found = {"overall": Evidence.UNAVAILABLE, "sources": [], "claims": [],
                          "queries": [], "warnings": ["research_failed"]}
             tools["research"] = found["overall"]
             return found
 
         async def prepare_visual():
-            if tools["visual"] != "pending":
+            if tools["visual"] != Status.PENDING:
                 return None, None
             # A visual of stable knowledge does not wait for, or receive, this turn's research.
             found = await running["research"] if order["visual_waits_research"] else None
@@ -305,29 +316,29 @@ class Teacher:
                                                    image_finder=self.deps.image_finder).generate(
                 turn.session_id, {
                     "goal": plan.value["visual_request"], "research": found,
-                    "visual_source": plan.value.get("visual_source") or "local",
+                    "visual_source": plan.value.get("visual_source") or VisualSource.LOCAL,
                     "initial_explanation": plan.initial_explanation, "capabilities": self.capabilities(),
                     "learning_goal": (plan.value["task_summary"] or "")[:TASK_SUMMARY_CHARS],
                     "recent_messages": decision.sub_window,
                     "profile": view.memory_view.get("profile", {}),
                     "learner": plan.brief,
-                    "context_notes": note_slice(decision.notes, "covered", "requests"),
+                    "context_notes": note_slice(decision.notes, *NOTES_FOR_VISUALS),
                 }, learner_text=turn.text)
-            tools["visual"] = "ready" if result[0] else "unavailable"
+            tools["visual"] = Status.READY if result[0] else Status.UNAVAILABLE
             return result
 
         async def prepare_quiz():
             if plan.pending_quiz is None:
                 return plan.quiz_context
-            extra = {"learner": plan.brief, "context_notes": note_slice(decision.notes, "covered", "stuck"),
+            extra = {"learner": plan.brief, "context_notes": note_slice(decision.notes, *NOTES_FOR_QUESTIONS),
                      "recent_messages": decision.sub_window}
             if order["quiz_waits_research"]:
                 found = research_digest(await running["research"])
                 extra["research"] = {"overall": found["overall"], "claims": [
-                    claim for claim in found["claims"] if claim["status"] in ("verified", "likely")]}
+                    claim for claim in found["claims"] if claim["status"] in (Evidence.VERIFIED, Evidence.LIKELY)]}
             if order["quiz_waits_visual"]:
                 _, visual_context = await running["visual"]
-                if visual_context and visual_context.get("status") == "ready":
+                if visual_context and visual_context.get("status") == Status.READY:
                     extra["visual_context"] = visual_context
             written, picture = await self.quiz.write_question(plan.value["participant"], plan.pending_quiz, extra,
                                                               session_id=turn.session_id)
@@ -335,7 +346,7 @@ class Teacher:
                 results.pictures.append(picture)
             return written
 
-        reservation = CALL_RESERVE.set(2)  # the reply plus its allowed format retry
+        reservation = CALL_RESERVE.set(RESPOND_CALLS)
         try:
             async with asyncio.TaskGroup() as group:
                 running["research"] = group.create_task(run_research())
@@ -350,12 +361,12 @@ class Teacher:
             CALL_RESERVE.reset(reservation)
         results.research = running["research"].result()
         results.quiz_context = quiz_task.result()
-        if tools["quiz"] == "pending":
+        if tools["quiz"] == Status.PENDING:
             outcome = results.quiz_context or {}
-            tools["quiz"] = ("finished" if outcome.get("finished") else
-                             "question_ready" if "new_question" in outcome else
-                             "awaiting_answer" if "awaiting" in outcome else
-                             "feedback_ready" if "feedback" in outcome else "needs_input")
+            tools["quiz"] = (Status.FINISHED if outcome.get("finished") else
+                             Status.QUESTION_READY if "new_question" in outcome else
+                             Status.AWAITING_ANSWER if "awaiting" in outcome else
+                             Status.FEEDBACK_READY if "feedback" in outcome else Status.NEEDS_INPUT)
         results.artifact, results.visual_context = running["visual"].result()
         require_finished(tools)
         return results
@@ -364,7 +375,7 @@ class Teacher:
 
     async def respond(self, turn, view, decision, plan, results):
         state, budgets = turn.state, self.deps.budgets
-        window = recent_window(view.numbered, budgets.respond_window, min_turns=min(2, budgets.min_turns),
+        window = recent_window(view.numbered, budgets.respond_window, min_turns=min(RESPOND_MIN_TURNS, budgets.min_turns),
                                message_max=budgets.message_max)
         # Question payloads stay out of the responder's view: the program
         # appends the new question to next_step afterwards, and showing it
@@ -376,7 +387,7 @@ class Teacher:
         if ((results.quiz_context or {}).get("new_question") or {}).get("has_picture"):
             quiz_view["new_question_has_picture"] = True
         response_input = {
-            "phase": "respond", "messages": window,
+            "phase": CallPhase.RESPOND, "messages": window,
             "initial_explanation": plan.initial_explanation,
             "capabilities": self.capabilities(), "external_declined": EXTERNAL_DECLINED.get(),
             "context_notes": decision.notes or empty_notes(),
@@ -384,18 +395,18 @@ class Teacher:
             "plan": plan.value, "memory": view.memory_view,
             "state": {key: state.get(key) for key in (Key.ACTIVE_TASK, Key.PENDING_TASKS, Key.RESUME_STAGE)},
             "research": research_digest(results.research), "quiz": quiz_view,
-            "visual_status": ("ready" if results.artifact else
-                              "unavailable" if plan.tools["visual"] == "unavailable" else "not_requested"),
+            "visual_status": (Status.READY if results.artifact else
+                              Status.UNAVAILABLE if plan.tools["visual"] == Status.UNAVAILABLE else Status.NOT_REQUESTED),
             "visual_context": results.visual_context,
             "memory_enabled": view.memory.enabled, "first_meeting": view.first_meeting,
             "tool_results": deepcopy(plan.tools),
         }
         decision.report["respond_tokens"] = count_tokens(response_input)
-        output = await self.deps.runner("coordinator", response_input, self.deps.response_schema)
+        output = await self.deps.runner(Role.COORDINATOR, response_input, self.deps.response_schema)
         problem = respond_problem(output, state, view.memory.enabled)
         if problem:
             # One corrected redraft; still leaking falls back like other contract errors.
-            output = await self.deps.runner("coordinator", {**response_input, "correction": problem},
+            output = await self.deps.runner(Role.COORDINATOR, {**response_input, "correction": problem},
                                        self.deps.response_schema)
             if respond_problem(output, state, view.memory.enabled):
                 raise ContractError("respond_correction_rejected")
@@ -405,7 +416,7 @@ class Teacher:
 
     def finish(self, turn, view, decision, plan, results, output):
         state, value, tools = turn.state, plan.value, plan.tools
-        visual_failed = tools["visual"] == "unavailable"
+        visual_failed = tools["visual"] == Status.UNAVAILABLE
         if plan.initial_explanation:
             # The delivered explanation is an immutable prefix. A model that
             # repeats that exact prefix does not cause duplicate visible text.
@@ -413,7 +424,7 @@ class Teacher:
             if supplement.startswith(plan.initial_explanation):
                 supplement = supplement[len(plan.initial_explanation):].lstrip()
             output["message"] = plan.initial_explanation + ("\n\n" + supplement if supplement else "")
-        stopping = value["end_task"] or value["pause_task"] or value["quiz_action"] == "stop"
+        stopping = value["end_task"] or value["pause_task"] or value["quiz_action"] == QuizAction.STOP
         validate_response(output, self.deps.response_schema, value["intent"], results.research, stopping=stopping)
         if stopping:
             output["next_step"] = None
@@ -424,18 +435,18 @@ class Teacher:
         if quiz_context.get("finished"):
             finished = state.get(Key.QUIZ) or {}
             record_quiz_result(view.context, topic=finished.get("topic") or value["quiz_topic"],
-                               kind=finished.get("kind", "practice"), answered=quiz_context.get("answered"),
+                               kind=finished.get("kind", QuizKind.PRACTICE), answered=quiz_context.get("answered"),
                                correct=quiz_context.get("correct_count"), errors=finished.get("errors", []))
-            if finished.get("kind") != "check":
+            if finished.get("kind") != QuizKind.CHECK:
                 offer_notes = offer_notes_after_practice(output, view.memory.enabled)
         # Every accepted visual can have a meaningful observation/action step;
         # preserve it instead of replacing it with an unrelated practice offer.
         visual_asks = results.artifact is not None and output.get("next_step") is not None
         if (decision.check and not stopping and plan.primary in EXPLAIN_INTENTS and not visual_asks
-                and tools["quiz"] in ("not_requested", "skipped_policy")):
+                and tools["quiz"] in (Status.NOT_REQUESTED, Status.SKIPPED)):
             self.quiz.offer_check(output, decision.check, state, plan.brief)
-        if tools["quiz"] in ("needs_input", "awaiting_answer") and (
-                not output["next_step"] or output["next_step"]["kind"] != "question"):
+        if tools["quiz"] in (Status.NEEDS_INPUT, Status.AWAITING_ANSWER) and (
+                not output["next_step"] or output["next_step"]["kind"] != STEP_QUESTION):
             raise ContractError("quiz_wait_requires_question")
         # Also check the program-selected question text before appending trusted
         # source/artifact links; schemas alone do not validate URLs in text.
@@ -446,14 +457,15 @@ class Teacher:
         # Nothing persistent is committed before public output is valid.
         if results.artifact:
             self.deps.artifacts.commit(turn.session_id, results.artifact)
-            tools["visual"] = "published"
+            tools["visual"] = Status.PUBLISHED
         for picture in results.pictures:
             self.deps.artifacts.commit(turn.session_id, picture)
         self.quiz.save_evidence(turn, plan.quiz_evidence, view.memory.enabled, output)
         if offer_notes:
             state[Key.NOTES_OFFER] = True
         require_finished(tools)
-        state[Key.LAST_EXECUTION] = {"mode": "tools", "tools": tools, "order": plan.order, "context": decision.report}
+        state[Key.LAST_EXECUTION] = {"mode": Mode.TOOLS, "tools": tools, "order": plan.order,
+                                     "context": decision.report}
         if results.visual_context:
             state[Key.LAST_EXECUTION]["visual"] = visual_report(results.visual_context)
         if decision.repaired:
@@ -472,7 +484,7 @@ def attach_links(output, research, artifact, visual_failed, pictures):
     if research is not None:
         if research["overall"] in RESEARCH_NOTES:
             output["message"] += "\n\n" + RESEARCH_NOTES[research["overall"]]
-        sources = research.get("sources", [])[:3]
+        sources = research.get("sources", [])[:SOURCES_SHOWN]
         if sources:
             output["message"] += "\n\n参考资料：" + "；".join(
                 f"[{source['title'].replace('[', '（').replace(']', '）')}]({source['url']})" for source in sources)
@@ -494,5 +506,5 @@ def visual_report(visual_context) -> dict:
              "|".join(entry.split("：", 1)[0].replace(" ", "") for entry in failure.get("history", [])) or "-")
     return {"kind": visual_context.get("kind"), "status": visual_context.get("status"), "drafts": drafts,
             "failure": failure.get("code"),
-            "issues": [f"{issue['code']}: {issue['message']}" for issue in failure.get("issues", [])][:6],
+            "issues": [f"{issue['code']}: {issue['message']}" for issue in failure.get("issues", [])][:REPORT_ISSUES],
             "history": failure.get("history", [])}

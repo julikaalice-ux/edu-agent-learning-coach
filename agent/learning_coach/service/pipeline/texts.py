@@ -4,7 +4,9 @@ When each of these is used is decided by the program (router.py); everything
 else a learner reads is written by the model.
 """
 
+from learning_coach.domain.research_contracts import Evidence
 from learning_coach.domain.routing import INTENT_UNCLEAR
+from learning_coach.service.execution import Capability
 
 RESPONSE_VERSION = "1.0"
 
@@ -38,23 +40,25 @@ DECLINE_EXTERNAL = "先不联网，继续讲解"
 EXTERNAL_YES = (ALLOW_EXTERNAL, "1")
 EXTERNAL_NO = (DECLINE_EXTERNAL, "2")
 EXTERNAL_QUESTION = f"是否允许本次外部访问？\n1. {ALLOW_EXTERNAL}\n2. {DECLINE_EXTERNAL}"
-EXTERNAL_LABELS = {"research": "联网查资料", "image_search": "联网搜索图片",
-                   "image_generation": "调用外部生图服务", "mcp": "通过 MCP 调用外部服务"}
+EXTERNAL_LABELS = {Capability.RESEARCH: "联网查资料", Capability.IMAGE_SEARCH: "联网搜索图片",
+                   Capability.IMAGE_GENERATION: "调用外部生图服务", Capability.MCP: "通过 MCP 调用外部服务"}
 
 # Links the program appends after the reply.
 VISUAL_LINK = "打开互动图"
 QUIZ_PICTURE_LINK = "看题目配图"
 VISUAL_FAILED = "这次未生成可用的互动图。"
-RESEARCH_NOTES = {"unavailable": "本次未取得可核查资料，未完成检索验证。",
-                  "likely": "目前证据有限，尚未完成独立来源交叉核实。",
-                  "disputed": "来源存在冲突，相关说法不能当作确定结论。"}
+RESEARCH_NOTES = {Evidence.UNAVAILABLE: "本次未取得可核查资料，未完成检索验证。",
+                  Evidence.LIKELY: "目前证据有限，尚未完成独立来源交叉核实。",
+                  Evidence.DISPUTED: "来源存在冲突，相关说法不能当作确定结论。"}
 
 NEXT_TOPIC = "接下来想学什么？"
+STEP_QUESTION = "question"   # next_step.kind when the reply asks something
+CHOICE_LETTERS = "ABCD"      # how the choices of a question are labelled
 
 
 def question(text: str) -> dict:
     """A next_step that asks the learner something."""
-    return {"kind": "question", "text": text}
+    return {"kind": STEP_QUESTION, "text": text}
 
 
 def reply(message, primary=INTENT_UNCLEAR, step=None) -> dict:
@@ -65,5 +69,5 @@ def reply(message, primary=INTENT_UNCLEAR, step=None) -> dict:
 
 def render_question(quiz_question) -> str:
     """The program renders exactly one unanswered question, with no answer key."""
-    choices = "\n".join(f"{'ABCD'[i]}. {choice}" for i, choice in enumerate(quiz_question["choices"]))
+    choices = "\n".join(f"{CHOICE_LETTERS[i]}. {choice}" for i, choice in enumerate(quiz_question["choices"]))
     return quiz_question["question"] + "\n" + choices

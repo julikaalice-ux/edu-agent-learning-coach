@@ -1,9 +1,12 @@
 """Program-owned eligibility and completion rules for optional capabilities."""
 
 from copy import deepcopy
+from enum import StrEnum
 import re
 
-from learning_coach.domain.contracts import ContractError, DEPENDENCY_FIELDS, PLAN_SCHEMA, grade_choice, validate
+from learning_coach.domain.contracts import (ContractError, DEPENDENCY_FIELDS, PLAN_SCHEMA, DecisionMode, Participant,
+                                             QuizAction, VisualSource, EASY, grade_choice, validate)
+from learning_coach.domain.research_contracts import Evidence
 
 # Intent taxonomy from prompts/instructions.md: the coordinator classifies every
 # turn into exactly one primary intent. Letters never appear bare in logic.
@@ -20,27 +23,54 @@ NON_TEACHING_INTENTS = INTENT_CHAT + INTENT_OUT_OF_SCOPE + INTENT_UNCLEAR  # "EF
 
 TOOLS = ("research", "quiz", "notes", "visual")
 QUIZ_SET_SIZE = 3  # questions in a practice set
+
+
+class Status(StrEnum):
+    """Where a tool stands in a turn. Every requested tool must end in a terminal status."""
+    PENDING = "pending"
+    NOT_REQUESTED = "not_requested"
+    SKIPPED = "skipped_policy"
+    # quiz
+    QUESTION_READY = "question_ready"
+    AWAITING_ANSWER = "awaiting_answer"
+    FEEDBACK_READY = "feedback_ready"
+    FINISHED = "finished"
+    NEEDS_INPUT = "needs_input"
+    # notes
+    DEFERRED = "deferred"
+    PREPARED = "prepared"
+    SAVED = "saved"
+    NOT_WRITTEN = "not_written"
+    FAILED = "failed"
+    # visual (research ends in an Evidence level)
+    READY = "ready"
+    PUBLISHED = "published"
+    UNAVAILABLE = "unavailable"
+
+
+_NOT_RUN = {Status.NOT_REQUESTED, Status.SKIPPED}
 TERMINAL_STATUS = {
-    "research": {"not_requested", "skipped_policy", "verified", "likely", "disputed", "unavailable"},
-    "quiz": {"not_requested", "skipped_policy", "question_ready", "awaiting_answer", "feedback_ready", "finished", "needs_input"},
+    "research": _NOT_RUN | set(Evidence),
+    "quiz": _NOT_RUN | {Status.QUESTION_READY, Status.AWAITING_ANSWER, Status.FEEDBACK_READY, Status.FINISHED,
+                        Status.NEEDS_INPUT},
     # Notes are compiled after a quiz set with the learner's consent; a turn
     # with learning evidence is only marked ("deferred") for that later run.
-    "notes": {"not_requested", "skipped_policy", "deferred", "prepared", "saved", "not_written", "failed"},
-    "visual": {"not_requested", "skipped_policy", "ready", "published", "unavailable"},
+    "notes": _NOT_RUN | {Status.DEFERRED, Status.PREPARED, Status.SAVED, Status.NOT_WRITTEN, Status.FAILED},
+    "visual": _NOT_RUN | {Status.READY, Status.PUBLISHED, Status.UNAVAILABLE},
 }
 
 
 def empty_results():
-    return dict.fromkeys(TOOLS, "not_requested")
+    return dict.fromkeys(TOOLS, Status.NOT_REQUESTED)
 
 
 def conservative_participant(stored, observed):
     """Do not turn known assistance or uncertain authorship into independence."""
-    if "companion_report" in (stored, observed):
-        return "companion_report"
-    if stored == observed == "learner":
-        return "learner"
-    return "unknown"
+    if Participant.COMPANION in (stored, observed):
+        return Participant.COMPANION
+    if stored == observed == Participant.LEARNER:
+        return Participant.LEARNER
+    return Participant.UNKNOWN
 
 
 def _valid_quote(quote, learner_text):
@@ -60,17 +90,17 @@ def select_tools(plan, learner_text, *, memory_enabled):
     """
     requested = {
         "research": plan["research_query"] is not None,
-        "quiz": plan["quiz_action"] in ("start", "continue"),
+        "quiz": plan["quiz_action"] in (QuizAction.START, QuizAction.CONTINUE),
         "notes": plan["observe_learning"],
         "visual": plan["visual_request"] is not None,
     }
-    if plan["end_task"] or plan["pause_task"] or plan["quiz_action"] == "stop":
+    if plan["end_task"] or plan["pause_task"] or plan["quiz_action"] == QuizAction.STOP:
         # Honoring an explicit control action needs no external capability.
         # Ignored tool requests must not prevent pausing/stopping the task.
         effective = deepcopy(plan)
         effective.update(research_query=None, search_queries=None, visual_request=None, observe_learning=False,
-                         quiz_action="stop" if plan["quiz_action"] == "stop" else "none")
-        return effective, {name: "skipped_policy" if requested[name] else "not_requested" for name in TOOLS}
+                         quiz_action=QuizAction.STOP if plan["quiz_action"] == QuizAction.STOP else QuizAction.NONE)
+        return effective, {name: Status.SKIPPED if requested[name] else Status.NOT_REQUESTED for name in TOOLS}
     for name, active in requested.items():
         reason = plan["tool_reasons"][name]
         if active != (reason is not None):
@@ -80,12 +110,12 @@ def select_tools(plan, learner_text, *, memory_enabled):
     if not any(requested.values()):
         raise ContractError("tool_route_without_request")
     if requested["quiz"]:
-        continuing = plan["quiz_action"] == "continue"
+        continuing = plan["quiz_action"] == QuizAction.CONTINUE
         if (plan["tool_reasons"]["quiz"]["code"] == "continue_practice") != continuing:
             raise ContractError("quiz_reason_action_mismatch")
 
     allowed = dict(requested)
-    if plan["intent"]["primary"] in NON_TEACHING_INTENTS or plan["end_task"] or plan["pause_task"] or plan["quiz_action"] == "stop":
+    if plan["intent"]["primary"] in NON_TEACHING_INTENTS or plan["end_task"] or plan["pause_task"] or plan["quiz_action"] == QuizAction.STOP:
         allowed = dict.fromkeys(TOOLS, False)
     if plan["intent"]["primary"] not in QUIZ_INTENTS:
         allowed["quiz"] = False
@@ -101,9 +131,9 @@ def select_tools(plan, learner_text, *, memory_enabled):
         effective["visual_request"] = None
     if not allowed["notes"]:
         effective["observe_learning"] = False
-    if not allowed["quiz"] and effective["quiz_action"] != "stop":
-        effective["quiz_action"] = "none"
-    results = {name: "pending" if allowed[name] else "skipped_policy" if requested[name] else "not_requested"
+    if not allowed["quiz"] and effective["quiz_action"] != QuizAction.STOP:
+        effective["quiz_action"] = QuizAction.NONE
+    results = {name: Status.PENDING if allowed[name] else Status.SKIPPED if requested[name] else Status.NOT_REQUESTED
                for name in TOOLS}
     return effective, results
 
@@ -120,16 +150,16 @@ def recover_quiz_route(decision, state, learner_text, *, memory_enabled):
         return decision, False
     if grade_choice(learner_text, quiz["awaiting"]) is None:
         return decision, False
-    controls = decision["task"] if decision["mode"] == "answer" else decision["plan"]
-    if controls["end_task"] or controls["pause_task"] or controls.get("quiz_action") == "stop":
+    controls = decision["task"] if decision["mode"] == DecisionMode.ANSWER else decision["plan"]
+    if controls["end_task"] or controls["pause_task"] or controls.get("quiz_action") == QuizAction.STOP:
         return decision, False
-    if decision["mode"] == "tools":
+    if decision["mode"] == DecisionMode.TOOLS:
         try:
             effective, results = select_tools(decision["plan"], learner_text, memory_enabled=memory_enabled)
         except ContractError:
             pass
         else:
-            if effective["quiz_action"] == "continue" and results["quiz"] == "pending":
+            if effective["quiz_action"] == QuizAction.CONTINUE and results["quiz"] == Status.PENDING:
                 return decision, False
 
     quote = learner_text.strip()
@@ -137,19 +167,19 @@ def recover_quiz_route(decision, state, learner_text, *, memory_enabled):
     reasons["quiz"] = {"code": "continue_practice", "evidence_quote": quote}
     if memory_enabled:
         reasons["notes"] = {"code": "learning_evidence", "evidence_quote": quote}
-    participant = quiz.get("participant", "unknown")
-    if decision["mode"] == "tools":
+    participant = quiz.get("participant", Participant.UNKNOWN)
+    if decision["mode"] == DecisionMode.TOOLS:
         participant = conservative_participant(participant, decision["plan"]["participant"])
     repaired = {
         "intent": {"primary": INTENT_PRACTICE, "is_implicit": True},
         "research_query": None, "search_queries": None, "visual_request": None, "visual_source": None, "observe_learning": memory_enabled,
         "task_summary": quiz["topic"], "pause_task": False, "end_task": False,
-        "quiz_action": "continue", "quiz_topic": quiz["topic"], "quiz_total": quiz["total"],
+        "quiz_action": QuizAction.CONTINUE, "quiz_topic": quiz["topic"], "quiz_total": quiz["total"],
         "difficulty": quiz["difficulty"], "participant": participant,
         "tool_reasons": reasons,
         **dict.fromkeys(DEPENDENCY_FIELDS),
     }
-    return {"mode": "tools", "plan": validate(repaired, PLAN_SCHEMA)}, True
+    return {"mode": DecisionMode.TOOLS, "plan": validate(repaired, PLAN_SCHEMA)}, True
 
 
 def recover_practice_route(decision, state, learner_text):
@@ -162,7 +192,7 @@ def recover_practice_route(decision, state, learner_text):
     learner's own message, never from the reply text. A single-character
     message without a valid quotation is left alone.
     """
-    if decision["mode"] != "answer":
+    if decision["mode"] != DecisionMode.ANSWER:
         return decision, False
     task = decision["task"]
     if decision["response"]["intent"]["primary"] != INTENT_PRACTICE or task["end_task"] or task["pause_task"]:
@@ -179,15 +209,15 @@ def recover_practice_route(decision, state, learner_text):
         "intent": {"primary": INTENT_PRACTICE, "is_implicit": False},
         "research_query": None, "search_queries": None, "visual_request": None, "visual_source": None, "observe_learning": False,
         "task_summary": task["task_summary"], "pause_task": False, "end_task": False,
-        "quiz_action": "continue" if continuing else "start",
+        "quiz_action": QuizAction.CONTINUE if continuing else QuizAction.START,
         "quiz_topic": quiz["topic"] if continuing else (task.get("task_summary") or "").strip() or None,
         "quiz_total": quiz.get("total", QUIZ_SET_SIZE) if continuing else QUIZ_SET_SIZE,
-        "difficulty": quiz.get("difficulty", "简单") if continuing else "简单",
-        "participant": quiz.get("participant", "unknown") if continuing else "learner",
+        "difficulty": quiz.get("difficulty", EASY) if continuing else EASY,
+        "participant": quiz.get("participant", Participant.UNKNOWN) if continuing else Participant.LEARNER,
         "tool_reasons": reasons,
         **dict.fromkeys(DEPENDENCY_FIELDS),
     }
-    return {"mode": "tools", "plan": validate(plan, PLAN_SCHEMA)}, True
+    return {"mode": DecisionMode.TOOLS, "plan": validate(plan, PLAN_SCHEMA)}, True
 
 
 # Program-owned triggers: the coordinator's instructions demand a visual route
@@ -254,7 +284,7 @@ def recover_explicit_visual_route(decision, learner_text):
     request and no side effect happens here; the evidence quote is the
     learner's own word, matching the ``explicit_visual`` reason contract.
     """
-    if decision["mode"] != "answer":
+    if decision["mode"] != DecisionMode.ANSWER:
         return decision, False
     task = decision["task"]
     if task["end_task"] or task["pause_task"]:
@@ -268,15 +298,15 @@ def recover_explicit_visual_route(decision, learner_text):
     reasons["visual"] = {"code": "explicit_visual", "evidence_quote": quote}
     plan = {
         "intent": {"primary": INTENT_CONCEPT, "is_implicit": False},
-        "research_query": None, "search_queries": None, "visual_request": learner_text.strip(), "visual_source": "local",
+        "research_query": None, "search_queries": None, "visual_request": learner_text.strip(), "visual_source": VisualSource.LOCAL,
         "observe_learning": False,
         "task_summary": task["task_summary"], "pause_task": False, "end_task": False,
-        "quiz_action": "none", "quiz_topic": None, "quiz_total": QUIZ_SET_SIZE,
-        "difficulty": "简单", "participant": "learner",
+        "quiz_action": QuizAction.NONE, "quiz_topic": None, "quiz_total": QUIZ_SET_SIZE,
+        "difficulty": EASY, "participant": Participant.LEARNER,
         "tool_reasons": reasons,
         **dict.fromkeys(DEPENDENCY_FIELDS),
     }
-    return {"mode": "tools", "plan": validate(plan, PLAN_SCHEMA)}, True
+    return {"mode": DecisionMode.TOOLS, "plan": validate(plan, PLAN_SCHEMA)}, True
 
 
 def require_finished(results):
@@ -299,7 +329,7 @@ def execution_order(plan):
     """
     research = plan["research_query"] is not None
     visual = plan["visual_request"] is not None
-    quiz = plan["quiz_action"] in ("start", "continue")
+    quiz = plan["quiz_action"] in (QuizAction.START, QuizAction.CONTINUE)
     return {
         "visual_waits_research": research and visual and plan.get("visual_uses_research") is not False,
         "quiz_waits_research": research and quiz and plan.get("quiz_uses_research") is not False,

@@ -20,22 +20,23 @@ from copy import deepcopy
 import asyncio
 import logging
 
-from learning_coach.domain.contracts import (QUIZ_SCHEMA, TASK_SCHEMA, TEXT, DIFFICULTY, ContractError,
-                                             check_question, object_schema, public_quiz, selected_choice,
-                                             validate)
+from learning_coach.domain.contracts import (QUIZ_SCHEMA, TASK_SCHEMA, TEXT, DIFFICULTY, EASY, ContractError,
+                                             Participant, QuizAction, QuizKind, check_question, object_schema,
+                                             public_quiz, selected_choice, validate, values)
+from learning_coach.domain.research_contracts import Evidence
 from learning_coach.domain.context import learner_card, memory_slice, number_turns, recent_window
 from learning_coach.domain.note_contracts import NOTES_SCHEMA
 from learning_coach.domain.research_contracts import (MAX_QUERIES, MAX_QUERY_CHARS, MAX_SOURCES,
                                                       VERIFY_SCHEMA)
-from learning_coach.domain.routing import INTENT_PRACTICE
+from learning_coach.domain.routing import INTENT_PRACTICE, Status
 from learning_coach.domain.teaching_visuals import visual_handoff
 from learning_coach.domain.visual_contracts import VISUAL_SCHEMA
 from learning_coach.domain.visual_quality import gallery_problem, needs_explanatory_visual
-from learning_coach.service.execution import EXTERNAL_DECLINED, external_allowed
+from learning_coach.service.execution import EXTERNAL_DECLINED, Capability, external_allowed
 from learning_coach.service.pipeline import LearningPipeline, permissions
 from learning_coach.service.pipeline.checks import validate_response
-from learning_coach.service.pipeline.quiz import PICTURE_TIMEOUT_SECONDS, new_quiz, recent_questions
-from learning_coach.service.pipeline.state import (Key, apply_task, default_participant, mark_evidence,
+from learning_coach.service.pipeline.quiz import CHECK_QUESTIONS, PICTURE_TIMEOUT_SECONDS, new_quiz, recent_questions
+from learning_coach.service.pipeline.state import (Key, Mode, apply_task, default_participant, mark_evidence,
                                                    model_view, read_memory, record_quiz_result, track_tasks)
 from learning_coach.service.pipeline.teach import attach_links, offer_notes_after_practice
 from learning_coach.service.pipeline.texts import question as ask, render_question
@@ -57,7 +58,7 @@ SEARCH_PARAMETERS = object_schema({"question": TEXT, "queries": QUERIES})
 CLAIMS_PARAMETERS = object_schema({"claims": VERIFY_SCHEMA["properties"]["claims"]})
 VISUAL_PARAMETERS = object_schema({"goal": TEXT, "spec": VISUAL_SCHEMA})
 QUESTION_PARAMETERS = object_schema({
-    "kind": {"enum": ["practice", "check"]},
+    "kind": {"enum": values(QuizKind)},
     "topic": TEXT,
     "difficulty": DIFFICULTY,
     "total": {"type": "integer", "minimum": 1, "maximum": 20},
@@ -102,7 +103,7 @@ class _Turn:
         elif self.claims is None:
             warnings.append("claims_not_checked")
         return {"queries": self.queries, "sources": list(self.sources.values())[:MAX_SOURCES],
-                "claims": self.claims or [], "overall": self.overall or "unavailable",
+                "claims": self.claims or [], "overall": self.overall or Evidence.UNAVAILABLE,
                 "warnings": list(dict.fromkeys(warnings))}
 
 
@@ -178,16 +179,16 @@ class SingleAgentPipeline(LearningPipeline):
         if selected is None:
             return None, None
         plan = {"intent": {"primary": INTENT_PRACTICE, "is_implicit": True}, "end_task": False,
-                "pause_task": False, "quiz_action": "continue", "quiz_topic": quiz.get("topic"),
-                "quiz_total": quiz.get("total", 1), "difficulty": quiz.get("difficulty", "简单"),
-                "participant": quiz.get("participant", "unknown")}
+                "pause_task": False, "quiz_action": QuizAction.CONTINUE, "quiz_topic": quiz.get("topic"),
+                "quiz_total": quiz.get("total", CHECK_QUESTIONS), "difficulty": quiz.get("difficulty", EASY),
+                "participant": quiz.get("participant", Participant.UNKNOWN)}
         graded, evidence, pending = self.quiz.grade(plan, text, state)
         quiz = state["quiz"]
         feedback = (graded or {}).get("feedback") or {
             "correct": selected == question["answer_index"], "explanation": question["explanation"]}
         info = {"feedback": feedback, "answered": quiz["answered"], "total": quiz["total"],
                 "correct_count": quiz["correct"], "finished": quiz.get("finished", False),
-                "kind": quiz.get("kind", "practice")}
+                "kind": quiz.get("kind", QuizKind.PRACTICE)}
         if pending is not None:
             info["next_question_needed"] = {"topic": quiz["topic"], "difficulty": quiz["difficulty"],
                                             "number": quiz["answered"] + 1}
@@ -203,8 +204,8 @@ class SingleAgentPipeline(LearningPipeline):
 
         async def search(question, queries):
             turn.calls.append("search")
-            if not external_allowed("research"):
-                return needs_permission("research", "联网检索")
+            if not external_allowed(Capability.RESEARCH):
+                return needs_permission(Capability.RESEARCH, "联网检索")
             if turn.searches >= MAX_SEARCHES:
                 return _problem("search_limit", "本轮已经检索过两次，用已有资料继续。")
             turn.searches += 1
@@ -249,8 +250,8 @@ class SingleAgentPipeline(LearningPipeline):
             try:
                 image = None
                 if spec["kind"] == "illustration":
-                    if not external_allowed("image_generation"):
-                        return needs_permission("image_generation", "调用外部图片生成服务")
+                    if not external_allowed(Capability.IMAGE_GENERATION):
+                        return needs_permission(Capability.IMAGE_GENERATION, "调用外部图片生成服务")
                     if self.image_generator is None:
                         raise RuntimeError("image_backend_unavailable")
                     image = await asyncio.wait_for(self.image_generator(spec["prompt"]),
@@ -276,8 +277,8 @@ class SingleAgentPipeline(LearningPipeline):
             # (best-ranked, Commons first) candidate.
             if self.image_finder is None:
                 return _problem("gallery_unavailable", "这个环境不能用网络图片，请改用程序画的图。")
-            if not external_allowed("image_search"):
-                return needs_permission("image_search", "联网搜图")
+            if not external_allowed(Capability.IMAGE_SEARCH):
+                return needs_permission(Capability.IMAGE_SEARCH, "联网搜图")
             problem = gallery_problem(spec, explanatory)
             if problem:
                 return _problem(problem[0]["code"], problem[0]["message"])
@@ -314,9 +315,10 @@ class SingleAgentPipeline(LearningPipeline):
             active = running and not running.get("finished")
             if active and running.get("awaiting"):
                 return _problem("question_waiting", "上一题还在等学习者回答，不能再出新题。")
-            if kind == "check" and active and running.get("kind", "practice") != "check":
+            if kind == QuizKind.CHECK and active and running.get("kind", QuizKind.PRACTICE) != QuizKind.CHECK:
                 return _problem("practice_running", "正在做一组练习，不插入检查题。")
-            continue_set = kind == "practice" and active and running.get("kind", "practice") == "practice"
+            continue_set = (kind == QuizKind.PRACTICE and active
+                            and running.get("kind", QuizKind.PRACTICE) == QuizKind.PRACTICE)
             history = recent_questions(running)
             problem = check_question(question)
             if problem is None and question["question"].strip().casefold() in {
@@ -332,7 +334,7 @@ class SingleAgentPipeline(LearningPipeline):
                 return _problem(problem, "题目没通过程序检查，请按问题修改后重出。")
             if not continue_set:
                 participant = running.get("participant") or default_participant(state)
-                running = state[Key.QUIZ] = new_quiz(kind=kind, topic=topic, total=1 if kind == "check" else total,
+                running = state[Key.QUIZ] = new_quiz(kind=kind, topic=topic, total=CHECK_QUESTIONS if kind == QuizKind.CHECK else total,
                                                      difficulty=difficulty, participant=participant, history=history)
             running["awaiting"] = question
             running.setdefault("question_history", []).append(question["question"])
@@ -377,10 +379,8 @@ class SingleAgentPipeline(LearningPipeline):
             "quiz_feedback": quiz_feedback,
             "external_declined": EXTERNAL_DECLINED.get(),
             "capabilities": {
-                "research": {"available": self.provider is not None, "authorized": self.provider is not None and external_allowed("research")},
-                "image_search": {"available": self.image_finder is not None, "authorized": self.image_finder is not None and external_allowed("image_search")},
-                "image_generation": {"available": self.image_generator is not None, "authorized": self.image_generator is not None and external_allowed("image_generation")},
-                "mcp": {"available": False, "authorized": False},
+                **permissions.capabilities(research=self.provider, image_finder=self.image_finder,
+                                           image_generator=self.image_generator),
                 "local_visual": {"available": self.artifacts is not None, "authorized": True},
             },
         }
@@ -397,7 +397,7 @@ class SingleAgentPipeline(LearningPipeline):
         output, task = result["response"], result["task"]
         primary = output["intent"]["primary"]
         stopping = task["end_task"] or task["pause_task"] or result["stop_quiz"]
-        apply_task(state, primary, {**task, "quiz_action": "stop" if result["stop_quiz"] else "none"})
+        apply_task(state, primary, {**task, "quiz_action": QuizAction.STOP if result["stop_quiz"] else QuizAction.NONE})
         track_tasks(state, previous_task, previous_quiz, current_turn, text)
         research = log.research()
         validate_response(output, self.response_schema, output["intent"], research, stopping=stopping)
@@ -412,7 +412,7 @@ class SingleAgentPipeline(LearningPipeline):
             record_quiz_result(context, topic=done.get("topic"), kind=quiz_feedback["kind"],
                                answered=quiz_feedback["answered"], correct=quiz_feedback["correct_count"],
                                errors=done.get("errors", []))
-            if quiz_feedback["kind"] != "check" and log.question is None:
+            if quiz_feedback["kind"] != QuizKind.CHECK and log.question is None:
                 offer_notes = offer_notes_after_practice(output, memory.enabled)
         waiting = (state.get(Key.QUIZ) or {}).get("awaiting")
         if (waiting and not stopping and log.question is None
@@ -434,9 +434,9 @@ class SingleAgentPipeline(LearningPipeline):
             mark_evidence(context, current_turn)
         if offer_notes:
             state[Key.NOTES_OFFER] = True
-        state[Key.LAST_EXECUTION] = {"mode": "single", "tool_calls": log.calls,
-                                     "research": research["overall"] if research else "not_requested",
-                                     "visual": "published" if log.artifact else
-                                     "unavailable" if log.visual_drafts else "not_requested",
+        state[Key.LAST_EXECUTION] = {"mode": Mode.SINGLE, "tool_calls": log.calls,
+                                     "research": research["overall"] if research else Status.NOT_REQUESTED,
+                                     "visual": Status.PUBLISHED if log.artifact else
+                                     Status.UNAVAILABLE if log.visual_drafts else Status.NOT_REQUESTED,
                                      "question": log.question is not None}
         return output, state

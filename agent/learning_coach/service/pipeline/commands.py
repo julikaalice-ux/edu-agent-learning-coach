@@ -8,7 +8,11 @@ import logging
 
 from learning_coach.domain import onboarding
 from learning_coach.domain.contracts import MAX_QUESTION_CHARS
+from learning_coach.domain.note_contracts import COMPANION_REPORT, SCHEMA_VERSION as NOTES_VERSION, SELF_REPORT
+from learning_coach.domain.onboarding import (BY_GUARDIAN, NO_STAGE, RECORDS_OFF, RECORDS_ON, STEP_CONSENT_GUARDIAN,
+                                              STEP_DONE, STEP_WHO, WHO_COMPANION, WHO_SELF)
 from learning_coach.domain.routing import INTENT_CHAT, INTENT_UNCLEAR
+from learning_coach.service.pipeline.shell import USER
 from learning_coach.service.pipeline.state import Key
 from learning_coach.service.pipeline.texts import (CMD_FORGET, CMD_MEMORY_OFF, CMD_MEMORY_ON, CONFIRM_DELETE,
                                                    RECORD_DELETE, question, reply)
@@ -23,7 +27,7 @@ QUESTION_MIN_CHARS = 7
 
 def last_forget(messages) -> int:
     """Index of the latest confirmed deletion ("/forget", or "确定删除" right after a delete request)."""
-    users = [(i, item["text"].strip()) for i, item in enumerate(messages) if item["role"] == "user"]
+    users = [(i, item["text"].strip()) for i, item in enumerate(messages) if item["role"] == USER]
     found = -1
     for position, (index, value) in enumerate(users):
         if value == CMD_FORGET or (value == CONFIRM_DELETE and position > 0 and users[position - 1][1] in RECORD_DELETE):
@@ -62,19 +66,19 @@ class Commands:
         after = {Key.MEMORY_BLOCKED: True}
         record = turn.state.get(Key.ONBOARDING) or {}
         if record:
-            after[Key.ONBOARDING] = {"step": "done", "records": "off", "stage": record.get("stage"),
+            after[Key.ONBOARDING] = {"step": STEP_DONE, "records": RECORDS_OFF, "stage": record.get("stage"),
                                      "who": record.get("who")}
         return reply(message, INTENT_CHAT), after
 
     def set_records(self, turn, enabled: bool):
         state = turn.state
         record = state.get(Key.ONBOARDING) or {}
-        if (enabled and record.get("who") == "self" and record.get("stage") in onboarding.MAYBE_UNDER_14
-                and record.get("consent_by") != "guardian"):
+        if (enabled and record.get("who") == WHO_SELF and record.get("stage") in onboarding.MAYBE_UNDER_14
+                and record.get("consent_by") != BY_GUARDIAN):
             # A possibly under-14 learner cannot switch records on alone.
-            state[Key.ONBOARDING] = {**record, "step": "consent_guardian"}
+            state[Key.ONBOARDING] = {**record, "step": STEP_CONSENT_GUARDIAN}
             return reply("开启学习记录需要家长同意。", INTENT_UNCLEAR,
-                         question(onboarding.question_text("consent_guardian"))), state
+                         question(onboarding.question_text(STEP_CONSENT_GUARDIAN))), state
         if not enabled:
             state[Key.MEMORY_BLOCKED] = True
         try:
@@ -99,8 +103,8 @@ class Commands:
         state, text = turn.state, turn.text
         record = state.get(Key.ONBOARDING)
         if self.demo_stage and record is None:
-            state[Key.ONBOARDING] = {"step": "done", "stage": self.demo_stage, "records": "on",
-                                     "who": "self", "demo": True}
+            state[Key.ONBOARDING] = {"step": STEP_DONE, "stage": self.demo_stage, "records": RECORDS_ON,
+                                     "who": WHO_SELF, "demo": True}
             try:
                 self.deps.store.set_enabled(turn.memory_key, True)
                 state[Key.MEMORY_BLOCKED] = False
@@ -114,8 +118,8 @@ class Commands:
                     else "开始之前，先问两个小问题，好按你的情况来讲。")
             greeting = ("你好！我是你的学习教练，可以给你讲概念、陪你解题、出小题看看是不是真的学会了，"
                         "需要的时候还能画图帮你理解。" + note)
-            return reply(greeting, INTENT_UNCLEAR, question(onboarding.question_text("who")))
-        if record is None or record.get("step") == "done":
+            return reply(greeting, INTENT_UNCLEAR, question(onboarding.question_text(STEP_WHO)))
+        if record is None or record.get("step") == STEP_DONE:
             return None
         updated = onboarding.advance(record, text)
         if updated.get("retry"):
@@ -127,7 +131,7 @@ class Commands:
                 message = "没认出这个选择，再选一次就好。"
             state[Key.ONBOARDING] = updated
             return reply(message, INTENT_UNCLEAR, question(onboarding.question_text(updated["step"])))
-        if updated["step"] != "done":
+        if updated["step"] != STEP_DONE:
             state[Key.ONBOARDING] = updated
             return reply("好的。", INTENT_UNCLEAR, question(onboarding.question_text(updated["step"])))
         self._finish_first_meeting(turn, updated)
@@ -138,24 +142,24 @@ class Commands:
         if not pending:
             return reply(closing, INTENT_UNCLEAR, question("今天想弄懂点什么？"))
         # Answer the question the learner arrived with, as if just asked.
-        turn.messages, turn.prefix = [{"role": "user", "text": pending}], closing
+        turn.messages, turn.prefix = [{"role": USER, "text": pending}], closing
         return None
 
     def _finish_first_meeting(self, turn, record):
         """Apply the consent answer; a stated stage becomes the first profile entry."""
-        records_on = record.get("records") == "on"
+        records_on = record.get("records") == RECORDS_ON
         try:
             self.deps.store.set_enabled(turn.memory_key, records_on)
-            if records_on and record.get("stage") not in (None, "不想说") and record.get("stage_answer"):
+            if records_on and record.get("stage") not in (None, NO_STAGE) and record.get("stage_answer"):
                 answer = record["stage_answer"]
                 self.deps.store.apply_notes(turn.memory_key, f"{turn.session_id}:{turn.event_id}:stage", {
-                    "schema_version": "1.0", "concepts": [], "error_records": [], "review_plan": [],
+                    "schema_version": NOTES_VERSION, "concepts": [], "error_records": [], "review_plan": [],
                     "profile": [{"key": "learning_stage", "value": record["stage"],
-                                 "origin": "companion_report" if record.get("who") == "companion" else "self_report",
+                                 "origin": COMPANION_REPORT if record.get("who") == WHO_COMPANION else SELF_REPORT,
                                  "evidence_quote": answer}],
                 }, answer)
         except (StorageError, ValueError, OSError):
             LOG.warning("onboarding_record_setting_failed")
             records_on = False
-            record["records"] = "off"
+            record["records"] = RECORDS_OFF
         turn.state[Key.MEMORY_BLOCKED] = not records_on
