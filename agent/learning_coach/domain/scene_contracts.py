@@ -75,6 +75,7 @@ LABEL_PADDING_X = 16             # px of a box kept free beside its label
 LABEL_PADDING_Y = 8              # px of a box kept free above and below its label
 LINE_LABEL_BOX = (160, 60)       # px room for the label of a line or arrow
 LINE_LABEL_LIFT = 18             # px a line label sits above the line's midpoint
+OUTSIDE_LABEL_GAP = 4            # px between a small shape and its name placed outside it
 OVERLAP_TOLERANCE = 2            # px two labels may share before they overlap
 
 
@@ -144,6 +145,30 @@ def _overlaps(a, b):
             and min(a[3], b[3]) > max(a[1], b[1]) + OVERLAP_TOLERANCE)
 
 
+def _place_label(item, label):
+    """Inside its shape when it fits; a shape too small for its name (a particle,
+    a small ball) gets the name just below it, or above, instead of a redraw."""
+    try:
+        fitted = _fit_label(label, *_label_box(item))
+        return fitted, _label_bounds(fitted)
+    except ValueError as inside:
+        if item["shape"] not in ("rect", "ellipse") or str(inside) != "scene_label_does_not_fit":
+            raise
+    width, height = LINE_LABEL_BOX
+    center_x = (item["x"] + item["width"] / 2) * X_SCALE
+    for side in (1, -1):
+        edge = (item["y"] + item["height"]) * Y_SCALE if side == 1 else item["y"] * Y_SCALE
+        try:
+            fitted = _fit_label(label, width, height, center_x, 0)
+            half = len(fitted["lines"]) * fitted["font_size"] * LINE_HEIGHT / 2
+            fitted["cy"] = edge + side * (OUTSIDE_LABEL_GAP + half)
+            fitted["outside"] = True   # drawn in the line-label colour, not on the shape
+            return fitted, _label_bounds(fitted)
+        except ValueError:
+            continue
+    raise ValueError("scene_label_does_not_fit")
+
+
 def _frame_layout(frame, number):
     seen, layout, text_boxes = set(), {}, []
     for item in frame["elements"]:
@@ -156,8 +181,7 @@ def _frame_layout(frame, number):
             _check_geometry(item)
             if not label:
                 continue
-            fitted = _fit_label(label, *_label_box(item))
-            bounds = _label_bounds(fitted)
+            fitted, bounds = _place_label(item, label)
         except ValueError as error:
             raise SceneError(str(error), where) from None
         layout[item["id"]] = fitted

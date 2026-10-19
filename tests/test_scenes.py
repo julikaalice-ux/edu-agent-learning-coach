@@ -135,6 +135,8 @@ class SceneContractTests(unittest.TestCase):
         cases.append((bad, "scene_labels_overlap"))
         bad = scene_spec()
         bad["frames"][0]["elements"][0]["height"] = 1
+        # Too long even for the room a name gets outside a small shape.
+        bad["frames"][0]["elements"][0]["label"] = "很长很长的标签文字" * 5
         cases.append((bad, "scene_label_does_not_fit"))
         bad = scene_spec()
         bad["frames"][0]["elements"][1]["x2"] = 10
@@ -159,6 +161,16 @@ class SceneContractTests(unittest.TestCase):
         with self.assertRaises(SceneError) as caught:
             scene_layout(bad)
         self.assertEqual((str(caught.exception), caught.exception.where), ("scene_out_of_bounds", "第 3 帧的 actor"))
+
+    def test_a_small_shapes_name_goes_below_it_instead_of_a_redraw(self):
+        from learning_coach.domain.scene_contracts import Y_SCALE, scene_layout
+        spec = scene_spec()
+        particle = spec["frames"][0]["elements"][0]
+        particle.update(width=3, height=6, label="质子")
+        fitted = scene_layout(spec)[0]["actor"]
+        self.assertTrue(fitted["outside"])
+        self.assertGreater(fitted["cy"], (particle["y"] + particle["height"]) * Y_SCALE)
+        self.assertIn("!box.outside", Page(render_visual(spec)).scripts[-1]["text"])
 
     def test_field_marks_are_a_background_other_labels_may_sit_on(self):
         from learning_coach.domain.scene_contracts import scene_layout

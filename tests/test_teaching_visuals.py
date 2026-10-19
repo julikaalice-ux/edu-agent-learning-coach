@@ -237,6 +237,26 @@ class TeachingVisualPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("标签相互遮挡", message)
         self.assertIn("出错位置：第 2 帧的 v 和 force", message)
 
+    async def test_a_request_to_see_change_never_gets_a_static_diagram(self):
+        from test_diagram import photosynthesis_spec
+        runner = FakeRunner([plan(visual_request="展示水从冰变成水蒸气的过程")],
+                            visuals=[photosynthesis_spec(), scene("水的三态变化")])
+        await self.pipeline(runner).run(messages("画一个互动图展示水从冰变成水蒸气的过程"), session_id="s")
+        drafts = runner.calls_for("visualizer")
+        self.assertIs(drafts[0]["must_show_change"], True)
+        # Sent back by the program before any review; only the scene was reviewed.
+        self.assertEqual(drafts[1]["revision_issues"][0]["code"], "interaction_problem")
+        self.assertEqual(len(runner.calls_for("verifier", "visual_review")), 1)
+        self.assertEqual(len(self.artifacts.committed), 1)
+
+    def test_a_planned_ai_picture_of_a_real_thing_becomes_a_web_picture(self):
+        from learning_coach.domain.routing import prefer_web_pictures
+        planned = {"visual_request": "显微镜下的植物细胞", "visual_source": "generated"}
+        self.assertEqual(prefer_web_pictures(planned, "给我一张显微镜下的植物细胞配图")["visual_source"], "web")
+        self.assertEqual(prefer_web_pictures(planned, "画一张小明在超市买水果的图")["visual_source"], "generated")
+        local = {"visual_request": "细胞结构", "visual_source": "local"}
+        self.assertEqual(prefer_web_pictures(local, "给我看看细胞长什么样"), local)
+
     async def test_visualizer_and_reviewer_receive_bounded_context(self):
         runner = FakeRunner([plan(visual_request="对比它们", task_summary="理解分子与分母")], visuals=[VISUAL])
         history = [{"role": "user" if i % 2 == 0 else "assistant", "text": str(i) + "长" * 4000}

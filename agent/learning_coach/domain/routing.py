@@ -271,6 +271,22 @@ def _visual_quote(learner_text):
     return None
 
 
+# Asking to see what a real thing looks like: an existing picture beats an AI one.
+_REAL_LOOK = re.compile(r"照片|相片|实拍|显微|长什么样|长啥样|什么样子|实物|标本|文物|真实的样子|外观")
+
+
+def prefer_web_pictures(plan, learner_text):
+    """An AI picture planned for a request to see a real thing becomes a web picture.
+
+    The coordinator is told the same rule but did not always follow it; an AI
+    picture of a cell or an animal is also the kind the reviewer rejects.
+    """
+    if (plan.get("visual_request") and plan.get("visual_source") == VisualSource.GENERATED
+            and _REAL_LOOK.search(learner_text or "")):
+        return {**plan, "visual_source": VisualSource.WEB}
+    return plan
+
+
 def explicit_visual_quote(learner_text):
     """The learner's own words that ask for a picture or a demonstration, or None."""
     return _visual_quote(learner_text)

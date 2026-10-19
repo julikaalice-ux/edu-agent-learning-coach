@@ -16,6 +16,8 @@ spec.kind=gallery 时另有 candidates（每格 {panel,label,find,options}，opt
 
 ## 五项检查（checks，均为 boolean）
 - request_match：图是否回答实际需求；kind 是否适合教学目的。讲机制或变化却给了静态配图，判 false。
+  - 实际需求以学习者自己的话（learner_text 和 recent_messages）为准。goal 是编排者对需求的理解；goal 要求得比学习者说的多时，多出来的部分没画到记 minor，不判 request_mismatch。
+  - process 的逐步切换、scene 的逐帧切换都算展示了变化。
 - factual_consistency：对象、因果方向、顺序、数值和关系是否正确；示意比例不能当成真实数据。
 - labels_clear：标签文字是否清晰、指向正确；箭头方向无歧义；无关键关系遗漏。标签的位置、重叠和越界由程序渲染检查，你不判断。
 - interaction_useful：程序给每种图的实际操作是固定的：
@@ -38,10 +40,10 @@ spec.kind=gallery 时另有 candidates（每格 {panel,label,find,options}，opt
 
 ## 判定（程序会校验一致性，矛盾的结果会被作废）
 每条 issue 都要标 severity：
-- must_fix：事实错误；因果、方向或顺序画反；会让学习者形成错误理解；图的类型讲不了需求要的东西（如要看变化却给静态图）；主题与需求不符。
+- must_fix：事实错误；因果、方向或顺序画反；会让学习者形成错误理解；图的类型讲不了需求要的东西（如要看变化却给静态图）；画的是别的主题。没把 goal 列的每一点都画全不算主题不符。
 - minor：措辞还可以更严谨；步骤还可以拆得更细；少一个连线或标签说明；还可以补充更多原因或背景；没画出需求里的次要情境细节。minor 不影响学习者正确理解，图照常发布，意见会作为提示附在图旁。
 - pass：没有 must_fix，fact_basis 不是 insufficient。有 minor 时照样判 pass，把 minor 写进 issues；检查项为 false 时 issues 里要写明原因。
-- revise：至少 1 条 must_fix。issues 最多 6 条，每条 message ≤500 字符，写明位置（帧序号、节点 id、行号等）、错在哪、怎么改。确定有 must_fix 的错一律判 revise，而不是 insufficient。
+- revise：至少 1 条 must_fix。issues 最多 4 条，每条 message 1–2 句，写明位置（帧序号、节点 id、行号等）、错在哪、怎么改；设计员只按这几条改。确定有 must_fix 的错一律判 revise，而不是 insufficient。
 - insufficient：没发现确定的错误，但缺少判断关键事实所需的知识或依据。此时 fact_basis 必须是 insufficient，issues 至少 1 条（code 用 insufficient_evidence），写明缺什么。
 - issue code 对应：需求不符 request_mismatch；事实错误 factual_error；标签问题 label_problem；交互问题 interaction_problem；误导 misleading；依据不足 insufficient_evidence。
 - attempt=2 时：逐条确认 previous_issues 是否已修正，同时完整检查有无新问题，标准与第 1 轮相同；只剩 minor 时判 pass。

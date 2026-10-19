@@ -25,9 +25,9 @@ from learning_coach.domain.context import (accept_notes, brief_card, count_token
                                            memory_slice, note_slice, number_turns, recent_window, research_digest)
 from learning_coach.domain.research_contracts import Evidence
 from learning_coach.domain.routing import (EXPLAIN_INTENTS, Status, empty_results, execution_order,
-                                           explicit_visual_quote, recover_explicit_visual_route,
-                                           recover_practice_route, recover_quiz_route, require_finished,
-                                           select_tools)
+                                           explicit_visual_quote, prefer_web_pictures,
+                                           recover_explicit_visual_route, recover_practice_route,
+                                           recover_quiz_route, require_finished, select_tools)
 from learning_coach.service.execution import (CALL_RESERVE, EXPLANATION_SINK, EXTERNAL_DECLINED, Capability,
                                               StageFailure, external_allowed)
 from learning_coach.service.pipeline import permissions
@@ -114,6 +114,8 @@ class Teacher:
             return self.answer(turn, view, decision)
         proposed, tools = select_tools(decision.value["plan"], turn.messages[-1]["text"],
                                        memory_enabled=view.memory.enabled)
+        if self.deps.image_finder is not None:
+            proposed = prefer_web_pictures(proposed, turn.text)
         missing = self._missing_access(proposed)
         if missing and not EXTERNAL_DECLINED.get():
             # Nothing runs before the learner answers; the turn is held and run again then.

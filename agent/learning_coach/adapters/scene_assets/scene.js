@@ -42,7 +42,7 @@
         const text=(box.background?art:labels).text(add=>box.lines.forEach((line,i)=>{const span=add.tspan(line);if(i>0)span.newLine();}));
         const contrast=['light','accent','particle','warning'].includes(item.color)?'#10252e':'#e5f0ed';
         text.font({family:'system-ui, sans-serif',size:box.font_size,anchor:'middle',leading:1.35})
-          .fill(item.shape==='text'?textColors[item.color]:(item.shape==='rect'||item.shape==='ellipse'?contrast:'#e5f0ed'))
+          .fill(item.shape==='text'?textColors[item.color]:((item.shape==='rect'||item.shape==='ellipse')&&!box.outside?contrast:'#e5f0ed'))
           .center(box.cx,box.cy).attr({'data-label':item.id});
       }
     }

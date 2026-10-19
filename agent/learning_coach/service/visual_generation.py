@@ -47,6 +47,10 @@ def unavailable_visual(code: str, issues: list[dict], attempts: int = 0) -> dict
             "failure": {"code": code, "issues": deepcopy(issues), "attempts": attempts}}
 
 
+# Design, render check, review and one redraw together. A first draft and its
+# review take 30-50 s; a redraw needs about as long again.
+VISUAL_TIMEOUT_SECONDS = 120
+
 # At most this many candidate pictures go to the reviewer in one call.
 MAX_REVIEW_IMAGES = 12
 IMAGE_SEARCH_TIMEOUT = 20
@@ -100,7 +104,7 @@ class VisualGenerationService:
 
     def __init__(self, runner: AgentRunner, artifacts: Artifacts,
                  image_generator: ImageGenerator | None = None, *, image_finder: ImageFinder | None = None,
-                 timeout: float = 90):
+                 timeout: float = VISUAL_TIMEOUT_SECONDS):
         self.runner, self.artifacts, self.image_generator = runner, artifacts, image_generator
         self.image_finder = image_finder
         self.timeout = timeout
@@ -164,7 +168,8 @@ class VisualGenerationService:
             self.drafts = attempt
             draft_input = deepcopy(payload)
             draft_input.update(attempt=attempt, visual_source=source, illustration_allowed=illustration_allowed,
-                               gallery_allowed=gallery_allowed, capabilities=deepcopy(capabilities))
+                               gallery_allowed=gallery_allowed, capabilities=deepcopy(capabilities),
+                               must_show_change=explanatory)
             if issues:
                 draft_input.update(revision_issues=deepcopy(issues), previous_spec=previous_spec)
             try:
@@ -180,6 +185,10 @@ class VisualGenerationService:
                 self._note(attempt, issues)
                 continue
             previous_spec = deepcopy(spec)
+            if spec["kind"] == "diagram" and explanatory:
+                issues = _issue("interaction_problem", "这个请求要看变化或步骤，diagram 是静态图；请改用 scene（逐帧）或 process（分步）。")
+                self._note(attempt, issues)
+                continue
             if spec["kind"] == "illustration" and explanatory:
                 issues = _issue("interaction_problem", "当前请求需要解释机制或演示变化；未经像素核验的静态 AI 配图不能完成此任务。请改用可检查的图解或分步 scene。")
                 self._note(attempt, issues)
