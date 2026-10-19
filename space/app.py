@@ -668,7 +668,7 @@ def run_combined(port: int) -> None:
     同目录的 proxy.py（build_space 从 backend/ 复制）。
     """
     from fastapi import FastAPI
-    from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
     from fastapi.staticfiles import StaticFiles
     import uvicorn
 
@@ -677,9 +677,16 @@ def run_combined(port: int) -> None:
     ui_dir = Path(__file__).with_name("ui")
     fastapi_app = FastAPI()
 
-    # 备用旧界面：挂到 /legacy
-    demo = build_app()
-    gr.mount_gradio_app(fastapi_app, demo, path="/legacy")
+    # 前端首页与静态资源先注册（优先于后面的 Gradio 挂载）；
+    # Gradio 挂根路径，保证平台健康检查的 /config、/gradio_api/* 可用。
+    @fastapi_app.get("/")
+    async def index():
+        if ui_dir.is_dir():
+            return FileResponse(ui_dir / "index.html")
+        return JSONResponse(status_code=404, content={"error": "ui_not_built"})
+
+    if (ui_dir / "assets").is_dir():
+        fastapi_app.mount("/assets", StaticFiles(directory=str(ui_dir / "assets")), name="ui-assets")
 
     @fastapi_app.post("/turn")
     async def turn(request: FastAPIRequest):
@@ -732,9 +739,12 @@ def run_combined(port: int) -> None:
                                        "img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'; sandbox allow-scripts",
         })
 
-    if ui_dir.is_dir():
-        fastapi_app.mount("/", StaticFiles(directory=str(ui_dir), html=True), name="ui")
-    uvicorn.run(fastapi_app, host="0.0.0.0", port=port, log_level="warning")
+    # 最后挂 Gradio 到根路径：平台健康检查依赖 /config、/gradio_api/*，
+    # 且它不能吞掉上面已注册的 /、/assets、/turn、/artifact。
+    demo = build_app()
+    gr.mount_gradio_app(fastapi_app, demo, path="/")
+
+    uvicorn.run(fastapi_app, host="0.0.0.0", port=port, log_level="info")
 
 
 if __name__ == "__main__":
