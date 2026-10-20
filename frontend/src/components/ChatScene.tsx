@@ -89,10 +89,10 @@ export function ChatScene(props: ChatSceneProps) {
   return (
     <div className="scene absolute inset-0 flex flex-col bg-paper">
       <header className="border-b border-line bg-white/80">
-        <div className="mx-auto flex max-w-5xl items-center gap-2 px-6 py-3">
+        <div className="mx-auto flex max-w-5xl items-center gap-1 overflow-x-auto px-4 py-3 sm:gap-2 sm:px-6">
           <button
             onClick={props.onLogoClick}
-            className="mr-4 font-display text-xl tracking-tight text-ink transition-opacity hover:opacity-70"
+            className="mr-2 shrink-0 font-display text-lg tracking-tight text-ink transition-opacity hover:opacity-70 sm:mr-4 sm:text-xl"
             title="回到问候页"
           >
             学习教练
@@ -101,7 +101,7 @@ export function ChatScene(props: ChatSceneProps) {
             <button
               key={item.key}
               onClick={() => setMenu(item.key)}
-              className={`rounded-md px-3 py-1.5 text-sm transition-colors ${
+              className={`shrink-0 whitespace-nowrap rounded-md px-2.5 py-1.5 text-sm transition-colors sm:px-3 ${
                 menu === item.key ? "bg-sage text-moss" : "text-muted hover:text-ink"
               }`}
             >

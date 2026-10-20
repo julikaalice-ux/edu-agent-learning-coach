@@ -177,7 +177,7 @@ export default function App() {
   };
 
   return (
-    <div className="relative h-screen w-full overflow-hidden bg-paper">
+    <div className="relative h-dvh w-full overflow-hidden bg-paper">
       {/* 问候场景 */}
       <div
         className={`absolute inset-0 transition-all duration-700 ease-in-out ${
