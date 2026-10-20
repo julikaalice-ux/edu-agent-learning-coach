@@ -28,7 +28,7 @@
 
 | 文件 | 职责 |
 |---|---|
-| `service/visual_generation.py` | 生图编排：设计 → 校验 → 渲染 → 审阅 → 发布，最多 2 稿，120 秒总时限 |
+| `service/visual_generation.py` | 生图编排：设计 → 校验 → 渲染 → 审阅 → 发布，最多 2 稿，150 秒总时限 |
 | `prompts/agents/visual-designer.md` | visualizer 的 prompt：选型规则 + 各 kind 要点 + 输出协议（全文见下） |
 | `prompts/agents/source-check.md`（visual_review 段） | 审阅 prompt：五项检查（request_match / factual_consistency / labels_clear / interaction_useful / not_misleading） |
 | `domain/visual_contracts.py` | VISUAL_SCHEMA：8 种 kind 的声明式协议（comparison/process/flashcards/linear_function/scene/illustration/diagram/…） |

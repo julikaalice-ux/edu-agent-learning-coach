@@ -63,6 +63,9 @@ class GenericVisualRecoveryTests(unittest.TestCase):
             "帮我做个演示讲清循环依赖",
             "画一张人体循环系统的结构图",
             "演示光合作用",
+            "画个时间线，讲讲唐宋元明清的先后顺序",
+            "画一下地球绕太阳转",
+            "帮我画出串联电路",
         ]
         for text in requests:
             with self.subTest(text=text):
@@ -110,6 +113,8 @@ class GenericVisualRecoveryTests(unittest.TestCase):
             "动画就不要了",
             "用文字说明这个模拟过程",
             "这个概念我还不太懂",
+            "我画了一张画，你看看",
+            "画家梵高是谁",
         ]
         for text in messages:
             with self.subTest(text=text):

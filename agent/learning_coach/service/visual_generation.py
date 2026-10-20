@@ -48,8 +48,9 @@ def unavailable_visual(code: str, issues: list[dict], attempts: int = 0) -> dict
 
 
 # Design, render check, review and one redraw together. A first draft and its
-# review take 30-50 s; a redraw needs about as long again.
-VISUAL_TIMEOUT_SECONDS = 120
+# review take 30-90 s; a redraw needs about as long again. A picture comes
+# first: the learner already has the explanation while it is drawn.
+VISUAL_TIMEOUT_SECONDS = 150
 
 # A drawn draft that rendered and was reviewed is kept as a fallback unless
 # the review found one of these; it is published (with a fixed note) when no

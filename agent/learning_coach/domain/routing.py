@@ -247,6 +247,8 @@ _DEMO_REQUEST = re.compile(
     r"|(?:演示|模拟).{0,100}(?:原理|过程|变化|形成|运动|发生|传播|作用|如何|怎么)"
     r"|(?:原理|过程|变化|形成|运动|传播).{0,30}(?:演示|模拟)"
 )
+# "画个时间线", "画一张…", "画一下…", "画出…": asking for a drawing in so many words.
+_DRAW_REQUEST = re.compile(r"画(?:一)?(?:个|张|幅|下)|画出")
 
 
 def visual_request_clauses(learner_text):
@@ -268,7 +270,7 @@ def _visual_quote(learner_text):
         for trigger in VISUAL_TRIGGERS:
             if trigger in clause:
                 return trigger
-        match = _DEMO_REQUEST.search(clause)
+        match = _DEMO_REQUEST.search(clause) or _DRAW_REQUEST.search(clause)
         if match:
             return match.group(0)
     return None

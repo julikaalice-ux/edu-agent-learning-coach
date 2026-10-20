@@ -32,7 +32,7 @@ LOG = logging.getLogger(__name__)
 MAX_HISTORY = 400
 MAX_MESSAGE_CHARS = 20000
 MAX_ID_CHARS = 200              # session and learner IDs
-TURN_TIMEOUT_SECONDS = 180      # a whole turn, all agents included
+TURN_TIMEOUT_SECONDS = 210      # a whole turn, all agents included (room for a 150 s visual)
 REPLAY_CACHE_SIZE = 2048        # accepted turns kept for transport replays
 SESSION_CACHE_SIZE = 512        # recent session states kept in memory
 

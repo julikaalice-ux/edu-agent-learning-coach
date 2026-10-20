@@ -39,6 +39,10 @@ USAGE_HISTORY = 500  # recent model calls kept for usage reports
 # designer writes the longest outputs and gets more time for its single call.
 ROLE_TIMEOUTS = {"visualizer": 75}
 NO_TIMEOUT_RETRY = frozenset({"visualizer", "verifier"})
+# A picture review usually takes 3-25 s; one that hangs (a stalled connection)
+# is cut sooner and tried once more, so a finished drawing is not lost to it.
+PHASE_TIMEOUTS = {"visual_review": 35}
+RETRY_AFTER_TIMEOUT = frozenset({"visual_review"})
 # reasoning_output_token_count: the part of the output a reasoning model spent
 # thinking (reported by the API, None for other models); it shows where a slow
 # draft's time went.
@@ -130,7 +134,7 @@ class StructuredRunner:
                 response = await asyncio.wait_for(
                     self.agents[role].run(content, options=options) if sink is None
                     else streamed(self.agents[role], content, options, sink),
-                    timeout=self.role_timeouts.get(role, self.timeout),
+                    timeout=PHASE_TIMEOUTS.get(phase) or self.role_timeouts.get(role, self.timeout),
                 )
                 usage = usage_of(response)
                 parsed = parse(response.text, requested_schema)
@@ -150,7 +154,8 @@ class StructuredRunner:
                 failed_with = error_chain(error)
                 LOG.warning("agent_stage_failed role=%s error=%s", role, failed_with)
                 timed_out = isinstance(error, TimeoutError)
-                if attempt == 1 or provider_retried or (timed_out and role in NO_TIMEOUT_RETRY):
+                if attempt == 1 or provider_retried or (timed_out and role in NO_TIMEOUT_RETRY
+                                                         and phase not in RETRY_AFTER_TIMEOUT):
                     raise StageFailure("provider_or_timeout_failure") from None
                 provider_retried = True
                 await asyncio.sleep(self.retry_delay)

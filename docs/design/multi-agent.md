@@ -101,7 +101,7 @@ E/F/G、明确结束或暂停都不启动这些能力，分别先处理情绪、
 
 每次模型调用结束记录一条固定字段的 `agent_stage` 日志：role、phase（decide / quiz / respond / visual_review / specialist）、attempt、outcome（ok / invalid_output / provider_or_timeout_failure / cancelled）、estimated_input_tokens、模型返回的 input / output / cache_read token 数和 elapsed_ms，不含学习者正文、理由引文或工具材料。耗时只覆盖这一次模型调用，不是整轮耗时，也不含搜索的网络等待。同一条记录也会交给可选的阶段回调；演示网页用它显示“正在检索和查证资料…”这类进度提示。
 
-所有 agent 的输出按各自的 Schema 校验。JSON/Schema 错误在调用次数和超时允许时最多重试一次；模型调用异常或超时重试一次，不走格式重试。每轮最多 12 次模型调用、180 秒。致命错误进入固定兜底，可选能力失败可以局部降级；工具链的最终意图必须和计划一致，直答只以自身 `response.intent` 为意图来源。`LEARNING_COACH_NATIVE_JSON=1` 可以请模型端按结构输出，本地校验始终执行；实际模型和端点是否完整支持，要在目标环境中验证。
+所有 agent 的输出按各自的 Schema 校验。JSON/Schema 错误在调用次数和超时允许时最多重试一次；模型调用异常或超时重试一次，不走格式重试。每轮最多 12 次模型调用、210 秒。致命错误进入固定兜底，可选能力失败可以局部降级；工具链的最终意图必须和计划一致，直答只以自身 `response.intent` 为意图来源。`LEARNING_COACH_NATIVE_JSON=1` 可以请模型端按结构输出，本地校验始终执行；实际模型和端点是否完整支持，要在目标环境中验证。
 
 每个 agent 用哪个模型部署由 `LEARNING_COACH_MODEL_<角色>` 决定，没设置的角色用 `AZURE_AI_MODEL_DEPLOYMENT_NAME`；当前分工见 [`architecture.md`](architecture.md#模型分工)。
 

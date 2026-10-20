@@ -139,6 +139,27 @@ class StructuredRunnerTests(unittest.IsolatedAsyncioTestCase):
             await self.make_runner(fake, timeout=.01)("coordinator", {}, SCHEMA)
         self.assertEqual(len(fake.calls), 2)
 
+    async def test_a_hanging_picture_review_is_cut_short_and_tried_once_more(self):
+        class HangsOnce(FakeAgent):
+            async def run(self, message, **kwargs):
+                self.calls.append((message, kwargs))
+                if len(self.calls) == 1:
+                    await asyncio.sleep(10)
+                return SimpleNamespace(text='{"ok":true}')
+
+        agents = {role: FakeAgent() for role in ROLES}
+        agents["verifier"] = HangsOnce()
+        runner = StructuredRunner(agents, retry_delay=0)
+        with patch.dict("learning_coach.adapters.runner.PHASE_TIMEOUTS", {"visual_review": .05}):
+            self.assertEqual(await runner("verifier", {"phase": "visual_review"}, SCHEMA), {"ok": True})
+        self.assertEqual(len(agents["verifier"].calls), 2)
+        # A research check by the same role is still not tried again after a timeout.
+        agents["verifier"] = FakeAgent(delay=10)
+        runner = StructuredRunner(agents, retry_delay=0, role_timeouts={"verifier": .05})
+        with self.assertRaises(StageFailure):
+            await runner("verifier", {"sources": []}, SCHEMA)
+        self.assertEqual(len(agents["verifier"].calls), 1)
+
     async def test_one_passing_provider_error_is_retried(self):
         class Flaky(FakeAgent):
             async def run(self, message, **kwargs):
