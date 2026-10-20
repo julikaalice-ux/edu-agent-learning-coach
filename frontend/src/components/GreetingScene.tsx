@@ -1,10 +1,12 @@
+import { useState } from "react";
 import { useIntroVideo } from "../hooks/useIntroVideo";
-import introPoster from "/intro-poster.jpg";
-import introVideo from "/intro.mp4";
+import introPoster from "/intro-poster.webp";
+import introWeb from "/intro-web.mp4";
+import introMobile from "/intro-mobile.mp4";
 
-// 本地压缩版（原片 30MB → 1MB）：一打开就能开始播放，不再等远端加载。
+// 双版本背景视频（原片 30MB 压缩）：宽屏 1280p 横版 940KB，窄屏（手机）720×1280 竖版 590KB。
+// 均满足：H.264 MP4 + faststart + 无音轨 + 6–15s 循环 + 500–800kbps + WebP 海报。
 // HF 平台不允许仓库里有视频文件，本地文件缺失时回退到远端原片。
-const VIDEO_URL = introVideo;
 const REMOTE_VIDEO_URL =
   "https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260328_083109_283f3553-e28f-428b-a723-d639c617eb2b.mp4";
 
@@ -14,9 +16,12 @@ interface GreetingSceneProps {
   onSend: () => void;
 }
 
-/** 场景 A · 问候：视频开场只播一次，教练先打招呼，可直接打字。 */
+/** 场景 A · 问候：视频开场循环播放，教练先打招呼，可直接打字。 */
 export function GreetingScene({ input, onInput, onSend }: GreetingSceneProps) {
-  const videoRef = useIntroVideo(VIDEO_URL);
+  const [videoSrc] = useState(() =>
+    window.matchMedia("(max-width: 767px)").matches ? introMobile : introWeb
+  );
+  const videoRef = useIntroVideo(videoSrc);
 
   return (
     <div className="scene absolute inset-0 overflow-hidden">
@@ -28,9 +33,10 @@ export function GreetingScene({ input, onInput, onSend }: GreetingSceneProps) {
       <video
         ref={videoRef}
         className="absolute inset-0 h-full w-full object-cover"
-        src={VIDEO_URL}
+        src={videoSrc}
         poster={introPoster}
         preload="auto"
+        loop
         muted
         playsInline
         onError={(event) => {

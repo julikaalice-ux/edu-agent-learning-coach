@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 
 /**
- * 引导页视频：只播放一次，播完定格在最后一帧，不循环。
+ * 引导页背景视频：循环播放（无音轨），0.65 倍慢放让画面更静、更「高级」。
  * 用户开启「减弱动画」时不自动播放，直接展示首帧与问候层。
  */
 export function useIntroVideo(videoUrl: string) {
@@ -10,6 +10,7 @@ export function useIntroVideo(videoUrl: string) {
   useEffect(() => {
     const video = ref.current;
     if (!video) return;
+    video.loop = true;
     const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     if (reduced) {
       video.pause();
