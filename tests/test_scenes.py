@@ -190,6 +190,55 @@ class SceneContractTests(unittest.TestCase):
                                       "color": "ink", "text": "质子"})
         self.assertEqual(scene_layout(spec)[0]["name"]["lines"], ["质子"])
 
+    def test_things_are_drawn_as_symbols_outlines_and_filled_shapes(self):
+        from learning_coach.domain.scene_contracts import Y_SCALE, scene_layout
+        spec = scene_spec()
+        for frame in spec["frames"]:
+            frame["elements"] = [
+                {"id": "orbit", "shape": "ring", "x": 14, "y": 16, "width": 72, "height": 68, "color": "neutral",
+                 "opacity": 1},
+                {"id": "sun", "shape": "icon", "x": 50, "y": 50, "size": 22, "emoji": "☀️", "label": ""},
+                {"id": "earth", "shape": "icon", "x": 15, "y": 50, "size": 13, "emoji": "🌍", "label": "夏至"},
+                {"id": "axis", "shape": "line", "x1": 13, "y1": 60, "x2": 17, "y2": 40, "color": "light",
+                 "opacity": 1, "label": ""},
+                {"id": "light", "shape": "polygon", "points": [[40, 45], [22, 40], [22, 60], [40, 55]],
+                 "color": "light", "opacity": .3},
+            ]
+        layout = scene_layout(spec)[0]
+        # The name goes just below the symbol, not on it.
+        self.assertTrue(layout["earth"]["outside"])
+        self.assertGreater(layout["earth"]["cy"], (50 + 13 / 2) * Y_SCALE)
+        self.assertNotIn("sun", layout)  # no name, no label
+        script = Page(render_visual(spec)).scripts[-1]["text"]
+        for shape in ("'icon'", "'ring'", "'polygon'"):
+            self.assertIn(shape, script)
+
+    def test_a_symbol_must_be_an_emoji_and_stay_on_the_canvas(self):
+        from learning_coach.domain.scene_contracts import scene_layout
+        for emoji in ("地球", "<b>", "earth", "🌍 earth"):
+            with self.subTest(emoji=emoji):
+                spec = scene_spec()
+                spec["frames"][0]["elements"].append({"id": "s", "shape": "icon", "x": 50, "y": 50, "size": 10,
+                                                      "emoji": emoji, "label": ""})
+                with self.assertRaises(ValueError):
+                    render_visual(spec)
+        spec = scene_spec()
+        spec["frames"][0]["elements"].append({"id": "s", "shape": "icon", "x": 2, "y": 50, "size": 20,
+                                              "emoji": "🌍", "label": ""})
+        with self.assertRaisesRegex(ValueError, "scene_out_of_bounds"):
+            scene_layout(spec)
+
+    def test_free_standing_words_move_off_a_symbol(self):
+        from learning_coach.domain.scene_contracts import _icon_box, _label_bounds, _overlaps, scene_layout
+        spec = scene_spec()
+        heart = {"id": "heart", "shape": "icon", "x": 50, "y": 50, "size": 20, "emoji": "🫀", "label": ""}
+        note = {"id": "note", "shape": "text", "x": 40, "y": 45, "width": 20, "height": 10, "color": "ink",
+                "text": "左心室"}
+        for frame in spec["frames"]:
+            frame["elements"] += [heart, note]
+        layout = scene_layout(spec)[0]
+        self.assertFalse(_overlaps(_label_bounds(layout["note"]), _icon_box(heart)))
+
     def test_field_marks_are_a_background_other_labels_may_sit_on(self):
         from learning_coach.domain.scene_contracts import scene_layout
         spec = scene_spec()

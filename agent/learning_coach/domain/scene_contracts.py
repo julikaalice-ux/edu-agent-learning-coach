@@ -19,6 +19,13 @@ SIZE = {"type": "number", "exclusiveMinimum": 0, "maximum": 100}
 COLOR = {"enum": ["neutral", "water", "light", "accent", "particle", "warning", "ink"]}
 OPACITY = {"type": "number", "minimum": 0, "maximum": 1}
 BOX = {"x": COORD, "y": COORD, "width": SIZE, "height": SIZE}
+# A picture symbol: one emoji (with its joiners or variation selectors) drawn
+# large, so a learner sees the earth, a heart or a battery instead of a box
+# with a word in it. Rendered as text, never as markup.
+EMOJI = {"type": "string", "minLength": 1, "maxLength": 8,
+         "pattern": "^[^\\sA-Za-z0-9<>&]*[\u2190-\u2bff\u3297\u3299\U0001f000-\U0001faff][^\\sA-Za-z0-9<>&]*$"}
+ICON_SIZE = {"type": "number", "minimum": 4, "maximum": 40}   # height, in % of the canvas height
+POINTS = {"type": "array", "items": {"type": "array", "items": COORD, "minItems": 2, "maxItems": 2}}
 
 
 def element(shape, properties):
@@ -32,8 +39,14 @@ ELEMENT_SCHEMA = {"oneOf": [
                       "color": COLOR, "opacity": OPACITY, "label": text(40, True)})
       for shape in ("line", "arrow")],
     element("text", {**BOX, "color": COLOR, "text": text(200)}),
-    element("polyline", {"points": {"type": "array", "minItems": 2, "maxItems": 40,
-        "items": {"type": "array", "items": COORD, "minItems": 2, "maxItems": 2}},
+    element("polyline", {"points": {**POINTS, "minItems": 2, "maxItems": 40},
+        "color": COLOR, "opacity": OPACITY}),
+    # x, y: the centre of the symbol; its name, when given, goes just below it.
+    element("icon", {"x": COORD, "y": COORD, "size": ICON_SIZE, "emoji": EMOJI, "label": text(40, True)}),
+    # The outline of an ellipse: an orbit, a clock face, a cell wall.
+    element("ring", {**BOX, "color": COLOR, "opacity": OPACITY}),
+    # A filled closed shape: a mountain, a leaf, a wedge of light.
+    element("polygon", {"points": {**POINTS, "minItems": 3, "maxItems": 24},
         "color": COLOR, "opacity": OPACITY}),
 ]}
 
@@ -107,9 +120,23 @@ def _check_geometry(item):
         raise ValueError("scene_zero_length_line")
     if item["shape"] == "polyline" and len({tuple(point) for point in item["points"]}) < 2:
         raise ValueError("scene_zero_length_line")
+    if item["shape"] == "polygon" and len({tuple(point) for point in item["points"]}) < 3:
+        raise ValueError("scene_zero_length_line")
+    if item["shape"] == "icon":
+        left, top, right, bottom = _icon_box(item)
+        if left < -EDGE_TOLERANCE or top < -EDGE_TOLERANCE or right > CANVAS_WIDTH + EDGE_TOLERANCE \
+                or bottom > CANVAS_HEIGHT + EDGE_TOLERANCE:
+            raise ValueError("scene_out_of_bounds")
     if "width" in item and (item["x"] + item["width"] > 100 + EDGE_TOLERANCE
                             or item["y"] + item["height"] > 100 + EDGE_TOLERANCE):
         raise ValueError("scene_out_of_bounds")
+
+
+def _icon_box(item):
+    """Pixel bounds of a picture symbol (square, centred on x, y)."""
+    side = item["size"] * Y_SCALE
+    center_x, center_y = item["x"] * X_SCALE, item["y"] * Y_SCALE
+    return center_x - side / 2, center_y - side / 2, center_x + side / 2, center_y + side / 2
 
 
 def _label_box(item):
@@ -152,7 +179,10 @@ def _overlaps(a, b):
 
 def _place_label(item, label):
     """Inside its shape when it fits; a shape too small for its name (a particle,
-    a small ball) gets the name just below it, or above, instead of a redraw."""
+    a small ball) gets the name just below it, or above, instead of a redraw.
+    A picture symbol always has its name below it (or above)."""
+    if item["shape"] == "icon":
+        return _outside_label(label, _icon_box(item))
     try:
         fitted = _fit_label(label, *_label_box(item))
         return fitted, _label_bounds(fitted)
@@ -163,10 +193,16 @@ def _place_label(item, label):
             return _grown_text(item, label)
         if item["shape"] not in ("rect", "ellipse"):
             raise
+    return _outside_label(label, (item["x"] * X_SCALE, item["y"] * Y_SCALE,
+                                  (item["x"] + item["width"]) * X_SCALE, (item["y"] + item["height"]) * Y_SCALE))
+
+
+def _outside_label(label, box):
+    """A name just below the shape in box (left, top, right, bottom px), or above it."""
     width, height = LINE_LABEL_BOX
-    center_x = (item["x"] + item["width"] / 2) * X_SCALE
+    center_x = (box[0] + box[2]) / 2
     for side in (1, -1):
-        edge = (item["y"] + item["height"]) * Y_SCALE if side == 1 else item["y"] * Y_SCALE
+        edge = box[3] if side == 1 else box[1]
         try:
             fitted = _fit_label(label, width, height, center_x, 0)
             half = len(fitted["lines"]) * fitted["font_size"] * LINE_HEIGHT / 2
@@ -214,7 +250,7 @@ def _clear_spot(fitted, bounds, taken):
 
 
 def _frame_layout(frame, number):
-    seen, layout, text_boxes = set(), {}, []
+    seen, layout, text_boxes, symbols = set(), {}, [], []
     for item in frame["elements"]:
         where = f"第 {number} 帧的 {item['id']}"
         if item["id"] in seen:
@@ -223,6 +259,9 @@ def _frame_layout(frame, number):
         label = item.get("label", item.get("text", ""))
         try:
             _check_geometry(item)
+            if item["shape"] == "icon":
+                # Free-standing words keep off a picture symbol when they can.
+                symbols.append((item["id"], _icon_box(item)))
             if not label:
                 continue
             fitted, bounds = _place_label(item, label)
@@ -233,12 +272,15 @@ def _frame_layout(frame, number):
             layout[item["id"]] = fitted
             continue
         clash = next((other for other, box in text_boxes if _overlaps(bounds, box)), None)
-        if clash is not None:
+        on_symbol = any(_overlaps(bounds, box) for other, box in symbols if other != item["id"])
+        if (clash is not None or on_symbol) and _free_standing(item, fitted):
             # Moving a free-standing label a little is the program's job, not a redraw.
-            spot = _clear_spot(fitted, bounds, text_boxes) if _free_standing(item, fitted) else None
-            if spot is None:
-                raise SceneError("scene_labels_overlap", f"第 {number} 帧的 {clash} 和 {item['id']}")
-            fitted, bounds = spot
+            spot = _clear_spot(fitted, bounds, text_boxes + symbols)
+            if spot is not None:
+                fitted, bounds = spot
+                clash = None
+        if clash is not None:
+            raise SceneError("scene_labels_overlap", f"第 {number} 帧的 {clash} 和 {item['id']}")
         layout[item["id"]] = fitted
         text_boxes.append((item["id"], bounds))
     return layout

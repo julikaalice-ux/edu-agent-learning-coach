@@ -18,6 +18,7 @@ spec.kind=gallery 时另有 candidates（每格 {panel,label,find,options}，opt
 - request_match：图是否回答实际需求；kind 是否适合教学目的。讲机制或变化却给了静态配图，判 false。
   - 实际需求以学习者自己的话（learner_text 和 recent_messages）为准。goal 是编排者对需求的理解；goal 要求得比学习者说的多时，多出来的部分没画到记 minor，不判 request_mismatch。
   - process 的逐步切换、scene 的逐帧切换都算展示了变化。
+  - 学习者问的是看得见的东西（天体、器官、细胞、动植物、器材、装置），图里却只有写着名字的方框、文字卡片或文字节点，没把东西画出来：判 request_mismatch，must_fix。
 - factual_consistency：对象、因果方向、顺序、数值和关系是否正确；示意比例不能当成真实数据。
 - labels_clear：标签文字是否清晰、指向正确；箭头方向无歧义；无关键关系遗漏。标签的位置、重叠和越界由程序渲染检查，你不判断。
 - interaction_useful：程序给每种图的实际操作是固定的：
@@ -34,7 +35,8 @@ spec.kind=gallery 时另有 candidates（每格 {panel,label,find,options}，opt
 - scene：每帧自包含；帧间变化对应真实步骤；check_question 能凭图作答且答案未被原样写出。
   - 坐标：左上角是 (0,0)，x 向右、y 向下（y 变小是往上）；箭头从 (x1,y1) 指向 (x2,y2)；画布宽高约 2:1，x 的 1 格约等于 y 的 2 格。判断受力、速度、场和旋转的方向时按这套坐标换算，不按数学里 y 向上的习惯。垂直纸面向里的场用“×”、向外用“·”。
   - 方向真的画反才是 must_fix；圆画得略扁、轨迹点不够圆滑、比例不精确这类示意问题算 minor。
-- diagram：边的方向和含义正确；无悬空引用、无重复 id；节点不过密。
+- diagram：边的方向和含义正确；无悬空引用、无重复 id；节点不过密。各部分是看得见的东西（不是抽象概念）时，见 request_match 的画实物要求。
+- scene 里的 icon 是一个 emoji 画出的东西：emoji 是否就是它要表示的东西（地球画成 🌍 而不是 ⭐）；方向和倾斜看旁边的 line、arrow，不看 emoji 本身。
 - gallery：每格从自己的 options 里挑最符合 find 和 label 的一张，写进 choices（每格一条 {panel, option}，option 填候选 id；没有合适的填 null，不因此判 revise）。合适是指：画面确实是这一格要的东西；适合未成年学习者（无血腥、裸露、伤亡特写）；图上的文字或画法不误导（例如把示意画当成实拍）。同样合适时优先 source=commons。设计员看不到图、也改不了图：图片的问题（不够清楚、没有标注、拍得不典型、带外文标注）只用选别的候选或填 null 解决，不判 revise，也不让 labels_clear、not_misleading 因此为 false；labels_clear 只看 label、points、steps 这些文字。只有文字写错（factual_error）、需求不符（request_mismatch，例如要讲原理或变化而 companion 不是 scene、process、diagram、linear_function）才判 revise。至少一格选中才能 pass。非 gallery 的图 choices 不输出。
 - illustration：只检查绘制指令与外观需求是否匹配，不断言像素内容正确。prompt 不得要求画文字，不得涉及真实可识别人物、受版权保护的角色或商标、血腥或性相关内容，须适合未成年学习者。用 illustration 解释原理、结构或步骤时判 revise。illustration 只能是一个画面：goal 列了几个要点时，画面清楚体现其中最核心的一个就算符合需求，其余要点由文字讲解，没画出的记 minor，不判 request_mismatch。
 

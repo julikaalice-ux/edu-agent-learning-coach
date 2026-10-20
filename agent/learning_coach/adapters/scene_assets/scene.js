@@ -36,6 +36,9 @@
       else if(item.shape==='line')shape=art.line(item.x1*sx,item.y1*sy,item.x2*sx,item.y2*sy).stroke({color,width:2.5,opacity});
       else if(item.shape==='arrow')arrow(item.x1*sx,item.y1*sy,item.x2*sx,item.y2*sy,color,opacity);
       else if(item.shape==='polyline')shape=art.polyline(item.points.map(p=>[p[0]*sx,p[1]*sy])).fill('none').stroke({color,width:2.5,opacity});
+      else if(item.shape==='ring')shape=art.ellipse(item.width*sx,item.height*sy).move(item.x*sx,item.y*sy).fill('none').stroke({color,width:2.5,opacity});
+      else if(item.shape==='polygon')shape=art.polygon(item.points.map(p=>[p[0]*sx,p[1]*sy])).fill(color).opacity(opacity);
+      else if(item.shape==='icon')shape=art.text(item.emoji).font({size:item.size*sy*.82,anchor:'middle',family:'"Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif'}).center(item.x*sx,item.y*sy);
       if(shape)shape.attr({'data-element':item.id});
       const box=layout[index][item.id];
       if(box){
