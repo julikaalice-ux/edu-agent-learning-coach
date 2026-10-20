@@ -153,7 +153,8 @@ class Commands:
         coordinator only answers. A bare greeting still gets the coordinator's
         own introduction.
         """
-        if turn.prefix is not None or not onboarding.carries_question(turn.text):
+        # A held turn run again was already introduced when it was held.
+        if turn.prefix is not None or turn.resumed or not onboarding.carries_question(turn.text):
             return
         memory = read_memory(turn.state, self.deps.store, turn.memory_key)
         if is_first_meeting(turn, memory):

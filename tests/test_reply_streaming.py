@@ -137,9 +137,34 @@ class PipelineStreamingTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_first_question_shows_the_introduction_first(self):
         runner = StreamingRunner([plan()], replies=[deepcopy(ANSWER)])
         events = await self.events(self.pipeline(runner), "分子和分母是什么关系？", returning_visitor=False)
-        first = next(event["delta"] for event in events if "delta" in event)
-        self.assertTrue(first.startswith(INTRO + INTRO_RECORDS_OFF + "\n\n"))
+        # The program's introduction goes out at once and on its own, before any model call.
+        self.assertEqual(events[0], {"delta": INTRO + INTRO_RECORDS_OFF + "\n\n"})
         self.assertEqual(events[-1]["output"]["message"], self.shown(events))
+
+    async def test_a_direct_answer_rerouted_to_a_visual_is_shown_while_the_visual_is_drawn(self):
+        # The coordinator answered directly; the program reroutes an explicit
+        # request for a demonstration and keeps the answer as the explanation.
+        reply = {**deepcopy(ANSWER), "message": "分母表示整体平均分成的份数。", "next_step": None}
+        runner = StreamingRunner([plan()], replies=[reply])
+        events = await self.events(self.pipeline(runner), "演示一下分母表示什么")
+        explanations = [event["explanation"] for event in events if "explanation" in event]
+        self.assertEqual(explanations, [reply["message"]])
+        output, state = events[-1]["output"], events[-1]["state"]
+        self.assertTrue(output["message"].startswith(reply["message"]))
+        self.assertEqual(state["last_execution"]["routing_repaired"], "explicit_visual_without_tools")
+
+    async def test_a_held_turn_run_again_is_not_introduced_twice(self):
+        runner = StreamingRunner([plan(research_query="分数的定义"), plan(research_query="分数的定义")],
+                                 replies=[{**deepcopy(ANSWER), "next_step": None}])
+        pipeline = self.pipeline(runner)
+        asked = await self.events(pipeline, "查一下分数的定义", returning_visitor=False)
+        self.assertTrue(asked[-1]["output"]["message"].startswith(INTRO))
+        history = [{"role": "user", "text": "查一下分数的定义"},
+                   {"role": "assistant", "text": visible(asked[-1]["output"])}]
+        answered = [event async for event in pipeline.run_stream(
+            messages("允许本次外部访问", *history), session_id="s", state=asked[-1]["state"])]
+        self.assertNotIn(INTRO, visible(answered[-1]["output"]))
+        self.assertNotIn(INTRO, self.shown(answered))
 
     async def test_practice_written_as_a_direct_answer_is_not_shown(self):
         # The program turns it into a quiz, so the draft would be thrown away.

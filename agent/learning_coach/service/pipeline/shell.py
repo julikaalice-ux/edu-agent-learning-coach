@@ -60,6 +60,8 @@ class Turn:
     prefix: str | None = None
     # The program has already introduced the coach this turn.
     introduced: bool = False
+    # A turn held for the external-access question, now run again.
+    resumed: bool = False
 
     @property
     def text(self) -> str:

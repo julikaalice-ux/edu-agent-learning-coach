@@ -151,9 +151,11 @@ class TeachingDeliveryTests(unittest.IsolatedAsyncioTestCase):
         events = [event async for event in self.pipeline(runner).run_stream(
             messages("先不保存"), session_id="onboarding", state=state)]
         closing = "好，这次不保存学习记录。想保存时随时说“开启记录”。现在可以问问题了。"
-        self.assertEqual(events[0], {"explanation": closing + "\n\n" + INITIAL})
+        # The program's closing words go out at once, before any model call.
+        self.assertEqual(events[0], {"delta": closing + "\n\n"})
+        self.assertEqual(events[1], {"explanation": closing + "\n\n" + INITIAL})
         output = events[-1]["output"]
-        self.assertTrue(output["message"].startswith(events[0]["explanation"]))
+        self.assertTrue(output["message"].startswith(events[1]["explanation"]))
         self.assertEqual(output["message"].count(closing), 1)
         self.assertEqual(output["message"].count(INITIAL), 1)
         self.assertEqual(events[-1]["state"]["onboarding"]["step"], "done")
@@ -197,7 +199,7 @@ class TeachingDeliveryTests(unittest.IsolatedAsyncioTestCase):
                    "participant": "learner", "kind": "practice", "errors": []}
         runner = FakeRunner([visual_decision()], replies=[answer()])
         events = [event async for event in self.pipeline(runner).run_stream(
-            messages(USER), session_id="waiting", state={"quiz": waiting})]
+            messages(USER), session_id="waiting", state={"quiz": waiting}, returning_visitor=True)]
         self.assertEqual(len(events), 1)
         self.assertEqual(runner.calls_for("coordinator", "respond")[0]["initial_explanation"], None)
         self.assertEqual(events[0]["state"]["quiz"]["awaiting"], QUIZ)
@@ -207,7 +209,7 @@ class TeachingDeliveryTests(unittest.IsolatedAsyncioTestCase):
         research = BlockedResearch()
         runner = FakeRunner([visual_decision(research=True)], replies=[answer()])
         stream = self.pipeline(runner, research).run_stream(
-            messages(USER), session_id="research", external_permissions={"research"})
+            messages(USER), session_id="research", external_permissions={"research"}, returning_visitor=True)
         next_event = asyncio.create_task(anext(stream))
         try:
             await asyncio.wait_for(research.started.wait(), 2)

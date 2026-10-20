@@ -47,3 +47,4 @@ def resume_held_turn(turn):
         EXTERNAL_PERMISSIONS.set(granted & EXTERNAL_CAPABILITIES)
         EXTERNAL_DECLINED.set(True)
     turn.messages = deepcopy(held["messages"])
+    turn.resumed = True

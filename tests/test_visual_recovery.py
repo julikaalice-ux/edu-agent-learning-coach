@@ -73,6 +73,8 @@ class GenericVisualRecoveryTests(unittest.TestCase):
                 self.assertEqual(original, unchanged)
                 self.assertEqual(result["mode"], "tools")
                 self.assertEqual(result["plan"]["visual_request"], text)
+                # The answer already written is offered as the early explanation.
+                self.assertEqual(result["initial_explanation"], original["response"]["message"])
                 evidence = result["plan"]["tool_reasons"]["visual"]
                 self.assertEqual(evidence["code"], "explicit_visual")
                 self.assertIn(evidence["evidence_quote"], text)

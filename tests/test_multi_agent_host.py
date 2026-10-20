@@ -661,9 +661,10 @@ class FiveRoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 # The reply arrives while it is written; only its text, never the JSON around it.
                 self.assertGreater(len(updates), 1)
                 self.assertEqual("".join(update.text for update in updates), final.text)
-                # A first question: the program's introduction goes out with the first piece.
+                # A first question: the program's introduction goes out first, on its own.
                 self.assertTrue(updates[0].text.startswith(INTRO))
-                self.assertTrue(updates[0].text.endswith("\n\n普通条"))
+                self.assertTrue(updates[0].text.endswith("“关闭记录”。\n\n"))
+                self.assertTrue(updates[1].text.startswith("普通"))
                 self.assertNotIn('"', "".join(update.text for update in updates))
                 # Notes are not compiled inside the teaching turn.
                 self.assertEqual(client.roles, ["coordinator", "verifier", "visualizer", "verifier", "coordinator"])

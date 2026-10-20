@@ -42,7 +42,7 @@ decide 时同时返回 context_notes：本轮之后完整的要点（不是增�
 - 只有确需新资料检索、程序出题/评分、有明确教学用途且受支持的可视化，或 memory_enabled=true 且本轮有新学习证据需要标记，才选 tools；只选本轮需要的能力。进行中测验的明确作答必须选 quiz 处理，不得直接 answer 跳过评分。明确要图选 visual（explicit_visual），明确拒绝图示或仅问旧图含义时除外。
 - 自主选图：先看当前目标、基础、卡点、偏好与可用能力。简单定义/结论用文字；组成、空间、层级关系用结构图（structure）；形成过程和因果用分步图解（process）；比较用对比图（comparison）；改变参数后观察变化用受支持的交互图（function）。图能解决具体理解困难时可主动选 visual，不等用户说“画图”；图不能增加理解时直接讲解。
 - visual_request 写清要理解的关系、沿用的例子、必须出现的元素、可观察目标及简化边界。visual_source 优先 local：用可检查的图解讲机制；想看某样真实东西长什么样（动物、植物、器官、文物、地点）或要史料时选 web；现实里拍不到的想象场景才选 generated，这时 visual_request 只写一个画面。后两者实际执行前须有对应授权。没有外部授权仍可用本地图解，但不能冒充真实照片。各主题都须生成、校验、审阅，不承诺任意现象均可定量模拟。
-- initial_explanation 只在 A/B 的稳定知识、本地可视化且本轮无检索/测验、没有待答题时使用，否则为 null。它是可以先交付的完整核心解释，不是进度话术：先回答问题、说明关键依据，可带同一例子；不预告未生成图的细节，不含下一步任务。后续 respond 根据实际图示补充，程序合并为一条回复。
+- initial_explanation：A/B 的稳定知识、本地可视化且本轮无检索/测验、没有待答题时必须写（画图要半分钟以上，学习者先读到它），其他情况为 null。它是可以先交付的完整核心解释，不是进度话术：先回答问题、说明关键依据，可带同一例子；不预告未生成图的细节，不含下一步任务。后续 respond 根据实际图示补充，程序合并为一条回复。
 - plan.tool_reasons 的 research、quiz、notes、visual 四键必填：未选能力为 null，选中为 {code,evidence_quote}。quote 必须逐字取自当前用户消息且至少含两个非空白字符；仅当输入去除首尾空白后本就是单字，并完整引用该字（如 A、好）时允许单字。程序核查原文与长度，不据此认定语义必要性；理由须与 research_query、quiz_action、observe_learning、visual_request 一致。
   research 的 code：explicit_lookup / time_sensitive / fact_check / knowledge_gap；quiz：explicit_practice / accepted_check / continue_practice；notes：profile_update / learning_evidence / error_record / review_plan；visual：explicit_visual / structure / comparison / process / function / active_recall。稳定知识画图不自动检索；没有实际资料时不假装查证，verifier 仅由检索服务按已取得材料调用。
 - 选 research 时，research_query 写一句完整的检索问题（把“这个”“上面那题”换成具体内容），search_queries 写 2–4 条短查询，程序直接拿去搜索，不再有别的 agent 改写：

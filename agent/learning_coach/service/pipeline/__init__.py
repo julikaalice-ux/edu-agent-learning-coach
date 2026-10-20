@@ -221,18 +221,10 @@ class LearningPipeline:
     async def _teach_with_prefix(self, turn):
         """Teach with the program's words (first-meeting closing or introduction) in front."""
         prefix = turn.prefix
-        emit = turn.on_delta
-        if emit is not None:
-            # Text shown while it is written gets the same words in front, once.
-            started = []
-
-            def with_prefix(piece):
-                if not started:
-                    started.append(True)
-                    piece = prefix + "\n\n" + piece
-                emit(piece)
-
-            turn.on_delta = with_prefix
+        if turn.on_delta is not None:
+            # The program's own words are final: shown at once, before any
+            # model call, so a learner waiting for a visual is not left blank.
+            turn.on_delta(prefix + "\n\n")
         sink = EXPLANATION_SINK.get()
         token = None
         if sink is not None:

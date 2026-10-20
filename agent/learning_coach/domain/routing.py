@@ -322,7 +322,10 @@ def recover_explicit_visual_route(decision, learner_text):
         "tool_reasons": reasons,
         **dict.fromkeys(DEPENDENCY_FIELDS),
     }
-    return {"mode": DecisionMode.TOOLS, "plan": validate(plan, PLAN_SCHEMA)}, True
+    # The direct answer already written is offered as the explanation shown
+    # while the visual is drawn; the teacher's own checks decide if it is used.
+    return {"mode": DecisionMode.TOOLS, "plan": validate(plan, PLAN_SCHEMA),
+            "initial_explanation": decision["response"]["message"]}, True
 
 
 def require_finished(results):
