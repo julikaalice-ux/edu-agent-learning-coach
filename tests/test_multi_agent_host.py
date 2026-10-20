@@ -139,6 +139,29 @@ class StructuredRunnerTests(unittest.IsolatedAsyncioTestCase):
             await self.make_runner(fake, timeout=.01)("coordinator", {}, SCHEMA)
         self.assertEqual(len(fake.calls), 2)
 
+    async def test_a_connection_never_made_gets_one_more_try(self):
+        class ConnectTimeout(Exception):
+            pass
+
+        class Unreachable(FakeAgent):
+            def __init__(self, failures):
+                super().__init__()
+                self.failures = failures
+
+            async def run(self, message, **kwargs):
+                self.calls.append((message, kwargs))
+                if len(self.calls) <= self.failures:
+                    raise RuntimeError("request failed") from ConnectTimeout()
+                return SimpleNamespace(text='{"ok":true}')
+
+        flaky = Unreachable(2)
+        self.assertEqual(await self.make_runner(flaky)("coordinator", {"phase": "decide"}, SCHEMA), {"ok": True})
+        self.assertEqual(len(flaky.calls), 3)
+        down = Unreachable(10)
+        with self.assertRaises(StageFailure):
+            await self.make_runner(down)("coordinator", {"phase": "decide"}, SCHEMA)
+        self.assertEqual(len(down.calls), 3)
+
     async def test_a_hanging_picture_review_is_cut_short_and_tried_once_more(self):
         class HangsOnce(FakeAgent):
             async def run(self, message, **kwargs):

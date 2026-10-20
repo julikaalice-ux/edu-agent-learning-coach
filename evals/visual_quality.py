@@ -219,6 +219,29 @@ async def run_case(pipeline, recorder, case, runs, grants=EXTERNAL_GRANTS):
     return rows
 
 
+FAILURE_KINDS = ("两稿都没通过审阅", "连不上模型服务", "超时", "其他")
+
+
+def failure_kind(row):
+    """Why a run produced no picture: the drawing, the network, or time.
+
+    Runs on a laptop far from the model's region see network failures the
+    hosted agent rarely sees; counting them apart keeps them from reading as
+    drawing failures.
+    """
+    if row["success"]:
+        return None
+    errors = " ".join(call.get("error") or "" for call in row.get("calls", []))
+    reason = row.get("visual_failure") or row.get("turn_failure") or ""
+    if reason in ("quality_not_accepted", "insufficient_evidence"):
+        return "两稿都没通过审阅"
+    if "ConnectTimeout" in errors or "ConnectError" in errors:
+        return "连不上模型服务"
+    if "Timeout" in errors or reason == "visual_timeout":
+        return "超时"
+    return "其他"
+
+
 def summarize(rows, runs):
     by_case = {}
     for row in rows:
@@ -276,6 +299,10 @@ def summarize(rows, runs):
         "visual_p90_s": percentile(totals["visual"], .9) / 1000 if totals["visual"] else None,
         "mean_attempts": mean(totals["attempts"]) if totals["attempts"] else None,
         "with_issues": sum(1 for row in rows if row["success"] and row.get("with_issues")),
+        "failure_kinds": {kind: sum(1 for row in rows if failure_kind(row) == kind) for kind in FAILURE_KINDS},
+        "success_without_network": (
+            totals["success"] / (totals["rows"] - sum(1 for row in rows if failure_kind(row) == "连不上模型服务"))
+            if totals["rows"] > sum(1 for row in rows if failure_kind(row) == "连不上模型服务") else None),
     }
 
 
@@ -302,6 +329,11 @@ def write_reports(out, summary, lines, meta):
                    f"{name} {seconds:.1f}s" for name, seconds in summary["stage_p50_s"].items()) or "无"),
                "- 失败原因：" + ("，".join(f"{code} {count} 次" for code, count in summary["failures"].items())
                                   or "无"),
+               "- 失败分类：" + ("，".join(f"{kind} {count} 次" for kind, count in summary["failure_kinds"].items()
+                                         if count) or "无"),
+               "- 不算连不上模型服务的轮次，成功率："
+               + (f"**{summary['success_without_network'] * 100:.0f}%**" if summary["success_without_network"] is not None
+                  else "无"),
                f"- 模型服务让等（限流后自动重试）：{summary['throttle']['retries']} 次，共 {summary['throttle']['wait_s']:.0f}s，"
                f"状态码 {summary['throttle']['statuses'] or '无'}",
                "", "说明：success 要求回复带产物链接且产物确实已发布；稿次和失败原因来自流水线自己的记录。"]

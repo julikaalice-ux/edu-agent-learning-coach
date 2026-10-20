@@ -37,11 +37,14 @@ USAGE_HISTORY = 500  # recent model calls kept for usage reports
 # out draft or review is not started again from scratch: the retry would only
 # run into that deadline and the first call's work would be thrown away. The
 # designer writes the longest outputs and gets more time for its single call.
-ROLE_TIMEOUTS = {"visualizer": 75}
+# Drafts take up to about 70 s; two drafts in one run were cut at 75 s.
+ROLE_TIMEOUTS = {"visualizer": 110}
 NO_TIMEOUT_RETRY = frozenset({"visualizer", "verifier"})
-# A picture review usually takes 3-25 s; one that hangs (a stalled connection)
+# A picture review usually takes 3-30 s; one that hangs (a stalled connection)
 # is cut sooner and tried once more, so a finished drawing is not lost to it.
-PHASE_TIMEOUTS = {"visual_review": 35}
+PHASE_TIMEOUTS = {"visual_review": 45}
+# Network errors that mean the request never reached the model.
+NEVER_REACHED = frozenset({"ConnectTimeout", "ConnectError"})
 RETRY_AFTER_TIMEOUT = frozenset({"visual_review"})
 # reasoning_output_token_count: the part of the output a reasoning model spent
 # thinking (reported by the API, None for other models); it shows where a slow
@@ -68,6 +71,17 @@ def error_chain(error) -> str:
         parts.append(part)
         error = error.__cause__ or error.__context__
     return "<".join(parts)
+
+
+def never_reached(error) -> bool:
+    """The connection was never made, so the model did no work and trying again is free."""
+    seen = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        if type(error).__name__ in NEVER_REACHED:
+            return True
+        error = error.__cause__ or error.__context__
+    return False
 
 
 def usage_of(response) -> dict:
@@ -109,8 +123,9 @@ class StructuredRunner:
         requested_schema = native_schema(schema) if self.native_json else schema
         request = {"output_schema": requested_schema, "input": payload}
         phase = payload.get("phase") if payload.get("phase") in ("decide", "quiz", "respond", "visual_review") else "specialist"
-        provider_retried = False
-        for attempt in range(2):
+        provider_retried = reconnected = False
+        attempt, attempts = 0, 2
+        while attempt < attempts:
             budget = BUDGET.get()
             if budget is not None:
                 if budget.remaining <= CALL_RESERVE.get():
@@ -154,11 +169,18 @@ class StructuredRunner:
                 failed_with = error_chain(error)
                 LOG.warning("agent_stage_failed role=%s error=%s", role, failed_with)
                 timed_out = isinstance(error, TimeoutError)
-                if attempt == 1 or provider_retried or (timed_out and role in NO_TIMEOUT_RETRY
-                                                         and phase not in RETRY_AFTER_TIMEOUT):
+                unreached = never_reached(error)
+                if unreached and not reconnected:
+                    # One extra try for a connection that was never made (a
+                    # flaky network); it costs no model time.
+                    reconnected = True
+                    attempts += 1
+                elif attempt >= attempts - 1 or provider_retried or (
+                        timed_out and role in NO_TIMEOUT_RETRY and phase not in RETRY_AFTER_TIMEOUT):
                     raise StageFailure("provider_or_timeout_failure") from None
-                provider_retried = True
-                await asyncio.sleep(self.retry_delay)
+                else:
+                    provider_retried = True
+                await asyncio.sleep(self.retry_delay * (2 if unreached else 1))
             finally:
                 record = {"role": role, "phase": phase, "attempt": attempt + 1, "outcome": outcome,
                           "estimated_input_tokens": count_tokens(message), **usage,
@@ -173,6 +195,7 @@ class StructuredRunner:
                 LOG.info("agent_stage %s", " ".join(f"{key}={value}" for key, value in record.items()))
                 if self.observer is not None:
                     self.observer(record)
+            attempt += 1
         raise StageFailure("invalid_stage_output")
 
 
