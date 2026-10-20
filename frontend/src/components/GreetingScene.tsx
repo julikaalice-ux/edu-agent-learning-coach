@@ -3,7 +3,10 @@ import introPoster from "/intro-poster.jpg";
 import introVideo from "/intro.mp4";
 
 // 本地压缩版（原片 30MB → 1MB）：一打开就能开始播放，不再等远端加载。
+// HF 平台不允许仓库里有视频文件，本地文件缺失时回退到远端原片。
 const VIDEO_URL = introVideo;
+const REMOTE_VIDEO_URL =
+  "https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260328_083109_283f3553-e28f-428b-a723-d639c617eb2b.mp4";
 
 interface GreetingSceneProps {
   input: string;
@@ -30,6 +33,10 @@ export function GreetingScene({ input, onInput, onSend }: GreetingSceneProps) {
         preload="auto"
         muted
         playsInline
+        onError={(event) => {
+          const video = event.currentTarget;
+          if (video.src !== REMOTE_VIDEO_URL) video.src = REMOTE_VIDEO_URL;
+        }}
       />
       {/* 按原规格：上下渐层，其余交给素材本身 */}
       <div className="absolute inset-0 bg-gradient-to-b from-paper via-transparent to-paper" />
