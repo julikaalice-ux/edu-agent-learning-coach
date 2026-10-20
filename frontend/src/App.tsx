@@ -122,12 +122,17 @@ export default function App() {
     enter();
     setInput("");
     setThinking(true);
+    // 图片类请求在等待生成时给一个「正在生成中」对话框；真实回复开始流入时会被替换。
+    const wantsVisual = /(图|画|照片|配图|可视化|示意图|图解|图片)/.test(text);
     setSession((prev) => ({
       ...prev,
       options: [],
       messages: [
         ...prev.messages,
         { role: "user", content: text, at: Date.now() },
+        ...(wantsVisual
+          ? [{ role: "assistant" as const, content: "正在生成中，预计1分钟左右", at: Date.now() }]
+          : []),
         { role: "assistant", content: "", at: Date.now() },
       ],
     }));

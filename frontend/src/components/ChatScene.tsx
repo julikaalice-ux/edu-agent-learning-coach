@@ -129,9 +129,20 @@ function Workbench({ messages, options, thinking, input, onInput, onSend }: Chat
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-4 overflow-y-auto px-6 py-6">
-        {messages.map((turn, index) =>
+        {messages.map((turn, index) => {
           // 回答还没写出字时不画空对话框，下面的「我先想想…」先顶着。
-          turn.role === "assistant" && !turn.content ? null : (
+          if (turn.role === "assistant" && !turn.content) return null;
+          if (turn.role === "assistant" && turn.content.startsWith("正在生成中")) {
+            return (
+              <div key={index} className="flex justify-start" aria-live="polite">
+                <div className="flex items-center gap-3 rounded-xl rounded-bl-md border border-dashed border-moss/40 bg-sage/50 px-4 py-3">
+                  <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-moss" />
+                  <span className="text-sm text-moss">{turn.content}</span>
+                </div>
+              </div>
+            );
+          }
+          return (
             <div key={index} className={`flex ${turn.role === "user" ? "justify-end" : "justify-start"}`}>
               <div
                 className={`max-w-[80%] rounded-xl px-4 py-2.5 leading-relaxed ${
@@ -143,9 +154,10 @@ function Workbench({ messages, options, thinking, input, onInput, onSend }: Chat
                 <MessageContent text={turn.content} />
               </div>
             </div>
-          ),
-        )}
-        {thinking && (
+          );
+        })}
+        {thinking &&
+          !messages.some((turn) => turn.role === "assistant" && turn.content.startsWith("正在生成中")) && (
           <div className="flex justify-start" aria-live="polite">
             <div className="rounded-bl-md rounded-xl border border-line bg-white px-4 py-2.5 text-muted">
               我先想想…
