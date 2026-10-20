@@ -36,12 +36,17 @@ export function GreetingScene({ input, onInput, onSend }: GreetingSceneProps) {
         src={videoSrc}
         poster={introPoster}
         preload="auto"
+        autoPlay
         loop
         muted
         playsInline
         onError={(event) => {
           const video = event.currentTarget;
-          if (video.src !== REMOTE_VIDEO_URL) video.src = REMOTE_VIDEO_URL;
+          if (video.src !== REMOTE_VIDEO_URL) {
+            video.src = REMOTE_VIDEO_URL;
+            // 换源后浏览器不会自动续播，静音下重新发起播放
+            void video.play().catch(() => {});
+          }
         }}
       />
       {/* 按原规格：上下渐层，其余交给素材本身 */}
