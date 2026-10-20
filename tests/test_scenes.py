@@ -172,6 +172,24 @@ class SceneContractTests(unittest.TestCase):
         self.assertGreater(fitted["cy"], (particle["y"] + particle["height"]) * Y_SCALE)
         self.assertIn("!box.outside", Page(render_visual(spec)).scripts[-1]["text"])
 
+    def test_free_standing_labels_are_moved_apart_instead_of_a_redraw(self):
+        from learning_coach.domain.scene_contracts import _label_bounds, _overlaps, scene_layout
+        spec = scene_spec()
+        for frame in spec["frames"]:
+            caption = next(item for item in frame["elements"] if item["id"] == "caption")
+            frame["elements"].append({**caption, "id": "note", "text": "另一段说明"})
+        layout = scene_layout(spec)[0]
+        self.assertFalse(_overlaps(_label_bounds(layout["caption"]), _label_bounds(layout["note"])))
+        render_visual(spec)
+
+    def test_words_too_long_for_their_text_box_get_a_larger_box(self):
+        from learning_coach.domain.scene_contracts import scene_layout
+        spec = scene_spec()
+        for frame in spec["frames"]:
+            frame["elements"].append({"id": "name", "shape": "text", "x": 50, "y": 60, "width": 3, "height": 3,
+                                      "color": "ink", "text": "质子"})
+        self.assertEqual(scene_layout(spec)[0]["name"]["lines"], ["质子"])
+
     def test_field_marks_are_a_background_other_labels_may_sit_on(self):
         from learning_coach.domain.scene_contracts import scene_layout
         spec = scene_spec()

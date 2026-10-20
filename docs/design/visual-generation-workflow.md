@@ -45,9 +45,9 @@
 ## 关键流程（代码级）
 
 1. **选型**：coordinator 的 `visual_request` 决定是否画图；visualizer 按「依次检查」选 kind（flashcards → linear_function → comparison → scene → process → diagram → illustration）。
-2. **校验**：`validate(spec, VISUAL_SCHEMA)`；渲染失败把渲染器错误码翻译成中文修正意见（`_RENDER_CORRECTIONS`）带回去重画。
+2. **校验**：`validate(spec, VISUAL_SCHEMA)`；文字框放不下、不在图形上的标签互相挡住，程序自己放大文字框、挪开标签；其余渲染失败把错误码翻译成中文修正意见（`_RENDER_CORRECTIONS`）带回去重画。
 3. **拦截规则**：`needs_explanatory_visual(goal, learner_text)` —— 讲机制/因果/参数变化时禁止 illustration（静态像素图讲不了机制），改为 scene/process/diagram。
-4. **审阅**：verifier 收到 spec + research + render_check=passed；`validate_visual_review` 检查审阅自洽性和来源；verdict=pass 才发布。
+4. **审阅**：verifier 收到 spec + research + render_check=passed；`validate_visual_review` 检查审阅自洽性和来源；verdict=pass（或只有 minor）直接发布。两稿都没过、或重画超时时，最后一份画出来且审阅没发现事实错误的稿照样发布，附一句固定提示（`FALLBACK_BLOCKERS` / `FALLBACK_NOTE`）。
 5. **发布**：`artifacts.prepare(session_id, spec, image=…)` → token URL；外层事务通过后才 `artifacts.commit`（校验失败不发布）。
 6. **显示**（演示页）：`respond()` 解析 `[打开互动图](url)` → `PIPELINE.artifacts.get(token)` → 含 `data:image` 的当配图内联、否则 iframe 内嵌。托管端经公开 blob 容器提供（链接匿名可读、2 天生命周期删除）。
 

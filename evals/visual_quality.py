@@ -160,6 +160,8 @@ async def run_case(pipeline, recorder, case, runs, grants=EXTERNAL_GRANTS):
             "case_id": case["id"], "run": run, "elapsed_ms": elapsed_ms,
             "visual_ms": visual_ms, "attempts": attempts, "stages_ms": stages,
             "visual_kind": visual.get("kind"), "visual_failure": visual.get("failure"),
+            # Published after both drafts were sent back for reasons other than wrong facts.
+            "with_issues": bool(visual.get("with_issues")),
             "visual_issues": visual.get("issues") or [],
             # Set when the coordinator answered directly and the program had to redo the route.
             "routing_repaired": execution.get("routing_repaired"),
@@ -273,6 +275,7 @@ def summarize(rows, runs):
         "visual_p50_s": percentile(totals["visual"], .5) / 1000 if totals["visual"] else None,
         "visual_p90_s": percentile(totals["visual"], .9) / 1000 if totals["visual"] else None,
         "mean_attempts": mean(totals["attempts"]) if totals["attempts"] else None,
+        "with_issues": sum(1 for row in rows if row["success"] and row.get("with_issues")),
     }
 
 
@@ -294,6 +297,7 @@ def write_reports(out, summary, lines, meta):
                f"- 总耗时：中位 {summary['total_p50_s']:.0f}s，最慢 10% {summary['total_p90_s']:.0f}s",
                f"- 视觉阶段：中位 {summary['visual_p50_s']:.0f}s，最慢 10% {summary['visual_p90_s']:.0f}s",
                f"- 平均稿次：{summary['mean_attempts']:.2f}（1 = 第一稿就定了；2 = 重画过；0 = 这一轮没有画图）",
+               f"- 其中没过审、带提示发布的：{summary['with_issues']} 次（审阅没发现事实错误，只是还有没改完的地方）",
                "- 各步耗时中位（只算用到这一步的轮次）：" + ("，".join(
                    f"{name} {seconds:.1f}s" for name, seconds in summary["stage_p50_s"].items()) or "无"),
                "- 失败原因：" + ("，".join(f"{code} {count} 次" for code, count in summary["failures"].items())
@@ -310,7 +314,8 @@ async def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--runs", type=int, default=3, help="runs per case (default 3)")
-    parser.add_argument("--cases", default=str(Path(__file__).with_name("visual_cases.jsonl")))
+    parser.add_argument("--cases", default=str(Path(__file__).with_name("visual_cases.jsonl")),
+                        help="用例文件；evals/visual_cases_new.jsonl 是没拿来调过的新题，看对新问题稳不稳")
     parser.add_argument("--only", default="", help="只跑这些用例，逗号分隔，如 VISQ-CELLS,VISQ-PHOTO")
     parser.add_argument("--no-external", action="store_true",
                         help="不给联网授权（查资料、搜图、AI 生图都不可用），只测本地图解")

@@ -77,6 +77,11 @@ LINE_LABEL_BOX = (160, 60)       # px room for the label of a line or arrow
 LINE_LABEL_LIFT = 18             # px a line label sits above the line's midpoint
 OUTSIDE_LABEL_GAP = 4            # px between a small shape and its name placed outside it
 OVERLAP_TOLERANCE = 2            # px two labels may share before they overlap
+# A text element is only its words: when they do not fit the box the designer
+# gave, the program tries these larger boxes (scale of the given box, and a
+# minimum in px) around the same centre before asking for a redraw.
+TEXT_GROWTH = ((1.5, 1.5, 0, 0), (2, 2, 160, 60), (3, 3, 240, 90))
+NUDGE_STEPS = 3                  # a free-standing label moves at most this many of its own heights
 
 
 # A text made only of field marks (into / out of the page) is a background
@@ -152,7 +157,11 @@ def _place_label(item, label):
         fitted = _fit_label(label, *_label_box(item))
         return fitted, _label_bounds(fitted)
     except ValueError as inside:
-        if item["shape"] not in ("rect", "ellipse") or str(inside) != "scene_label_does_not_fit":
+        if str(inside) != "scene_label_does_not_fit":
+            raise
+        if item["shape"] == "text":
+            return _grown_text(item, label)
+        if item["shape"] not in ("rect", "ellipse"):
             raise
     width, height = LINE_LABEL_BOX
     center_x = (item["x"] + item["width"] / 2) * X_SCALE
@@ -167,6 +176,41 @@ def _place_label(item, label):
         except ValueError:
             continue
     raise ValueError("scene_label_does_not_fit")
+
+
+def _grown_text(item, label):
+    """Words that do not fit their text box get a larger box around the same centre."""
+    width, height, center_x, center_y = _label_box(item)
+    for scale_x, scale_y, min_width, min_height in TEXT_GROWTH:
+        try:
+            fitted = _fit_label(label, max(width * scale_x, min_width), max(height * scale_y, min_height),
+                                center_x, center_y)
+            return fitted, _label_bounds(fitted)
+        except ValueError:
+            continue
+    raise ValueError("scene_label_does_not_fit")
+
+
+def _free_standing(item, fitted) -> bool:
+    """A label not drawn on its own shape: it may move a little to clear another label."""
+    return item["shape"] in ("line", "arrow", "text") or bool(fitted.get("outside"))
+
+
+def _clear_spot(fitted, bounds, taken):
+    """The nearest position, within a few label heights, where the label overlaps none of taken."""
+    width, height = bounds[2] - bounds[0], bounds[3] - bounds[1]
+    step_x, step_y = width / 2, height + OUTSIDE_LABEL_GAP
+    offsets = sorted(((dx * step_x, dy * step_y) for dy in range(-NUDGE_STEPS, NUDGE_STEPS + 1)
+                      for dx in (-1, 0, 1) if dx or dy), key=lambda offset: math.hypot(*offset))
+    for dx, dy in offsets:
+        moved = {**fitted, "cx": fitted["cx"] + dx, "cy": fitted["cy"] + dy}
+        try:
+            box = _label_bounds(moved)
+        except ValueError:
+            continue  # off the canvas
+        if not any(_overlaps(box, other) for _, other in taken):
+            return moved, box
+    return None
 
 
 def _frame_layout(frame, number):
@@ -184,13 +228,18 @@ def _frame_layout(frame, number):
             fitted, bounds = _place_label(item, label)
         except ValueError as error:
             raise SceneError(str(error), where) from None
-        layout[item["id"]] = fitted
         if item["shape"] == "text" and FIELD_MARKS.fullmatch(label):
             fitted["background"] = True  # drawn under the shapes' labels
+            layout[item["id"]] = fitted
             continue
         clash = next((other for other, box in text_boxes if _overlaps(bounds, box)), None)
         if clash is not None:
-            raise SceneError("scene_labels_overlap", f"第 {number} 帧的 {clash} 和 {item['id']}")
+            # Moving a free-standing label a little is the program's job, not a redraw.
+            spot = _clear_spot(fitted, bounds, text_boxes) if _free_standing(item, fitted) else None
+            if spot is None:
+                raise SceneError("scene_labels_overlap", f"第 {number} 帧的 {clash} 和 {item['id']}")
+            fitted, bounds = spot
+        layout[item["id"]] = fitted
         text_boxes.append((item["id"], bounds))
     return layout
 

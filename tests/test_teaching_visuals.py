@@ -120,6 +120,37 @@ class TeachingVisualPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.artifacts.committed[0][1]["spec"]["title"], corrected["title"])
         self.assertEqual(state["last_execution"]["tools"]["visual"], "published")
 
+    async def test_two_rejections_without_wrong_facts_publish_the_last_draft_with_a_note(self):
+        from learning_coach.service.visual_generation import FALLBACK_NOTE
+        first, second = scene("初稿"), scene("第二稿")
+        not_matching = review("revise", code="request_mismatch", message="请改成能看出整体轮廓的图。")
+        runner = FakeRunner([plan(visual_request="演示形成过程")], visuals=[first, second],
+                            visual_reviews=[not_matching, not_matching])
+        output, state = await self.pipeline(runner).run(messages("演示形成过程"), session_id="s")
+        self.assertEqual(len(self.artifacts.committed), 1)
+        self.assertEqual(self.artifacts.committed[0][1]["spec"]["title"], "第二稿")
+        self.assertIn("打开互动图", output["message"])
+        context = runner.calls_for("coordinator", "respond")[0]["visual_context"]
+        self.assertEqual(context["status"], "ready")
+        self.assertTrue(context["quality"]["published_with_issues"])
+        self.assertIn(FALLBACK_NOTE, context["limitations"])
+        # The reviewer's words to the designer still stay away from the responder.
+        self.assertNotIn("整体轮廓", json.dumps(runner.calls_for("coordinator", "respond")[0], ensure_ascii=False))
+        self.assertEqual(state["last_execution"]["tools"]["visual"], "published")
+
+    async def test_a_redraw_that_fails_falls_back_to_the_first_draft(self):
+        first = scene("初稿")
+        unclear = review("revise", code="label_problem", message="标签含义不明确。")
+        for second, reviews in ((StageFailure("visualizer_unavailable"), [unclear]),
+                                (scene("第二稿"), [unclear, review("revise")])):  # the redraw got a fact wrong
+            with self.subTest(second=type(second).__name__):
+                self.artifacts.committed.clear()
+                runner = FakeRunner([plan(visual_request="演示形成过程")], visuals=[first, second],
+                                    visual_reviews=reviews)
+                output, _ = await self.pipeline(runner).run(messages("演示形成过程"), session_id=f"s-{len(reviews)}")
+                self.assertEqual([item[1]["spec"]["title"] for item in self.artifacts.committed], ["初稿"])
+                self.assertIn("打开互动图", output["message"])
+
     async def test_two_rejections_stop_without_publishing(self):
         runner = FakeRunner([plan(visual_request="展示关系")], visuals=[VISUAL, VISUAL],
                             visual_reviews=[review("revise"), review("revise")])

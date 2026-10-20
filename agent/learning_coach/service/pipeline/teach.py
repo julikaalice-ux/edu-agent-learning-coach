@@ -534,8 +534,11 @@ def responder_visual(visual_context):
     reason: the review issues are instructions to the designer ("请把图的重点
     收窄成……"), and a responder that saw them passed them on to the learner.
     """
-    if not visual_context or visual_context.get("status") != Status.UNAVAILABLE:
+    if not visual_context:
         return visual_context
+    if visual_context.get("status") != Status.UNAVAILABLE:
+        # A draft published with open review notes keeps them in history, for logs only.
+        return {key: value for key, value in visual_context.items() if key != "history"}
     failure = visual_context.get("failure") or {}
     return {"status": Status.UNAVAILABLE, "description": visual_context.get("description"),
             "failure": {"code": failure.get("code"), "attempts": failure.get("attempts"),
@@ -551,6 +554,6 @@ def visual_report(visual_context) -> dict:
              visual_context.get("kind"), visual_context.get("status"), failure.get("code"), drafts,
              "|".join(entry.split("：", 1)[0].replace(" ", "") for entry in failure.get("history", [])) or "-")
     return {"kind": visual_context.get("kind"), "status": visual_context.get("status"), "drafts": drafts,
-            "failure": failure.get("code"),
+            "failure": failure.get("code"), "with_issues": bool(quality.get("published_with_issues")),
             "issues": [f"{issue['code']}: {issue['message']}" for issue in failure.get("issues", [])][:REPORT_ISSUES],
-            "history": failure.get("history", [])}
+            "history": failure.get("history", visual_context.get("history", []))}

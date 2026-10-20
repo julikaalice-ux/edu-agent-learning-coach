@@ -51,6 +51,13 @@ def unavailable_visual(code: str, issues: list[dict], attempts: int = 0) -> dict
 # review take 30-50 s; a redraw needs about as long again.
 VISUAL_TIMEOUT_SECONDS = 120
 
+# A drawn draft that rendered and was reviewed is kept as a fallback unless
+# the review found one of these; it is published (with a fixed note) when no
+# draft passes, so a learner who asked for a picture gets one. Wrong facts,
+# missing evidence and a review that did not hold together never go out.
+FALLBACK_BLOCKERS = frozenset({"factual_error", "insufficient_evidence", "review_inconsistent"})
+FALLBACK_NOTE = "这张图审阅时还有没改完的地方（没有发现事实错误），细节以文字讲解为准。"
+
 # At most this many candidate pictures go to the reviewer in one call.
 MAX_REVIEW_IMAGES = 12
 IMAGE_SEARCH_TIMEOUT = 20
@@ -113,13 +120,18 @@ class VisualGenerationService:
     async def generate(self, session_id: str, payload: dict, *, learner_text: str):
         # One deadline covers design, rendering, review and the optional redraw;
         # a slow optional visual must leave the main task able to return feedback.
-        self.history = []
+        self.history, self._fallback, self._last_review = [], None, None
         try:
             artifact, context = await asyncio.wait_for(
                 self._generate(session_id, payload, learner_text=learner_text), timeout=self.timeout)
         except TimeoutError:
             artifact, context = None, unavailable_visual("visual_timeout", _issue(
                 "render_invalid", "图示生成与审阅超过本轮时间上限，未发布产物；可继续当前学习任务。"), self.drafts)
+        if artifact is None and self._fallback is not None:
+            # No draft passed (or time ran out): the best drawn one goes out with a note.
+            artifact, context = self._fallback
+            # Why the drafts were sent back, for logs and evaluations only.
+            context["history"] = list(self.history)
         if artifact is None and context and "failure" in context:
             # Why each draft was sent back, for logs and evaluations (codes and review text only).
             context["failure"]["history"] = list(self.history)
@@ -242,6 +254,8 @@ class VisualGenerationService:
                 return "done", (None, unavailable_visual("render_unavailable", _issue(
                     "render_invalid", "本次图示渲染服务不可用。"), attempt))
         review = await self._review(payload, spec, research, learner_text, attempt, previous_issues)
+        if review[0] == "retry" and artifact is not None and self._last_review is not None:
+            self._keep_fallback(spec, artifact, self._last_review, attempt)
         if review[0] != "pass":
             return review
         review = review[1]
@@ -263,6 +277,7 @@ class VisualGenerationService:
     async def _review(self, payload, spec, research, learner_text, attempt, previous_issues,
                       *, candidates=None, images=None):
         """("pass", review), ("retry", issues) or ("done", unavailable result)."""
+        self._last_review = None  # set again only by a complete review that sends the draft back
         request = {
             "phase": "visual_review", "goal": payload["goal"],
             "learning_goal": payload.get("learning_goal", ""),
@@ -295,7 +310,21 @@ class VisualGenerationService:
         if review["verdict"] == "pass" or not blocking_issues(review):
             # Only minor issues: publish, with them shown as notes.
             return "pass", review
+        self._last_review = review
         return "retry", deepcopy(review["issues"])
+
+    def _keep_fallback(self, spec, artifact, review, attempt):
+        """A rendered, reviewed draft without wrong facts; a later one replaces an earlier one."""
+        if any(issue["code"] in FALLBACK_BLOCKERS for issue in blocking_issues(review)):
+            return
+        context = visual_handoff(spec)
+        context.update(status="ready", quality={
+            "verdict": review["verdict"], "fact_basis": review["fact_basis"],
+            "review_scope": "specification_only", "pixel_reviewed": False,
+            "attempts": attempt, "published_with_issues": True,
+        })
+        context["limitations"].append(FALLBACK_NOTE)
+        self._fallback = (artifact, context)
 
     async def _gallery(self, session_id, payload, spec, research, learner_text, explanatory, attempt,
                        previous_issues):
