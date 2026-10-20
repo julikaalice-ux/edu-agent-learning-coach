@@ -553,101 +553,23 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus
 
 
 def build_app() -> gr.Blocks:
+    """Gradio 页面只做一件事：全屏嵌入新前端（/ui-app）。
+
+    平台的 gradio 模式会拦截根路径并期待 gradio 页面，所以新前端挂在
+    /ui-app，由这个页面以全屏 iframe 呈现；对话代理走同源的 /turn。
+    """
     theme = gr.themes.Soft(
         primary_hue="blue", secondary_hue="teal", neutral_hue="slate",
         radius_size="lg",
     )
     with gr.Blocks(title="学习教练 · edu-agent", theme=theme, css=COACH_CSS) as demo:
         gr.HTML(
-            '<div class="coach-hero">'
-            '<div class="coach-hero-emoji">🎓</div>'
-            '<h1>学习教练 · edu-agent</h1>'
-            '<p>多 agent 学习教练：意图编排 · 检索查证 · 出题判分 · 学习记忆 · 互动图与配图</p>'
-            '<div class="coach-hero-chips">'
-            '<span>💡 讲概念</span><span>✍️ 陪解题</span><span>🧩 出小题</span><span>🖼️ 画图</span>'
-            '<span>🔍 查资料</span></div>'
-            '<div class="coach-hero-note">Azure AI Foundry 驱动 · 无需登录即可体验</div>'
-            "</div>"
+            '<iframe src="/ui-app/" title="学习教练" '
+            'style="position:fixed;inset:0;width:100%;height:100%;border:none;background:#f3f1eb">'
+            "</iframe>"
         )
-        locked_note = gr.Markdown(f"**{LOCKED_TEXT}**", visible=False)
-        with gr.Column(visible=not ACCESS_KEY) as main:
-            chatbot = gr.Chatbot(label="", height=540, autoscroll=False,
-                                 elem_id="coach-chat", placeholder=
-                                 "你好呀 👋 我是你的学习教练。\n\n"
-                                 "可以直接问我：\n"
-                                 "· 帮我解释一下什么是光合作用\n"
-                                 "· 给我出几道分数加减法的题\n"
-                                 "· 画一个对比 1/2 和 1/4 的互动图")
-            panel = gr.HTML("", elem_id="coach-panel", css_template="""
-                .coach-visual { border: 1px solid #dbe7ee; border-radius: 16px; overflow: hidden;
-                                background: #fff; box-shadow: 0 2px 12px rgba(24,51,75,.06); }
-                summary { cursor: pointer; padding: 12px 16px; font-weight: 600; color: #18334b; }
-                summary span { float: right; font-size: 0.9em; font-weight: 400; color: #6b8394; }
-                details[open] .when-closed, details:not([open]) .when-open { display: none; }
-                iframe { display: block; max-width: 100%; border: none; }
-            """)
-            with gr.Row(elem_id="coach-choices"):
-                option_buttons = [gr.Button(visible=False, size="sm") for _ in range(MAX_OPTIONS)]
-            with gr.Row(elem_id="coach-composer"):
-                input_box = gr.Textbox(
-                    placeholder="问点什么，比如：帮我生成一个对比 1/2 和 1/4 的互动图",
-                    scale=9, label="", container=False, lines=1, max_lines=5)
-                send = gr.Button("发送", scale=1, variant="primary", elem_id="coach-send")
-            with gr.Row(elem_id="coach-toolbar"):
-                reset = gr.Button("新会话", size="sm", elem_id="coach-reset")
-                if DEMO_STAGE:
-                    clear = gr.Button("清空演示数据", size="sm", elem_id="coach-clear")
-                    gr.Markdown(f"<div class='coach-footnote'>演示模式：预设学段「{DEMO_STAGE}」，学习记录已开启。</div>")
-                else:
-                    gr.Markdown("<div class='coach-footnote'>每次打开页面都是一个新会话，不会保留之前的对话；"
-                                "本页开启的学习记录也只到本页关闭为止。第一次使用时会问学段和是否保存学习记录，"
-                                "之后随时可以说「开启记录」「关闭记录」「删除记录」。</div>")
-            with gr.Accordion("我的笔记", open=False, elem_id="coach-notes"):
-                show_notes = gr.Button("查看最新笔记", size="sm")
-                notes_view = gr.Markdown("")
-        session = gr.State(new_session()[0])
-        # The only thing kept in this visitor's browser storage is a bare
-        # "visited before" flag; it survives "新会话" and reloads.
-        key = browser_secret()
-        device = gr.BrowserState(False, storage_key="edu-agent-seen", secret=key)
-        # Server-side per-visitor flag; set from the link on page load.
-        allowed = gr.State(not ACCESS_KEY)
-
-        # Bind the generator directly so Gradio cancellation closes it promptly.
-        on_send = respond
-
-        outputs = [session, chatbot, panel, input_box, device]
-
-        turn_events = []
-
-        def after_turn(event):
-            turn_events.append(event)
-            # Show the answer's numbered choices as buttons.
-            event.then(option_updates, [session], option_buttons)
-
-        after_turn(send.click(on_send, [input_box, session, device, allowed], outputs))
-        after_turn(input_box.submit(on_send, [input_box, session, device, allowed], outputs))
-        for button in option_buttons:
-            # A button passes its own label, so clicking it sends the chosen option.
-            after_turn(button.click(on_send, [button, session, device, allowed], outputs))
-        reset.click(new_session, None, [session, chatbot, panel, input_box],
-                    cancels=turn_events, queue=False).then(
-            option_updates, [session], option_buttons)
-        if DEMO_STAGE:
-            clear.click(clear_demo, [session, device], [session, chatbot, panel, input_box, device],
-                        cancels=turn_events, queue=False).then(
-                option_updates, [session], option_buttons)
-        show_notes.click(notes_markdown, [session, allowed], [notes_view])
-        # Loaded from a local asset; no browser network service is needed.
-        demo.load(fn=None, js=Path(__file__).with_name("ui.js").read_text(encoding="utf-8"))
-        demo.load(check_access, None, [allowed, main, locked_note])
-        # Every page load starts a brand-new session. Gradio can re-attach a
-        # reloaded page to its previous server-side session (the browser keeps
-        # the session id); replacing it here drops the old chat, coach state
-        # and learning records so nothing from the previous page-open survives.
-        demo.load(new_session, None, [session, chatbot, panel, input_box]).then(
-            option_updates, [session], option_buttons)
     return demo
+
 
 
 class TurnTimer:
@@ -693,7 +615,8 @@ def proxy_error(error) -> str:
 
 
 def run_combined(port: int) -> None:
-    """同一容器服务三样：新前端（根路径静态）、/turn 代理、原 Gradio（/legacy 备用）。
+    """同一容器服务三样：新前端（/ui-app 静态）、/turn 代理、Gradio 页面（根路径，
+    平台健康检查依赖，页面本身是全屏 iframe 指向 /ui-app）。
 
     前端构建产物在 ui/（build_space 复制 frontend/dist），代理模块是
     同目录的 proxy.py（build_space 从 backend/ 复制）。
@@ -708,16 +631,18 @@ def run_combined(port: int) -> None:
     ui_dir = Path(__file__).with_name("ui")
     fastapi_app = FastAPI()
 
-    # 前端首页与静态资源先注册（优先于后面的 Gradio 挂载）；
+    # 新前端挂在 /ui-app（先注册，优先于后面的 Gradio 挂载）；
     # Gradio 挂根路径，保证平台健康检查的 /config、/gradio_api/* 可用。
-    @fastapi_app.get("/")
-    async def index():
+    @fastapi_app.get("/ui-app")
+    @fastapi_app.get("/ui-app/")
+    async def ui_index():
         if ui_dir.is_dir():
             return FileResponse(ui_dir / "index.html")
         return JSONResponse(status_code=404, content={"error": "ui_not_built"})
 
     if (ui_dir / "assets").is_dir():
-        fastapi_app.mount("/assets", StaticFiles(directory=str(ui_dir / "assets")), name="ui-assets")
+        fastapi_app.mount("/ui-app/assets", StaticFiles(directory=str(ui_dir / "assets")),
+                          name="ui-app-assets")
 
     @fastapi_app.post("/turn")
     async def turn(request: FastAPIRequest):

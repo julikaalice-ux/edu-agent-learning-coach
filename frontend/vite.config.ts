@@ -3,6 +3,8 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
 export default defineConfig({
+  // 部署在 Space 组合服务的 /ui-app 路径下（Gradio 页面用全屏 iframe 指向它）
+  base: "/ui-app/",
   plugins: [react(), tailwindcss()],
   server: {
     port: 5173,
