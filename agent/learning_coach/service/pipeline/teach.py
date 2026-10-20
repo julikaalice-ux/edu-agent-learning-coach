@@ -29,7 +29,8 @@ from learning_coach.domain.context import (accept_notes, brief_card, count_token
                                            memory_slice, note_slice, number_turns, recent_window, research_digest)
 from learning_coach.domain.partial_reply import written_value
 from learning_coach.domain.research_contracts import Evidence
-from learning_coach.domain.routing import (EXPLAIN_INTENTS, INTENT_PRACTICE, Status, empty_results, execution_order,
+from learning_coach.domain.routing import (EXPLAIN_INTENTS, FLASHCARD_TRIGGERS, INTENT_PRACTICE, Status,
+                                           empty_results, execution_order,
                                            explicit_visual_quote, prefer_web_pictures,
                                            recover_explicit_visual_route, recover_practice_route,
                                            recover_quiz_route, require_finished, select_tools)
@@ -195,6 +196,11 @@ class Teacher:
         value, repaired = recover_quiz_route(value, state, learner_text, memory_enabled=memory_enabled)
         if repaired:
             return value, "pending_quiz_answer"
+        if explicit_visual_quote(learner_text) in FLASHCARD_TRIGGERS:
+            # Asked for cards to memorise: draw them instead of starting a quiz.
+            value, repaired = recover_explicit_visual_route(value, learner_text)
+            if repaired:
+                return value, "explicit_visual_without_tools"
         value, repaired = recover_practice_route(value, state, learner_text)
         if repaired:
             return value, "practice_without_tools"

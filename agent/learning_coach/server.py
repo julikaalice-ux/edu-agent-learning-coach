@@ -41,6 +41,23 @@ def demo_stage_from_env():
     return os.environ.get("LEARNING_COACH_DEMO_STAGE", "高中")
 
 
+REASONING_EFFORTS = ("none", "low", "medium", "high", "xhigh")
+
+
+def role_options_from_env() -> dict[str, dict]:
+    """LEARNING_COACH_REASONING_<ROLE> sets a reasoning model's effort per agent,
+    e.g. LEARNING_COACH_REASONING_VISUALIZER=low; unset roles keep the model's
+    default. Only for reasoning-model deployments; other models may reject it."""
+    options = {}
+    for role in ROLES:
+        effort = os.environ.get(f"LEARNING_COACH_REASONING_{role.upper()}", "").strip().lower()
+        if effort in REASONING_EFFORTS:
+            options[role] = {"reasoning": {"effort": effort}}
+        elif effort:
+            LOG.warning("unknown_reasoning_effort role=%s", role)
+    return options
+
+
 def role_models_from_env(default: str) -> dict[str, str]:
     """LEARNING_COACH_MODEL_<ROLE> picks a deployment per agent, e.g.
     LEARNING_COACH_MODEL_COORDINATOR=gpt-6-luna; unset roles use the default."""
@@ -210,7 +227,8 @@ def create_pipeline(*, client=None, data_dir=None, public_base_url=None, native_
         agent = SingleAgentRunner(create_single_agent(client, PROMPTS_DIR), observer=stage_observer)
         return SingleAgentPipeline(agent, provider, store, artifacts, response_schema, **shared)
     native = os.environ.get("LEARNING_COACH_NATIVE_JSON", "0") == "1" if native_json is None else native_json
-    runner = StructuredRunner(create_agents(client, INSTRUCTIONS_PATH, role_clients=role_clients),
+    runner = StructuredRunner(create_agents(client, INSTRUCTIONS_PATH, role_clients=role_clients,
+                                            role_options=role_options_from_env()),
                               native_json=native, observer=stage_observer)
     return LearningPipeline(runner, ResearchService(runner, provider), store, artifacts, response_schema, **shared)
 

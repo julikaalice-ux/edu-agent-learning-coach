@@ -39,7 +39,11 @@ USAGE_HISTORY = 500  # recent model calls kept for usage reports
 # designer writes the longest outputs and gets more time for its single call.
 ROLE_TIMEOUTS = {"visualizer": 75}
 NO_TIMEOUT_RETRY = frozenset({"visualizer", "verifier"})
-USAGE_KEYS = ("input_token_count", "output_token_count", "cache_read_input_token_count")
+# reasoning_output_token_count: the part of the output a reasoning model spent
+# thinking (reported by the API, None for other models); it shows where a slow
+# draft's time went.
+USAGE_KEYS = ("input_token_count", "output_token_count", "cache_read_input_token_count",
+              "reasoning_output_token_count")
 
 
 def error_chain(error) -> str:
@@ -187,9 +191,14 @@ SHARED_PREAMBLE = (
 )
 
 
-def create_agents(client, instructions_path: Path, *, role_clients=None):
-    """role_clients maps a role to its own model client; other roles use client."""
+def create_agents(client, instructions_path: Path, *, role_clients=None, role_options=None):
+    """role_clients maps a role to its own model client; other roles use client.
+
+    role_options adds default request options for a role, e.g. a lower
+    reasoning effort for the designer ({"reasoning": {"effort": "low"}}).
+    """
     role_clients = role_clients or {}
+    role_options = role_options or {}
     root = instructions_path.parent / "agents"
     files = {"verifier": "source-check.md",
              "notes": "note-organizer.md", "visualizer": "visual-designer.md",
@@ -198,5 +207,5 @@ def create_agents(client, instructions_path: Path, *, role_clients=None):
     for role in ROLES:
         prompt = instructions_path.read_text(encoding="utf-8") if role == "coordinator" else (root / files[role]).read_text(encoding="utf-8")
         agents[role] = Agent(name=role, client=role_clients.get(role, client), instructions=SHARED_PREAMBLE + prompt,
-                             default_options={"store": False})
+                             default_options={"store": False, **role_options.get(role, {})})
     return agents

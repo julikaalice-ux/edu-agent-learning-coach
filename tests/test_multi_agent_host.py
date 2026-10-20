@@ -280,6 +280,20 @@ class AgentFactoryTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIs(options["store"], False)
         self.assertEqual(len(client.calls), 5)
 
+    async def test_reasoning_effort_per_role_reaches_only_that_agents_requests(self):
+        from learning_coach.server import role_options_from_env
+        with patch.dict("os.environ", {"LEARNING_COACH_REASONING_VISUALIZER": "Low",
+                                       "LEARNING_COACH_REASONING_VERIFIER": "fast"}):
+            with self.assertLogs("learning_coach.server", level="WARNING"):
+                options = role_options_from_env()
+        self.assertEqual(options, {"visualizer": {"reasoning": {"effort": "low"}}})  # an unknown value is ignored
+        client = FakeChatClient()
+        agents = create_agents(client, SOURCE / "prompts/instructions.md", role_options=options)
+        await agents["visualizer"].run("draw")
+        self.assertEqual(client.calls[-1][2]["reasoning"], {"effort": "low"})
+        await agents["coordinator"].run("decide")
+        self.assertNotIn("reasoning", client.calls[-1][2])
+
     async def test_native_visual_union_is_wrapped_and_returns_original_spec(self):
         visual = {"kind": "flashcards", "title": "分数", "cards": [{"front": "一半", "back": "二分之一"}]}
         client = FakeChatClient({"result": visual})

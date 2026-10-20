@@ -72,6 +72,27 @@ class DiagramRenderTests(unittest.TestCase):
         # Static page: no scripts, no dynamic JSON data block.
         self.assertNotIn("<script", document)
 
+    def test_boxes_fit_their_words_and_never_overlap(self):
+        # Nodes placed on top of each other, with long words, as a designer sometimes does.
+        spec = {"kind": "diagram", "title": "重叠的节点", "nodes": [
+            {"id": "a", "label": "蓝光更容易向各个方向散射开来，所以天空看起来偏蓝", "x": 50, "y": 50},
+            {"id": "b", "label": "从天空各个方向都更容易接收到蓝光", "x": 52, "y": 50},
+            {"id": "c", "label": "时针位置：3与4正中", "x": 50, "y": 52},
+            {"id": "d", "label": "4", "x": 51, "y": 51}],
+            "edges": [{"from": "a", "to": "b", "label": "散射到各个方向"}, {"from": "c", "to": "d"}]}
+        document = render_visual(spec)
+        boxes = [tuple(float(value) for value in match) for match in
+                 re.findall(r'<rect x="(-?[\d.]+)" y="(-?[\d.]+)" width="([\d.]+)" height="([\d.]+)"', document)]
+        self.assertEqual(len(boxes), 4)
+        for i, (x1, y1, w1, h1) in enumerate(boxes):
+            for x2, y2, w2, h2 in boxes[i + 1:]:
+                self.assertFalse(x1 < x2 + w2 and x2 < x1 + w1 and y1 < y2 + h2 and y2 < y1 + h1)
+        # A long name wraps onto more than one line, inside its box.
+        self.assertGreaterEqual(document.count("<tspan"), 6)
+        text = "".join(re.findall(r"<tspan[^>]*>([^<]*)</tspan>", document))
+        for node in spec["nodes"]:
+            self.assertIn(node["label"].replace("，", ""), text.replace("，", ""))
+
     def test_node_label_script_is_escaped(self):
         spec = photosynthesis_spec()
         spec["nodes"][0]["label"] = '<script>alert(1)</script>'

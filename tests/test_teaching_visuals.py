@@ -151,6 +151,15 @@ class TeachingVisualPipelineTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual([item[1]["spec"]["title"] for item in self.artifacts.committed], ["初稿"])
                 self.assertIn("打开互动图", output["message"])
 
+    async def test_cards_to_memorise_are_drawn_not_turned_into_a_quiz(self):
+        # The coordinator filed the request under practice and answered directly.
+        runner = FakeRunner([plan("C")])
+        _, state = await self.pipeline(runner).run(messages("帮我做几张记忆卡，背元素周期表前十个元素"),
+                                                   session_id="s", returning_visitor=True)
+        self.assertEqual(state["last_execution"]["routing_repaired"], "explicit_visual_without_tools")
+        self.assertEqual(len(runner.calls_for("visualizer")), 1)
+        self.assertEqual(runner.calls_for("quizzer"), [])
+
     async def test_two_rejections_stop_without_publishing(self):
         runner = FakeRunner([plan(visual_request="展示关系")], visuals=[VISUAL, VISUAL],
                             visual_reviews=[review("revise"), review("revise")])

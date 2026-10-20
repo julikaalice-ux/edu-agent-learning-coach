@@ -7,6 +7,7 @@ import hashlib
 import html
 import json
 import math
+import unicodedata
 
 from jsonschema import Draft202012Validator
 
@@ -119,6 +120,110 @@ _SCRIPT = """
 """
 
 
+# Diagram layout, in SVG px. The designer only places nodes roughly (0-100 %);
+# the program sizes each box to its words, pushes overlapping boxes apart and
+# fits the drawing to what it holds, so no text is cut or covered.
+DIAGRAM_SPAN = (900, 560, 80)     # width, height and margin the 0-100 % positions are spread over
+NODE_FONT, NODE_TEXT_MAX = 15, 210  # px; node words wrap at this width
+NODE_PAD = (14, 11)               # px between a box edge and its words
+NODE_GAP = 18                     # px kept free between two boxes
+EDGE_FONT, EDGE_TEXT_MAX = 13, 150
+LINE_SPACING = 1.35
+DIAGRAM_MARGIN = 30               # px around the drawing
+DIAGRAM_MIN_SIZE = (600, 200)     # a small diagram is not blown up to full width
+SEPARATION_ROUNDS = 400
+
+
+def _glyph_width(char: str, size: float) -> float:
+    return size if unicodedata.east_asian_width(char) in "WF" else size * .58
+
+
+def _wrap(text: str, size: float, limit: float) -> list[str]:
+    lines, current, width = [], "", 0.0
+    for char in text:
+        if char == "\n":
+            lines.append(current); current, width = "", 0.0
+            continue
+        glyph = _glyph_width(char, size)
+        if current and width + glyph > limit:
+            lines.append(current); current, width = "", 0.0
+        current += char
+        width += glyph
+    lines.append(current)
+    return lines
+
+
+def _text_block(lines, size, x, y, color, extra=""):
+    """Centred multi-line SVG text; model words only as escaped text nodes."""
+    step = size * LINE_SPACING
+    top = y - step * (len(lines) - 1) / 2 + size * .35
+    spans = "".join(f'<tspan x="{x:.0f}" y="{top + i * step:.0f}">{html.escape(line)}</tspan>'
+                    for i, line in enumerate(lines))
+    return (f'<text text-anchor="middle" font-size="{size}" fill="{color}"{extra}>{spans}</text>')
+
+
+def _separate(boxes):
+    """Push overlapping boxes apart along the axis where they overlap least."""
+    for _ in range(SEPARATION_ROUNDS):
+        moved = False
+        for i in range(len(boxes)):
+            for j in range(i + 1, len(boxes)):
+                a, b = boxes[i], boxes[j]
+                over_x = (a["w"] + b["w"]) / 2 + NODE_GAP - abs(a["x"] - b["x"])
+                over_y = (a["h"] + b["h"]) / 2 + NODE_GAP - abs(a["y"] - b["y"])
+                if over_x <= 0 or over_y <= 0:
+                    continue
+                moved = True
+                if over_x < over_y:
+                    side = 1 if a["x"] > b["x"] or (a["x"] == b["x"] and i > j) else -1
+                    a["x"] += side * over_x / 2; b["x"] -= side * over_x / 2
+                else:
+                    side = 1 if a["y"] > b["y"] or (a["y"] == b["y"] and i > j) else -1
+                    a["y"] += side * over_y / 2; b["y"] -= side * over_y / 2
+        if not moved:
+            return
+
+
+def _label_size(label):
+    words = _wrap(label, EDGE_FONT, EDGE_TEXT_MAX)
+    width = max(sum(_glyph_width(char, EDGE_FONT) for char in line) for line in words)
+    return words, width + 6, len(words) * EDGE_FONT * LINE_SPACING + 4
+
+
+def _make_room(boxes, edges):
+    """Move the far end of a labelled edge out until the words fit between the two boxes."""
+    for edge in edges:
+        if not edge.get("label"):
+            continue
+        a, b = boxes[edge["from"]], boxes[edge["to"]]
+        dx, dy = b["x"] - a["x"], b["y"] - a["y"]
+        distance = math.hypot(dx, dy)
+        if distance == 0:
+            continue
+        ux, uy = dx / distance, dy / distance
+        inside = sum(min(box["w"] / 2 / abs(ux) if ux else math.inf, box["h"] / 2 / abs(uy) if uy else math.inf)
+                     for box in (a, b))
+        _, width, height = _label_size(edge["label"])
+        needed = abs(ux) * width + abs(uy) * height + 2 * NODE_GAP
+        if distance - inside < needed:
+            push = needed - (distance - inside)
+            b["x"] += ux * push; b["y"] += uy * push
+
+
+def _edge_point(box, toward_x, toward_y):
+    """Where the line from a box centre toward a point leaves the box."""
+    dx, dy = toward_x - box["x"], toward_y - box["y"]
+    if dx == 0 and dy == 0:
+        return box["x"], box["y"]
+    scale = min(box["w"] / 2 / abs(dx) if dx else math.inf, box["h"] / 2 / abs(dy) if dy else math.inf)
+    return box["x"] + dx * scale, box["y"] + dy * scale
+
+
+def _hits(rect, rects):
+    return any(rect[0] < other[2] and other[0] < rect[2] and rect[1] < other[3] and other[1] < rect[3]
+               for other in rects)
+
+
 def _diagram_svg(spec: dict) -> str:
     """Render a node/edge diagram as static, escaped SVG (no scripts, no links)."""
     nodes = {}
@@ -130,43 +235,73 @@ def _diagram_svg(spec: dict) -> str:
         if edge["from"] not in nodes or edge["to"] not in nodes:
             raise ValueError("diagram_dangling_edge")
 
-    width, height, pad = 900, 560, 80
+    width, height, pad = DIAGRAM_SPAN
+    boxes = {}
+    for node in spec["nodes"]:
+        lines = _wrap(node["label"], NODE_FONT, NODE_TEXT_MAX)
+        text_width = max(sum(_glyph_width(char, NODE_FONT) for char in line) for line in lines)
+        boxes[node["id"]] = {
+            "x": pad + node["x"] / 100 * (width - 2 * pad), "y": pad + node["y"] / 100 * (height - 2 * pad),
+            "w": max(80, text_width + 2 * NODE_PAD[0]),
+            "h": len(lines) * NODE_FONT * LINE_SPACING + 2 * NODE_PAD[1], "lines": lines}
+    _make_room(boxes, spec["edges"])
+    _separate(list(boxes.values()))
+    node_rects = [(box["x"] - box["w"] / 2, box["y"] - box["h"] / 2, box["x"] + box["w"] / 2, box["y"] + box["h"] / 2)
+                  for box in boxes.values()]
 
-    def position(node):
-        return (pad + node["x"] / 100 * (width - 2 * pad),
-                pad + node["y"] / 100 * (height - 2 * pad))
+    lines_svg, labels, label_rects = [], [], []
+    for edge in spec["edges"]:
+        a, b = boxes[edge["from"]], boxes[edge["to"]]
+        x1, y1 = _edge_point(a, b["x"], b["y"])
+        x2, y2 = _edge_point(b, a["x"], a["y"])
+        if (x2 - x1) * (b["x"] - a["x"]) + (y2 - y1) * (b["y"] - a["y"]) <= 0:
+            continue  # the boxes touch: no room for a line
+        lines_svg.append(f'<line x1="{x1:.0f}" y1="{y1:.0f}" x2="{x2:.0f}" y2="{y2:.0f}" '
+                         'stroke="#7694a9" stroke-width="2" marker-end="url(#arrow)"/>')
+        if not edge.get("label"):
+            continue
+        words, label_w, label_h = _label_size(edge["label"])
+        half_w, half_h = label_w / 2, label_h / 2
+        length = math.hypot(x2 - x1, y2 - y1) or 1
+        normal = (-(y2 - y1) / length, (x2 - x1) / length)
+        spots = [(t, side * offset) for offset in (0, half_h + 4, half_h + 18) for t in (.5, .35, .65)
+                 for side in (1, -1)]
+        chosen = None
+        for t, offset in spots:
+            cx, cy = x1 + (x2 - x1) * t + normal[0] * offset, y1 + (y2 - y1) * t + normal[1] * offset
+            rect = (cx - half_w, cy - half_h, cx + half_w, cy + half_h)
+            if not _hits(rect, node_rects + label_rects):
+                chosen = (cx, cy, rect)
+                break
+        if chosen is None:
+            cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+            chosen = (cx, cy, (cx - half_w, cy - half_h, cx + half_w, cy + half_h))
+        label_rects.append(chosen[2])
+        # A white outline keeps the words readable where they cross a line.
+        labels.append(_text_block(words, EDGE_FONT, chosen[0], chosen[1], "#425d70",
+                                  ' stroke="#ffffff" stroke-width="4" paint-order="stroke"'))
 
-    parts = [
-        f'<svg viewBox="0 0 {width} {height}" role="img" '
-        f'aria-label="{html.escape(spec["title"], quote=True)}" '
+    shapes = []
+    for box in boxes.values():
+        shapes.append(f'<rect x="{box["x"] - box["w"] / 2:.0f}" y="{box["y"] - box["h"] / 2:.0f}" '
+                      f'width="{box["w"]:.0f}" height="{box["h"]:.0f}" rx="12" fill="#e8f1f6" '
+                      'stroke="#8da6b8" stroke-width="1.5"/>'
+                      + _text_block(box["lines"], NODE_FONT, box["x"], box["y"], "#18334b"))
+
+    rects = node_rects + label_rects
+    left, top = min(r[0] for r in rects) - DIAGRAM_MARGIN, min(r[1] for r in rects) - DIAGRAM_MARGIN
+    right, bottom = max(r[2] for r in rects) + DIAGRAM_MARGIN, max(r[3] for r in rects) + DIAGRAM_MARGIN
+    view_w, view_h = max(right - left, DIAGRAM_MIN_SIZE[0]), max(bottom - top, DIAGRAM_MIN_SIZE[1])
+    left -= (view_w - (right - left)) / 2
+    top -= (view_h - (bottom - top)) / 2
+    return "".join([
+        f'<svg viewBox="{left:.0f} {top:.0f} {view_w:.0f} {view_h:.0f}" role="img" '
+        f'aria-label="{html.escape(spec["title"], quote=True)}" style="width:100%;height:auto" '
         'xmlns="http://www.w3.org/2000/svg">',
         '<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" '
         'markerHeight="7" orient="auto-start-reverse">'
         '<path d="M 0 0 L 10 5 L 0 10 z" fill="#7694a9"/></marker></defs>',
-    ]
-    for edge in spec["edges"]:
-        x1, y1 = position(nodes[edge["from"]])
-        x2, y2 = position(nodes[edge["to"]])
-        parts.append(
-            f'<line x1="{x1:.0f}" y1="{y1:.0f}" x2="{x2:.0f}" y2="{y2:.0f}" '
-            'stroke="#7694a9" stroke-width="2" marker-end="url(#arrow)"/>')
-        if edge.get("label"):
-            mid_x, mid_y = (x1 + x2) / 2, (y1 + y2) / 2
-            parts.append(
-                f'<text x="{mid_x:.0f}" y="{mid_y - 8:.0f}" text-anchor="middle" '
-                'font-size="13" fill="#425d70">'
-                f'{html.escape(edge["label"])}</text>')
-    for node in spec["nodes"]:
-        x, y = position(node)
-        label = html.escape(node["label"])
-        box_w = min(240, max(96, len(node["label"]) * 15 + 28))
-        parts.append(
-            f'<g><rect x="{x - box_w / 2:.0f}" y="{y - 24:.0f}" width="{box_w:.0f}" height="48" rx="12" '
-            'fill="#e8f1f6" stroke="#8da6b8" stroke-width="1.5"/>'
-            f'<text x="{x:.0f}" y="{y + 5:.0f}" text-anchor="middle" font-size="15" '
-            f'fill="#18334b">{label}</text></g>')
-    parts.append("</svg>")
-    return "".join(parts)
+        *lines_svg, *shapes, *labels, "</svg>"])
 
 
 def render_visual(spec: dict, image: bytes | None = None, photos: list | None = None) -> str:
