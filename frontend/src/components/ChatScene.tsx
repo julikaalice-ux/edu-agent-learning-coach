@@ -130,15 +130,8 @@ function Workbench({ messages, options, thinking, input, onInput, onSend }: Chat
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-4 overflow-y-auto px-6 py-6">
         {messages.map((turn, index) =>
-          turn.kind === "intro" ? (
-            <div key={index} className="flex justify-start">
-              <div className="max-w-[85%] rounded-xl rounded-bl-md border border-sage bg-sage/60 px-4 py-3">
-                <div className="text-xs font-semibold tracking-widest text-moss">功能讲解</div>
-                <p className="mt-1 text-sm leading-relaxed text-ink">{turn.content}</p>
-                <p className="mt-1 text-xs text-muted">学习记录只在本次会话有效，页面关闭即消失。</p>
-              </div>
-            </div>
-          ) : (
+          // 回答还没写出字时不画空对话框，下面的「我先想想…」先顶着。
+          turn.role === "assistant" && !turn.content ? null : (
             <div key={index} className={`flex ${turn.role === "user" ? "justify-end" : "justify-start"}`}>
               <div
                 className={`max-w-[80%] rounded-xl px-4 py-2.5 leading-relaxed ${

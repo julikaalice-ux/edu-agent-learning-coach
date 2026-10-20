@@ -38,17 +38,18 @@ const WELCOME: ChatMessage = {
 };
 
 // 第一次见面就提问时，教练回复的开头是程序固定的自我介绍（以这句开头），
-// 和回答之间空一行。页面把它拆出来，单独放进「功能讲解」对话框。
+// 和回答之间空一行。页面把它拆出来单独放一个对话框，样式和回答一样。
+// 这段介绍在模型开始写之前就会先到，回答还没来时只显示介绍。
 const INTRO_START = "你好，我是你的学习教练";
 
-/** 一轮回复对应的对话框：有自我介绍时是「功能讲解」+ 回答两个，否则一个。 */
+/** 一轮回复对应的对话框：有自我介绍时是介绍 + 回答两个，否则一个。 */
 function replyMessages(text: string): ChatMessage[] {
   const at = Date.now();
   const cut = text.indexOf("\n\n");
   if (!text.startsWith(INTRO_START) || cut < 0) return [{ role: "assistant", content: text, at }];
   return [
-    { role: "assistant", kind: "intro", content: text.slice(0, cut), at },
-    { role: "assistant", content: text.slice(cut + 2), at },
+    { role: "assistant", content: text.slice(0, cut), at },
+    { role: "assistant", content: text.slice(cut + 2).replace(/^\n+/, ""), at },
   ];
 }
 
