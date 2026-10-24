@@ -194,7 +194,9 @@ class Teacher:
                 # Recover only available context, never invent a new subject.
                 covered = (view.context.get("notes") or {}).get("covered", [])
                 previous = next((m["text"] for m in reversed(turn.messages[:-1]) if m["role"] == "user"), None)
-                proposed["quiz_topic"] = (state.get(Key.ACTIVE_TASK)
+                explicit = re.search(r"(?:关于|有关|针对)(.+?)(?:的)?(?:选择题|单选题|题目|题|练习|测验)", text)
+                proposed["quiz_topic"] = ((explicit.group(1).strip() if explicit else None)
+                                          or state.get(Key.ACTIVE_TASK)
                                           or (covered[-1]["point"] if covered else None) or previous)
         return Decision(value, check, view.context.get("notes"), sub_window, report, repaired,
                         state.get(Key.ACTIVE_TASK), deepcopy(state.get(Key.QUIZ)))

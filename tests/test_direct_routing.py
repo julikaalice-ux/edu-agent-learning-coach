@@ -586,6 +586,15 @@ class DirectRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state["quiz"]["total"], 1)
         self.assertEqual(state["quiz"]["difficulty"], "中等")
 
+    async def test_explicit_current_topic_wins_over_old_context_when_model_omits_it(self):
+        decision = direct_decision("C")
+        decision["task"]["task_summary"] = None
+        runner = FakeRunner([decision])
+        _, state = await self.pipeline(runner).run(messages("出一道关于叶绿素作用的选择题"),
+                                                   session_id="explicit-topic", state={"active_task": "分数"})
+        self.assertEqual(state["quiz"]["topic"], "叶绿素作用")
+        self.assertIsNotNone(state["quiz"]["awaiting"])
+
     async def test_direct_practice_with_active_quiz_continues_without_restarting(self):
         baseline = {"quiz": {"topic": "分数", "total": 3, "difficulty": "简单", "asked": 1, "answered": 1,
                              "correct": 1, "awaiting": None, "finished": False, "question_history": ["旧题"],
