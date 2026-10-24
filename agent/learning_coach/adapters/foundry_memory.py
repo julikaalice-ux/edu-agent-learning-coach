@@ -76,6 +76,15 @@ class FoundryMemoryStore:
         self._store = store_name
         self._search_max = search_max
 
+    def learning_view(self, session_id):
+        return self._inner.learning_view(session_id)
+
+    def edit_study_note(self, session_id, card_id, fields):
+        return self._inner.edit_study_note(session_id, card_id, fields)
+
+    def retry_card(self, session_id, card_id, event_id, choice=None, reveal=False):
+        return self._inner.retry_card(session_id, card_id, event_id, choice, reveal)
+
     def is_enabled(self, session_id: str) -> bool:
         return self._inner.is_enabled(session_id)
 

@@ -60,3 +60,14 @@ NOTES_SCHEMA = _object({
     })),
 })
 
+
+
+STUDY_SCHEMA = _object({"study_notes": _array(_object({
+    "concept_id": _string(200), "title": _string(200),
+    "summary": _string(2000), "explanation": _string(4000), "example": _string(4000),
+    "pitfall": {"type": "string", "maxLength": 2000},
+    "conditions": {"type": "string", "maxLength": 2000},
+    "source_turns": {"type": "array", "items": {"type": "integer", "minimum": 1}, "minItems": 1, "maxItems": 30},
+}))})
+
+NOTES_SCHEMA["properties"]["study_notes"] = STUDY_SCHEMA["properties"]["study_notes"]

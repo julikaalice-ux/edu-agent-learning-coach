@@ -176,6 +176,9 @@ class LearningPipeline:
 
     async def _handle(self, turn):
         """The program judges what this event is; then exactly one handler runs."""
+        from learning_coach.service.pipeline import learning
+        if turn.text.startswith(learning.PREFIX):
+            return await learning.handle(self, turn)
         state = turn.state
         # An interrupt first: an answer to the external-access question resumes the held turn.
         permissions.resume_held_turn(turn)

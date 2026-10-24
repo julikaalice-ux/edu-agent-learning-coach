@@ -1,35 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { GreetingScene } from "./components/GreetingScene";
 import { ChatScene } from "./components/ChatScene";
-import { emptySession, streamTurn, type ChatMessage, type Mistake, type Session } from "./lib/api";
-
-const ERROR_CATEGORIES = ["概念性误解", "步骤性跳跃", "审题偏差", "迁移失败"];
-
-/** 从教练回复里提取错题（答错反馈）与笔记（整理完成）信号。 */
-function extractLearning(text: string, messages: ChatMessage[]) {
-  const mistakes: Mistake[] = [];
-  const category = ERROR_CATEGORIES.find((item) => text.includes(item)) ?? "";
-  if ((category || text.includes("选错了") || text.includes("答错了")) && messages.length) {
-    const answer = [...messages].reverse().find((item) => item.role === "user");
-    const question = [...messages]
-      .reverse()
-      .find((item) => item.role === "assistant" && /[A-D]\.\s/.test(item.content));
-    mistakes.push({
-      concept: question ? question.content.slice(0, 24) : answer?.content.slice(0, 24) ?? "本次练习",
-      category: category || "原因待确认",
-      question: question?.content ?? answer?.content ?? "",
-      at: Date.now(),
-    });
-  }
-  let noteLabel = "";
-  if (text.includes("整理好了")) {
-    const topic = [...messages]
-      .reverse()
-      .find((item) => item.role === "user" && /考|练习|复习/.test(item.content));
-    noteLabel = topic ? topic.content.slice(0, 24) : "本次整理的知识点";
-  }
-  return { mistakes, noteLabel };
-}
+import { emptySession, streamTurn, type ChatMessage, learningAction, type LearningAction, type LearningReply, type Session } from "./lib/api";
 
 const WELCOME: ChatMessage = {
   role: "assistant",
@@ -37,20 +9,16 @@ const WELCOME: ChatMessage = {
   at: Date.now(),
 };
 
-// 第一次见面就提问时，教练回复的开头是程序固定的自我介绍（以这句开头），
-// 和回答之间空一行。页面把它拆出来单独放一个对话框，样式和回答一样。
-// 这段介绍在模型开始写之前就会先到，回答还没来时只显示介绍。
+// Compatibility with older hosted versions: hide the fixed capability pitch.
+// A retry stays in the same conversation and never opens a second welcome bubble.
 const INTRO_START = "你好，我是你的学习教练";
-
-/** 一轮回复对应的对话框：有自我介绍时是介绍 + 回答两个，否则一个。 */
 function replyMessages(text: string): ChatMessage[] {
-  const at = Date.now();
-  const cut = text.indexOf("\n\n");
-  if (!text.startsWith(INTRO_START) || cut < 0) return [{ role: "assistant", content: text, at }];
-  return [
-    { role: "assistant", content: text.slice(0, cut), at },
-    { role: "assistant", content: text.slice(cut + 2).replace(/^\n+/, ""), at },
-  ];
+  text = text.trimStart();
+  if (text.startsWith(INTRO_START)) {
+    const cut = text.indexOf("\n\n");
+    text = cut < 0 ? "" : text.slice(cut + 2).trimStart();
+  }
+  return [{ role: "assistant", content: text, at: Date.now() }];
 }
 
 /** 用这一轮的回复替换最后一条用户消息之后的对话框（边写边显示时反复调用）。 */
@@ -64,6 +32,7 @@ function withReply(messages: ChatMessage[], text: string): ChatMessage[] {
  * 点「学习教练」回到问候页；滚轮/上滑在问候页推入对话，之后只滚聊天区。
  */
 export default function App() {
+  const [retryInput, setRetryInput] = useState<string | null>(null);
   // ?enter=1 直达对话场景（分享直链 / 调试用）
   const [entered, setEntered] = useState(
     () => new URLSearchParams(window.location.search).get("enter") === "1",
@@ -116,12 +85,33 @@ export default function App() {
     };
   }, [entered]);
 
+  const [learningBusy, setLearningBusy] = useState(false);
+  const [learningMessage, setLearningMessage] = useState("");
+  const learningLock = useRef(false);
+  const applyLearning = (reply: LearningReply) => {
+    setSession(prev => ({ ...prev, conversation: reply.conversation,
+      ...(reply.view ? { mistakes: reply.view.mistakes, notes: { cards: reply.view.study_notes },
+        settings: { ...prev.settings, recordsOn: reply.view.enabled } } : {}) }));
+  };
+  const performLearning = async (action: LearningAction) => {
+    if (learningLock.current || thinking) throw new Error("请等待当前操作完成。");
+    learningLock.current = true; setLearningBusy(true); setLearningMessage("");
+    try {
+      const result = await learningAction(session.conversation, action);
+      applyLearning(result); setLearningMessage(result.message || "");
+      return result;
+    } catch (error) {
+      setLearningMessage(error instanceof Error ? error.message : "记录操作失败");
+      throw error;
+    } finally { learningLock.current = false; setLearningBusy(false); }
+  };
   const send = async (textOverride?: string) => {
     const text = (textOverride ?? input).trim();
-    if (!text || thinking) return;
+    if (!text || thinking || learningLock.current) return;
     enter();
     setInput("");
     setThinking(true);
+    setRetryInput(null);
     // 图片类请求在等待生成时给一个「正在生成中」对话框；真实回复开始流入时会被替换。
     const wantsVisual = /(图|画|照片|配图|可视化|示意图|图解|图片)/.test(text);
     setSession((prev) => ({
@@ -146,31 +136,31 @@ export default function App() {
           setSession((prev) => ({ ...prev, messages: withReply(prev.messages, shown) }));
         },
       );
-      const { mistakes, noteLabel } = extractLearning(reply.text, session.messages);
+
+      // Legacy hosted protocol has no status field: recognize only its fixed failure text.
+      const failed = replyMessages(reply.text)[0].content.startsWith("这次处理没有顺利完成");
+      if (failed) setRetryInput(text);
       setSession((prev) => {
-        const messages = withReply(prev.messages, reply.text);
-        const notes = noteLabel
-          ? { ...prev.notes, concepts: [...prev.notes.concepts, { label: noteLabel, status: "刚整理" }] }
-          : prev.notes;
+        const messages = withReply(prev.messages, failed
+          ? "这次处理没有顺利完成。可以重试刚才的问题，或继续提问。" : reply.text);
         return {
           ...prev,
           conversation: reply.conversation,
           options: reply.options,
-          mistakes: [...prev.mistakes, ...mistakes],
-          notes,
+
           messages,
         };
       });
-    } catch (error) {
-      setSession((prev) => {
-        const messages = [...prev.messages];
-        const last = messages[messages.length - 1];
-        messages[messages.length - 1] = {
-          ...last,
-          content: `这次连接没有成功（${error instanceof Error ? error.message : "未知错误"}），请稍后再试。`,
-        };
-        return { ...prev, messages };
-      });
+      if (failed) return;
+      try {
+        applyLearning(await learningAction(reply.conversation, { action: "read" }));
+      } catch {
+        setLearningMessage("回复已完成，但学习记录刷新失败。请在笔记页面重试刷新。");
+      }
+    } catch {
+      setRetryInput(text);
+      setSession(prev => ({ ...prev, messages: withReply(prev.messages,
+        "连接暂时中断。可以重试刚才的问题，或继续提问。") }));
     } finally {
       setThinking(false);
     }
@@ -199,12 +189,19 @@ export default function App() {
           mistakes={session.mistakes}
           notes={session.notes}
           settings={session.settings}
-          thinking={thinking}
+          thinking={thinking || learningBusy}
+          onRetry={retryInput ? () => void send(retryInput) : undefined}
+          learningMessage={learningMessage}
+          onLearning={performLearning}
           input={input}
           onInput={setInput}
           onSend={(text) => void send(text)}
           onLogoClick={goHome}
-          onSettingsChange={(settings) => setSession((prev) => ({ ...prev, settings }))}
+          onSettingsChange={(settings) => {
+            if (settings.recordsOn !== session.settings.recordsOn) {
+              void performLearning({ action: "records", enabled: settings.recordsOn }).catch(() => {});
+            } else setSession(prev => ({ ...prev, settings }));
+          }}
         />
       </div>
       {/* 场景指示器 */}

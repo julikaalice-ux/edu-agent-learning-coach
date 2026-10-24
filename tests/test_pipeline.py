@@ -223,15 +223,15 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         await self.pipeline(later).run(messages("讲讲分数", *history), session_id="new2", turn_id="1")
         self.assertIs(later.calls_for("coordinator", "decide")[0]["first_meeting"], False)
 
-    async def test_a_first_question_is_answered_after_the_programs_introduction(self):
+    async def test_a_first_question_is_answered_without_an_introduction(self):
         answer = {"schema_version": "1.0", "intent": {"primary": "A", "is_implicit": False},
                   "message": "象鼻是上唇和鼻子长在一起形成的。", "next_step": None}
         runner = FakeRunner([plan("A")], replies=[answer])
         output, _ = await self.pipeline(runner).run(messages("大象的鼻子为什么这么长"), session_id="new", turn_id="1")
-        # The coordinator only answers; the introduction is the program's.
+        # The coordinator answers explicit questions without onboarding.
         self.assertIs(runner.calls_for("coordinator", "decide")[0]["first_meeting"], False)
-        self.assertTrue(output["message"].startswith("你好，我是你的学习教练"))
-        self.assertIn("学习记录默认不保存", output["message"])
+        self.assertNotIn("你好，我是你的学习教练", output["message"])
+        self.assertNotIn("学习记录默认不保存", output["message"])
         self.assertTrue(output["message"].endswith("象鼻是上唇和鼻子长在一起形成的。"))
         # Not on a later turn, and not for a returning visitor.
         again = FakeRunner([plan("A")])

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import re
 import shutil
@@ -42,6 +43,7 @@ ARTIFACT_POLICY = ("default-src 'none'; script-src 'unsafe-inline'; style-src 'u
                    "img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'; sandbox allow-scripts")
 ARTIFACT_ROUTE = re.compile(r"/artifact/([A-Za-z0-9_-]+)(/image)?")
 DATA_IMAGE = re.compile(r"data:image/[a-z]+;base64,[A-Za-z0-9+/=]+")
+LOG = logging.getLogger(__name__)
 TOKEN_LOCK = threading.Lock()
 _TOKEN = {"value": None, "expires": 0}
 
@@ -197,13 +199,37 @@ def stream_reply(conversation: str, user_input: str):
         elif event == "response.completed":
             try:
                 payload = json.loads(data)
-                text = extract_text(payload.get("response") or payload)
+                completed = payload.get("response") or payload
+                text = extract_text(completed)
+                response_id = completed.get("id", "")
+                if not isinstance(response_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,160}", response_id):
+                    response_id = "unknown"
+                outcome = "application_failed" if "这次处理没有顺利完成" in text else "response_received"
+                LOG.info("agent_response response_id=%s outcome=%s", response_id, outcome)
                 if text:
                     full = [text]
             except json.JSONDecodeError:
                 pass
     yield {"done": True, "conversation": conversation,
            "text": "".join(full).strip() or "这次处理没有顺利完成，请再试一次。"}
+
+
+def learning_action(conversation, action):
+    """UI records travel through the same authenticated agent session as chat."""
+    if not isinstance(action, dict) or action.get("action") not in ("read", "records", "compile", "retry", "reveal", "edit"):
+        raise ValueError("invalid_learning_action")
+    if not conversation:
+        conversation = call("conversations", {}).get("id")
+    if not conversation:
+        raise RuntimeError("conversation_create_failed")
+    payload = call("responses", {"conversation": conversation, "input": "/learning " + json.dumps(action, ensure_ascii=False)})
+    try:
+        result = json.loads(extract_text(payload))
+        if result.get("learning_protocol") != 1:
+            raise ValueError()
+    except (ValueError, AttributeError):
+        raise RuntimeError("learning_protocol_unavailable") from None
+    return {**result, "conversation": conversation}
 
 
 def extract_text(payload: dict) -> str:
@@ -274,6 +300,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(length) or b"{}")
+            if "learning_action" in payload:
+                self._reply(200, learning_action(payload.get("conversation"), payload["learning_action"]))
+                return
             user_input = str(payload.get("input", "")).strip()
             if not user_input:
                 self._reply(400, {"error": "empty_input"})

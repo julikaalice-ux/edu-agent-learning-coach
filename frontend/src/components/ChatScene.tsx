@@ -1,5 +1,6 @@
+import { LearningPanels } from "./LearningPanels";
 import { useState, type ReactNode } from "react";
-import type { ChatMessage, Mistake, OptionCard, SessionNotes, SessionSettings } from "../lib/api";
+import type { ChatMessage, Mistake, OptionCard, SessionNotes, SessionSettings, LearningAction, LearningReply } from "../lib/api";
 import { STAGE_OPTIONS, WHO_OPTIONS } from "../lib/api";
 
 /** 互动图 / 题目配图 / 普通链接 / 纯文本的消息渲染。 */
@@ -68,9 +69,12 @@ interface ChatSceneProps {
   notes: SessionNotes;
   settings: SessionSettings;
   thinking: boolean;
+  learningMessage: string;
+  onLearning: (action: LearningAction) => Promise<LearningReply>;
   input: string;
   onInput: (value: string) => void;
   onSend: (text?: string) => void;
+  onRetry?: () => void;
   onLogoClick: () => void;
   onSettingsChange: (settings: SessionSettings) => void;
 }
@@ -112,8 +116,10 @@ export function ChatScene(props: ChatSceneProps) {
       </header>
 
       {menu === "workbench" && <Workbench {...props} />}
-      {menu === "mistakes" && <MistakesPanel mistakes={props.mistakes} />}
-      {menu === "notes" && <NotesPanel notes={props.notes} />}
+      {(menu === "mistakes" || menu === "notes") && <LearningPanels mode={menu} mistakes={props.mistakes}
+        notes={props.notes} enabled={props.settings.recordsOn} busy={props.thinking} message={props.learningMessage}
+        onLearning={props.onLearning} onShowMistakes={() => setMenu("mistakes")} onPractice={text => { setMenu("workbench"); props.onSend(text); }} />}
+      {menu === "settings" && props.learningMessage && <p role="status" className="px-6 py-2">{props.learningMessage}</p>}
       {menu === "settings" && (
         <SettingsPanel
           settings={props.settings}
@@ -125,7 +131,7 @@ export function ChatScene(props: ChatSceneProps) {
   );
 }
 
-function Workbench({ messages, options, thinking, input, onInput, onSend }: ChatSceneProps) {
+function Workbench({ messages, options, thinking, input, onInput, onSend, onRetry }: ChatSceneProps) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-4 overflow-y-auto px-6 py-6">
@@ -163,6 +169,12 @@ function Workbench({ messages, options, thinking, input, onInput, onSend }: Chat
               我先想想…
             </div>
           </div>
+        )}
+        {!thinking && onRetry && (
+          <button type="button" onClick={onRetry}
+            className="rounded-xl border border-line bg-white px-4 py-2 text-moss">
+            重试刚才的问题
+          </button>
         )}
         {!thinking && options.length > 0 && (
           <div className="grid gap-3 sm:grid-cols-2">
@@ -207,44 +219,6 @@ function Workbench({ messages, options, thinking, input, onInput, onSend }: Chat
 
 function EmptyHint({ text }: { text: string }) {
   return <p className="px-6 py-10 text-center text-muted">{text}</p>;
-}
-
-function MistakesPanel({ mistakes }: { mistakes: Mistake[] }) {
-  if (!mistakes.length) return <EmptyHint text="还没有错题。做完练习后，答错的题会带着错因出现在这里。" />;
-  return (
-    <div className="mx-auto w-full max-w-3xl overflow-y-auto px-6 py-6">
-      <h2 className="font-display text-2xl text-ink">错题集合</h2>
-      <div className="mt-4 flex flex-col gap-3">
-        {mistakes.map((mistake, index) => (
-          <div key={index} className="rounded-xl border border-line bg-white p-4">
-            <div className="flex items-baseline justify-between">
-              <span className="text-sm text-moss">{mistake.concept}</span>
-              <span className="text-xs text-muted">{mistake.category}</span>
-            </div>
-            <p className="mt-2 text-sm text-ink">{mistake.question}</p>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function NotesPanel({ notes }: { notes: SessionNotes }) {
-  const empty = !notes.profile.length && !notes.concepts.length && !notes.errors.length;
-  if (empty) return <EmptyHint text="还没有笔记。一组题做完后选「整理」，笔记会出现在这里（只本页有效）。" />;
-  return (
-    <div className="mx-auto w-full max-w-3xl overflow-y-auto px-6 py-6">
-      <h2 className="font-display text-2xl text-ink">学习笔记</h2>
-      {notes.concepts.map((concept, index) => (
-        <div key={index} className="mt-4 rounded-xl border border-line bg-white p-4">
-          <div className="flex items-baseline justify-between">
-            <span className="font-semibold text-ink">{concept.label}</span>
-            <span className="text-xs text-muted">{concept.status}</span>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
 }
 
 function SettingsPanel({

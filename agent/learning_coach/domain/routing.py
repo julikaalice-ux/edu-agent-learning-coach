@@ -101,6 +101,29 @@ def select_tools(plan, learner_text, *, memory_enabled):
         effective.update(research_query=None, search_queries=None, visual_request=None, observe_learning=False,
                          quiz_action=QuizAction.STOP if plan["quiz_action"] == QuizAction.STOP else QuizAction.NONE)
         return effective, {name: Status.SKIPPED if requested[name] else Status.NOT_REQUESTED for name in TOOLS}
+    # A valid current-turn quiz must not fail because the coordinator also
+    # carried a stale visual/search request over from earlier history. Drop
+    # only those unsupported ancillary requests; never widen authorization.
+    quiz_reason = plan["tool_reasons"]["quiz"]
+    valid_quiz = (requested["quiz"] and quiz_reason is not None
+                  and _valid_quote(quiz_reason["evidence_quote"], learner_text)
+                  and plan["intent"]["primary"] in QUIZ_INTENTS)
+    discarded = set()
+    if valid_quiz:
+        plan = deepcopy(plan)
+        for name in ("research", "visual", "notes"):
+            reason = plan["tool_reasons"][name]
+            if requested[name] and reason is not None and not _valid_quote(reason["evidence_quote"], learner_text):
+                discarded.add(name)
+                requested[name] = False
+                plan["tool_reasons"][name] = None
+                if name == "research":
+                    plan.update(research_query=None, search_queries=None,
+                                visual_uses_research=False, quiz_uses_research=False)
+                elif name == "visual":
+                    plan.update(visual_request=None, visual_source=None, quiz_uses_visual=False)
+                else:
+                    plan["observe_learning"] = False
     for name, active in requested.items():
         reason = plan["tool_reasons"][name]
         if active != (reason is not None):
@@ -133,7 +156,7 @@ def select_tools(plan, learner_text, *, memory_enabled):
         effective["observe_learning"] = False
     if not allowed["quiz"] and effective["quiz_action"] != QuizAction.STOP:
         effective["quiz_action"] = QuizAction.NONE
-    results = {name: Status.PENDING if allowed[name] else Status.SKIPPED if requested[name] else Status.NOT_REQUESTED
+    results = {name: Status.PENDING if allowed[name] else Status.SKIPPED if requested[name] or name in discarded else Status.NOT_REQUESTED
                for name in TOOLS}
     return effective, results
 
@@ -192,10 +215,12 @@ def recover_practice_route(decision, state, learner_text):
     learner's own message, never from the reply text. A single-character
     message without a valid quotation is left alone.
     """
-    if decision["mode"] != DecisionMode.ANSWER:
+    direct = decision["mode"] == DecisionMode.ANSWER
+    task = decision["task"] if direct else decision["plan"]
+    intent = decision["response"]["intent"] if direct else task["intent"]
+    if intent["primary"] != INTENT_PRACTICE or task["end_task"] or task["pause_task"]:
         return decision, False
-    task = decision["task"]
-    if decision["response"]["intent"]["primary"] != INTENT_PRACTICE or task["end_task"] or task["pause_task"]:
+    if not direct and task["quiz_action"] != QuizAction.NONE:
         return decision, False
     quiz = state.get("quiz")
     continuing = bool(quiz and not quiz.get("finished"))
@@ -217,6 +242,16 @@ def recover_practice_route(decision, state, learner_text):
         "tool_reasons": reasons,
         **dict.fromkeys(DEPENDENCY_FIELDS),
     }
+    if not direct:
+        # Keep explicitly requested visuals/research and their permissions;
+        # only repair the missing practice action, never enable other tools.
+        merged = deepcopy(task)
+        fields = ("quiz_action", "quiz_topic", "quiz_total", "difficulty", "participant") if continuing else ("quiz_action", "quiz_topic")
+        for key in fields:
+            merged[key] = plan[key]
+        merged["quiz_topic"] = task.get("quiz_topic") or merged["quiz_topic"]
+        merged["tool_reasons"]["quiz"] = reasons["quiz"]
+        return {**decision, "plan": validate(merged, PLAN_SCHEMA)}, True
     return {"mode": DecisionMode.TOOLS, "plan": validate(plan, PLAN_SCHEMA)}, True
 
 

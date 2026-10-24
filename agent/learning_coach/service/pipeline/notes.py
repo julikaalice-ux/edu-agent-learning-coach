@@ -40,6 +40,8 @@ class NotesService:
         memory = self.deps.store.snapshot(turn.memory_key)
         payload = {
             "learner_messages": shown,
+            "teaching_messages": [{**item, "text": item["text"][:4000]} for item in earlier if item["role"] == "assistant"
+                                  and item["turn"] > context.get("notes_upto_turn", 0)][-6:],
             "evidence_turns": [item for item in context.get("evidence_turns", []) if item in turns],
             "context_notes": note_slice(context.get("notes"), *NOTES_FOR_QUESTIONS),
             "quiz_results": context.get("quiz_results", []),
@@ -49,6 +51,10 @@ class NotesService:
         }
         try:
             notes = validate(await self.draft(payload), NOTES_SCHEMA)
+            source_turns = {item["turn"] for item in payload["teaching_messages"]}
+            for card in notes.get("study_notes", []):
+                if not set(card["source_turns"]) <= source_turns:
+                    raise ValueError("unknown_study_source")
             key = (f"notes:{turn.event_id}" if turn.memory_key == turn.session_id
                    else f"{turn.session_id}:notes:{turn.event_id}")
             written = self.deps.store.apply_notes(turn.memory_key, key, notes, said)
@@ -57,9 +63,9 @@ class NotesService:
             return reply("这次笔记没有整理成功，学习记录没有改动。想再试，可以说“整理笔记”。", INTENT_CHAT,
                          question(NEXT_TOPIC)), state
         # Up to and including this request, so the request itself is never compiled later.
-        context["notes_upto_turn"] = numbered[-1]["turn"]
+        context["notes_upto_turn"] = numbered[-1]["turn"] - int(turn.text.startswith("/learning "))
         context["evidence_turns"] = []
-        counts = [(len(notes["concepts"]), "个知识点"), (len(notes["error_records"]), "个易错点"),
+        counts = [(len(notes.get("study_notes", [])), "篇知识笔记"), (len(notes["concepts"]), "个知识点"), (len(notes["error_records"]), "个易错点"),
                   (len(notes["review_plan"]), "项复习安排"), (len(notes["profile"]), "条学习情况")]
         saved = "、".join(f"{number} {label}" for number, label in counts if number)
         if not written:

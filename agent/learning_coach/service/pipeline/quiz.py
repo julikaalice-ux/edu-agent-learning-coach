@@ -101,7 +101,8 @@ class QuizService:
             quiz["awaiting"] = None
             evidence = {"concept_id": waiting["concept_id"], "correct": correct,
                         "difficulty": quiz["difficulty"], "independent": plan["participant"] == Participant.LEARNER,
-                        "actor": ACTOR[plan["participant"]], "kind": QUIZ_EVIDENCE}
+                        "actor": ACTOR[plan["participant"]], "kind": QUIZ_EVIDENCE,
+                        "question_snapshot": {**waiting, "image_url": quiz.get("awaiting_picture_url")}, "selected": selected, "topic": quiz["topic"]}
             feedback = {"correct": correct, "explanation": waiting["explanation"]}
             if not correct:
                 self._suspect_error(waiting, selected, quiz, state, evidence, feedback)
@@ -201,12 +202,14 @@ class QuizService:
                         problem = NO_PICTURE
             if problem is None:
                 break
+            LOG.warning("quiz_draft_rejected reason=%s", problem)
             if problem != NO_PICTURE:
                 rejected += 1
                 if rejected >= MAX_REJECTED_DRAFTS:
                     raise StageFailure("quiz_question_not_accepted")
         else:
             raise StageFailure("quiz_question_not_accepted")
+        quiz["awaiting_picture_url"] = picture["url"] if picture else None
         quiz["awaiting"] = draft
         seen.append(draft["question"])
         quiz["asked"] += 1

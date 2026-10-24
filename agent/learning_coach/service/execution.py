@@ -44,3 +44,19 @@ def external_allowed(capability: str) -> bool:
 
 class StageFailure(RuntimeError):
     """A bounded model stage could not produce an accepted result."""
+
+
+def failure_codes(error):
+    """Safe diagnostics for concurrent failures; never log exception messages.
+
+    Only our own contract/stage errors can supply a short application code.
+    Provider errors contribute their type, not their payload or credentials.
+    """
+    import re
+    from learning_coach.domain.contracts import ContractError
+    if isinstance(error, BaseExceptionGroup):
+        return ",".join(failure_codes(child) for child in error.exceptions[:8])
+    code = str(error) if isinstance(error, (ContractError, StageFailure)) else ""
+    if not re.fullmatch(r"[a-z][a-z0-9_]{0,79}", code):
+        code = "unclassified"
+    return f"{type(error).__name__}:{code}"

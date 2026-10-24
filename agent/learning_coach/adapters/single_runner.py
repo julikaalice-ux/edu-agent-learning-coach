@@ -86,7 +86,7 @@ RULE_PARTS = (
         ("什么时候请求配图", None), ("不重复", None)]),
     ("笔记规则（与笔记 agent 相同，用于 task=compile_notes）", "agents/note-organizer.md", [
         ("输入", None), ("通用规则", None), ("profile", None), ("concepts", None), ("error_records", None),
-        ("review_plan", None), ("掌握程度", None)]),
+        ("review_plan", None), ("掌握程度", None), ("知识笔记 study_notes", None)]),
 )
 QUERY_RULE_START = "- 选 research 时"
 QUERY_RULE_END = "search_queries 填 null。"

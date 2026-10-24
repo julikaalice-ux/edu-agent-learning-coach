@@ -12,9 +12,9 @@ from learning_coach.domain.note_contracts import COMPANION_REPORT, SCHEMA_VERSIO
 from learning_coach.domain.onboarding import (BY_GUARDIAN, NO_STAGE, RECORDS_OFF, RECORDS_ON, STEP_CONSENT_GUARDIAN,
                                               STEP_DONE, STEP_WHO, WHO_COMPANION, WHO_SELF)
 from learning_coach.domain.routing import INTENT_CHAT, INTENT_UNCLEAR
-from learning_coach.service.pipeline.state import USER, Key, is_first_meeting, read_memory
+from learning_coach.service.pipeline.state import USER, Key, read_memory
 from learning_coach.service.pipeline.texts import (CMD_FORGET, CMD_MEMORY_OFF, CMD_MEMORY_ON, CONFIRM_DELETE,
-                                                   INTRO, INTRO_RECORDS_OFF, INTRO_RECORDS_ON, RECORD_DELETE,
+                                                   RECORD_DELETE,
                                                    question, reply)
 from learning_coach.service.ports import StorageError
 
@@ -146,19 +146,12 @@ class Commands:
         return None
 
     def introduce(self, turn):
-        """A first meeting that opens with a question: the program says who the coach is.
+        """Answer explicit tasks directly, including first turns and retries.
 
-        Left to the coordinator, the introduction crowded out the answer to the
-        question. The program now puts two fixed sentences in front and the
-        coordinator only answers. A bare greeting still gets the coordinator's
-        own introduction.
+        Keep onboarding for greetings, but do not prepend a capability/consent
+        pitch to a question. Consent still uses the explicit record controls.
         """
-        # A held turn run again was already introduced when it was held.
-        if turn.prefix is not None or turn.resumed or not onboarding.carries_question(turn.text):
-            return
-        memory = read_memory(turn.state, self.deps.store, turn.memory_key)
-        if is_first_meeting(turn, memory):
-            turn.prefix = INTRO + (INTRO_RECORDS_ON if memory.enabled else INTRO_RECORDS_OFF)
+        if onboarding.carries_question(turn.text):
             turn.introduced = True
 
     def _finish_first_meeting(self, turn, record):

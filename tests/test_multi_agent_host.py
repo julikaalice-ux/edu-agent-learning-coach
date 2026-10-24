@@ -597,11 +597,10 @@ class FiveRoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     session = host.create_session()
                     with patch.object(artifacts, "prepare", side_effect=AssertionError("direct answer must not create a visual")):
                         response = await host.run("分数是什么意思？", session=session)
-                    # A first question: the program's introduction comes before the coordinator's answer.
-                    intro = INTRO + INTRO_RECORDS_OFF + "\n\n"
-                    self.assertEqual(response.text, intro + FINAL["message"] + "\n\n" + FINAL["next_step"]["text"])
+                    # A first question goes straight to the answer.
+                    self.assertEqual(response.text, FINAL["message"] + "\n\n" + FINAL["next_step"]["text"])
                     self.assertEqual(session.state["learning_coach"]["last_response"],
-                                     {**FINAL, "message": intro + FINAL["message"]})
+                                     {**FINAL, "message": FINAL["message"]})
                     self.assertEqual(len(client.calls), 1)
                     request = json.loads(client.calls[0][0][-1].text)
                     self.assertEqual(request["input"]["phase"], "decide")
@@ -719,10 +718,10 @@ class FiveRoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 # The reply arrives while it is written; only its text, never the JSON around it.
                 self.assertGreater(len(updates), 1)
                 self.assertEqual("".join(update.text for update in updates), final.text)
-                # A first question: the program's introduction goes out first, on its own.
-                self.assertTrue(updates[0].text.startswith(INTRO))
-                self.assertTrue(updates[0].text.endswith("“关闭记录”。\n\n"))
-                self.assertTrue(updates[1].text.startswith("普通"))
+                # No capability pitch before the first answer.
+                self.assertNotIn(INTRO, final.text)
+                self.assertNotIn("“关闭记录”", final.text)
+                self.assertTrue(updates[0].text.startswith("普通"))
                 self.assertNotIn('"', "".join(update.text for update in updates))
                 # Notes are not compiled inside the teaching turn.
                 self.assertEqual(client.roles, ["coordinator", "verifier", "visualizer", "verifier", "coordinator"])

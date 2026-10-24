@@ -533,6 +533,59 @@ class DirectRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state["quiz"]["topic"], "学习分数")
         self.assertFalse(state["quiz"]["finished"])
 
+    async def test_tools_practice_missing_quiz_still_creates_gradable_question(self):
+        text = "给我做道题"
+        for observing in (False, True):
+            runner = FakeRunner([tool_decision(text, "C", observe_learning=observing)])
+            output, state = await self.pipeline(runner).run(messages(text), session_id=f"tools-{observing}")
+            self.assert_wire(output)
+            self.assertEqual(state["last_execution"]["tools"]["quiz"], "question_ready")
+            self.assertIsNotNone(state["quiz"]["awaiting"])
+            self.assertIn("A.", output["next_step"]["text"])
+            self.assertEqual(len(runner.calls_for("coordinator", "decide")), 1)
+
+    async def test_practice_after_visual_recovers_missing_topic_from_history(self):
+        decision = direct_decision("C")
+        decision["task"]["task_summary"] = None
+        runner = FakeRunner([decision])
+        history = [{"role": "user", "text": "可以用图示演示吗？我想看看叶绿素是如何工作的"},
+                   {"role": "assistant", "text": "叶绿素吸收光能。"},
+                   {"role": "user", "text": "给我做道题"}]
+        output, state = await self.pipeline(runner).run(history, session_id="after-visual")
+        self.assertIn("叶绿素", state["quiz"]["topic"])
+        self.assertIsNotNone(state["quiz"]["awaiting"])
+        self.assertIn("A.", output["next_step"]["text"])
+
+    async def test_missing_practice_topic_gets_program_owned_clarification(self):
+        decision = direct_decision("C")
+        decision["task"]["task_summary"] = None
+        runner = FakeRunner([decision])
+        output, state = await self.pipeline(runner).run(messages("给我做道题"), session_id="no-topic")
+        self.assertEqual(output["next_step"], {"kind": "question", "text": "你想练习哪个知识点？"})
+        self.assertEqual(state["last_execution"]["tools"]["quiz"], "needs_input")
+
+    async def test_quiz_keeps_current_request_but_drops_stale_visual_evidence(self):
+        text = "给我做道题"
+        decision = tool_decision(text, "C", quiz_action="start", quiz_topic="叶绿素",
+                                 visual_request="演示叶绿素", visual_source="local", quiz_uses_visual=True)
+        decision["plan"]["tool_reasons"]["visual"]["evidence_quote"] = "可以用图示演示吗？"
+        runner = FakeRunner([decision])
+        output, state = await self.pipeline(runner).run(messages(text), session_id="stale-visual")
+        self.assertIn("A.", output["next_step"]["text"])
+        self.assertEqual(state["last_execution"]["tools"]["visual"], "skipped_policy")
+        self.assertEqual(state["last_execution"]["tools"]["quiz"], "question_ready")
+        self.assertEqual(runner.calls_for("visualizer"), [])
+        self.assertEqual(self.artifacts.prepared, [])
+
+    async def test_missing_quiz_repair_preserves_participant_and_requested_settings(self):
+        text = "帮孩子出一道题"
+        runner = FakeRunner([tool_decision(text, "C", participant="companion_report", quiz_total=1,
+                                           difficulty="中等", quiz_topic="叶绿素")])
+        _, state = await self.pipeline(runner).run(messages(text), session_id="companion-practice")
+        self.assertEqual(state["quiz"]["participant"], "companion_report")
+        self.assertEqual(state["quiz"]["total"], 1)
+        self.assertEqual(state["quiz"]["difficulty"], "中等")
+
     async def test_direct_practice_with_active_quiz_continues_without_restarting(self):
         baseline = {"quiz": {"topic": "分数", "total": 3, "difficulty": "简单", "asked": 1, "answered": 1,
                              "correct": 1, "awaiting": None, "finished": False, "question_history": ["旧题"],

@@ -35,7 +35,7 @@ from learning_coach.domain.routing import (EXPLAIN_INTENTS, FLASHCARD_TRIGGERS, 
                                            recover_explicit_visual_route, recover_practice_route,
                                            recover_quiz_route, require_finished, select_tools)
 from learning_coach.service.execution import (CALL_RESERVE, EXPLANATION_SINK, EXTERNAL_DECLINED, Capability,
-                                              StageFailure, external_allowed)
+                                              StageFailure, external_allowed, failure_codes)
 from learning_coach.service.pipeline import permissions
 from learning_coach.service.pipeline.checks import respond_problem, validate_response
 from learning_coach.service.pipeline.streaming import ReplyStream, streaming
@@ -187,6 +187,15 @@ class Teacher:
         report = {"window_turns": [view.window[0]["turn"], view.current_turn] if view.window else [],
                   "note_problems": note_problems, "decide_tokens": count_tokens(decide_input)}
         value, repaired = self._repair(value, state, turn.messages[-1]["text"], view.memory.enabled)
+        if value["mode"] == DecisionMode.TOOLS:
+            proposed = value["plan"]
+            if proposed["quiz_action"] == QuizAction.START and not proposed["quiz_topic"]:
+                # A model may omit task_summary after “give me a question”.
+                # Recover only available context, never invent a new subject.
+                covered = (view.context.get("notes") or {}).get("covered", [])
+                previous = next((m["text"] for m in reversed(turn.messages[:-1]) if m["role"] == "user"), None)
+                proposed["quiz_topic"] = (state.get(Key.ACTIVE_TASK)
+                                          or (covered[-1]["point"] if covered else None) or previous)
         return Decision(value, check, view.context.get("notes"), sub_window, report, repaired,
                         state.get(Key.ACTIVE_TASK), deepcopy(state.get(Key.QUIZ)))
 
@@ -370,10 +379,11 @@ class Teacher:
                 running["research"] = group.create_task(run_research())
                 running["visual"] = group.create_task(prepare_visual())
                 quiz_task = group.create_task(prepare_quiz())
-        except ExceptionGroup:
+        except ExceptionGroup as error:
             # TaskGroup first cancels/joins siblings. Keep unexpected child
             # failures behind the same fixed turn fallback, without leaking
             # private exception text. External cancellation still propagates.
+            LOG.warning("preparation_failed causes=%s", failure_codes(error))
             raise StageFailure("preparation_failed") from None
         finally:
             CALL_RESERVE.reset(reservation)
@@ -455,6 +465,11 @@ class Teacher:
         if stopping:
             output["next_step"] = None
         quiz_context = results.quiz_context or {}
+        if quiz_context.get("needs_topic"):
+            output["message"] = "可以，先确定一下出题范围。"
+            output["next_step"] = question("你想练习哪个知识点？")
+        elif quiz_context.get("needs_clear_choice"):
+            output["next_step"] = question(render_question(quiz_context["awaiting"]))
         if quiz_context.get("new_question"):
             output["next_step"] = question(render_question(quiz_context["new_question"]))
         offer_notes = False

@@ -21,7 +21,7 @@ CONFIRM_DELETE = "确定删除"
 
 # Notes are compiled after a practice set, only when the learner agrees, or on request.
 NOTES_OFFER = "要把这次学的整理成笔记吗？\n1. 整理\n2. 不用"
-NOTES_REQUEST = ("整理笔记", "帮我整理笔记", "整理一下笔记", "生成笔记", "做笔记")
+NOTES_REQUEST = ("整理笔记", "帮我整理笔记", "整理一下笔记", "生成笔记", "做笔记", "请帮我整理笔记", "整理错题", "帮我整理错题")
 NOTES_YES = ("1", "整理", "整理吧", "整理一下", "好", "好的", "要", "可以")
 NOTES_NO = ("2", "不用", "不用了", "先不用", "不要", "不整理")
 

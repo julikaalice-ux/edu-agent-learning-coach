@@ -16,6 +16,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 import logging
+import re
 from typing import Callable
 
 from learning_coach.domain.contracts import ContractError, validate
@@ -69,6 +70,9 @@ class Turn:
 
 
 def clean_history(messages) -> list:
+    from learning_coach.service.pipeline.learning import PREFIX, RESPONSE_PREFIX
+    messages = [m for i, m in enumerate(messages) if i == len(messages)-1 or not
+                (str(m.get("text", "")).startswith(PREFIX) or str(m.get("text", "")).startswith(RESPONSE_PREFIX))]
     return [{"role": m["role"], "text": m["text"][:MAX_MESSAGE_CHARS]} for m in messages[-MAX_HISTORY:]
             if m.get("role") in (USER, ASSISTANT) and isinstance(m.get("text"), str)]
 
@@ -155,8 +159,19 @@ class TurnShell:
         tokens.append((EXPLANATION_SINK, EXPLANATION_SINK.set(deliver)))
         try:
             return await asyncio.wait_for(handle(turn), timeout=TURN_TIMEOUT_SECONDS)
-        except TURN_ERRORS:
-            LOG.warning("learning_turn_failed")
+        except TURN_ERRORS as error:
+            # Only fixed application codes; never provider messages or raw inputs.
+            code = str(error) if isinstance(error, (ContractError, StageFailure)) else ""
+            if not re.fullmatch(r"[a-z][a-z0-9_]{0,79}", code):
+                code = "unclassified"
+            origin = error.__traceback__
+            while origin and origin.tb_next:
+                origin = origin.tb_next
+            LOG.warning("learning_turn_failed turn=%s error_type=%s code=%s origin=%s:%s",
+                        hashlib.sha256(turn.event_id.encode()).hexdigest()[:16],
+                        type(error).__name__, code,
+                        origin.tb_frame.f_code.co_name if origin else "unknown",
+                        origin.tb_lineno if origin else 0)
             output = reply(TURN_FAILED, step=question("要从刚才的问题再试一次吗？"))
             if delivered:
                 output = deepcopy(delivered[0])

@@ -637,7 +637,7 @@ def run_combined(port: int) -> None:
     @fastapi_app.get("/ui-app/")
     async def ui_index():
         if ui_dir.is_dir():
-            return FileResponse(ui_dir / "index.html")
+            return FileResponse(ui_dir / "index.html", headers={"Cache-Control": "no-store"})
         return JSONResponse(status_code=404, content={"error": "ui_not_built"})
 
     if (ui_dir / "assets").is_dir():
@@ -650,6 +650,12 @@ def run_combined(port: int) -> None:
         if not TURN_LIMIT.take():
             return JSONResponse(status_code=200, content={
                 "conversation": None, "text": LIMIT_TEXT, "options": []})
+        if "learning_action" in payload:
+            try:
+                result = await asyncio.to_thread(space_proxy.learning_action, payload.get("conversation"), payload["learning_action"])
+                return JSONResponse(content=result)
+            except Exception as error:
+                return JSONResponse(status_code=502, content={"error": proxy_error(error)})
         user_input = str(payload.get("input", "")).strip()
         if not user_input:
             return JSONResponse(status_code=400, content={"error": "empty_input"})
@@ -686,7 +692,7 @@ def run_combined(port: int) -> None:
                                                     "options": space_proxy.extract_options(event["text"])},
                                                    ensure_ascii=False)
                             yield f"data: {frame}\n\n"
-                        outcome = "ok"
+                        outcome = "response_received"
                     finally:
                         timer.log(outcome)
                 return StreamingResponse(events(), media_type="text/event-stream",
@@ -694,7 +700,7 @@ def run_combined(port: int) -> None:
             result = space_proxy.call("responses", {"conversation": conversation, "input": user_input})
             timer.mark("first_text_ms")
             text = space_proxy.extract_text(result) or "这次处理没有顺利完成，请再试一次。"
-            timer.log("ok")
+            timer.log("response_received")
             return JSONResponse(status_code=200, content={
                 "conversation": conversation, "text": text,
                 "options": space_proxy.extract_options(text)})

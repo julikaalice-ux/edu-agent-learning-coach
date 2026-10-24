@@ -134,12 +134,28 @@ class PipelineStreamingTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(visible(events[-1]["output"]).startswith(self.shown(events)))
         self.assertNotIn('"', self.shown(events))
 
-    async def test_a_first_question_shows_the_introduction_first(self):
+    async def test_a_first_question_streams_the_answer_without_introduction(self):
         runner = StreamingRunner([plan()], replies=[deepcopy(ANSWER)])
         events = await self.events(self.pipeline(runner), "分子和分母是什么关系？", returning_visitor=False)
-        # The program's introduction goes out at once and on its own, before any model call.
-        self.assertEqual(events[0], {"delta": INTRO + INTRO_RECORDS_OFF + "\n\n"})
+        # Explicit questions stream useful content without a capability pitch.
+        self.assertNotIn(INTRO, self.shown(events))
         self.assertEqual(events[-1]["output"]["message"], self.shown(events))
+
+    async def test_failed_first_question_and_retry_do_not_show_a_welcome(self):
+        from learning_coach.service.execution import StageFailure
+        class FailingRunner:
+            async def __call__(self, *args, **kwargs):
+                raise StageFailure("invalid_stage_output")
+        pipeline = self.pipeline(FailingRunner())
+        for _ in range(2):
+            with self.assertLogs("learning_coach.service.pipeline.shell", level="WARNING") as logs:
+                events = await self.events(pipeline, "出一道题考考我 秋招应该做什么", returning_visitor=False)
+            self.assertNotIn(INTRO, self.shown(events))
+            self.assertNotIn(INTRO, events[-1]["output"]["message"])
+            self.assertEqual(events[-1]["state"], {})
+            self.assertIn("code=invalid_stage_output", logs.output[0])
+            self.assertIn("error_type=StageFailure", logs.output[0])
+            self.assertNotIn("秋招", logs.output[0])
 
     async def test_a_direct_answer_rerouted_to_a_visual_is_shown_while_the_visual_is_drawn(self):
         # The coordinator answered directly; the program reroutes an explicit
@@ -158,7 +174,7 @@ class PipelineStreamingTests(unittest.IsolatedAsyncioTestCase):
                                  replies=[{**deepcopy(ANSWER), "next_step": None}])
         pipeline = self.pipeline(runner)
         asked = await self.events(pipeline, "查一下分数的定义", returning_visitor=False)
-        self.assertTrue(asked[-1]["output"]["message"].startswith(INTRO))
+        self.assertNotIn(INTRO, asked[-1]["output"]["message"])
         history = [{"role": "user", "text": "查一下分数的定义"},
                    {"role": "assistant", "text": visible(asked[-1]["output"])}]
         answered = [event async for event in pipeline.run_stream(
