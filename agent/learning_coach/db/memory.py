@@ -214,10 +214,7 @@ class LearningStore:
                 raise
 
     def _write_notes(self, session_id: str, turn_id: str, notes: dict[str, Any]) -> None:
-        for note in notes.get("study_notes", []):
-            card_id = hashlib.sha256((turn_id + "\0" + note["concept_id"]).encode()).hexdigest()[:24]
-            body = {**note, "id": card_id, "created_at": datetime.now(timezone.utc).isoformat(), "source": "本次教学对话"}
-            self._db.execute("INSERT OR IGNORE INTO learning_cards VALUES (?, ?, 'study', ?)", (session_id,card_id,_to_json(body)))
+        self._write_study_notes(session_id, turn_id, notes.get("study_notes", []))
         for item in notes["profile"]:
             self._db.execute("INSERT INTO profiles VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(session_id, key) DO UPDATE SET value=excluded.value, origin=excluded.origin, evidence_quote=excluded.evidence_quote, turn_id=excluded.turn_id", (session_id, item["key"], item["value"], item["origin"], item["evidence_quote"], turn_id))
         for item in notes["concepts"]:
@@ -231,6 +228,27 @@ class LearningStore:
             self._db.execute("INSERT INTO error_records (session_id, turn_id, concept_id, category, evidence_quote) VALUES (?, ?, ?, ?, ?)", (session_id, turn_id, item["concept_id"], category, item["evidence_quote"]))
         for item in notes["review_plan"]:
             self._db.execute("INSERT INTO review_items VALUES (?, ?, ?, ?, ?) ON CONFLICT(session_id, topic) DO UPDATE SET deadline=excluded.deadline, evidence_quote=excluded.evidence_quote, turn_id=excluded.turn_id", (session_id, item["topic"], item["deadline"], item["evidence_quote"], turn_id))
+
+    def _write_study_notes(self, session_id: str, turn_id: str, study_notes: list[dict[str, Any]]) -> None:
+        """One card per concept: a later compile updates it in place, keeping its
+        id and first date. A card the learner edited is theirs and is left as is."""
+        cards = {}
+        for row in self._db.execute("SELECT id, body FROM learning_cards WHERE session_id = ? AND kind = 'study' ORDER BY rowid", (session_id,)):
+            body = json.loads(row["body"])
+            cards.setdefault(body.get("concept_id"), body)
+        now = datetime.now(timezone.utc).isoformat()
+        for note in study_notes:
+            card = cards.get(note["concept_id"])
+            if card is not None and card.get("source") == EDITED_SOURCE:
+                continue
+            if card is None:
+                card_id = hashlib.sha256((turn_id + "\0" + note["concept_id"]).encode()).hexdigest()[:24]
+                body = {**note, "id": card_id, "created_at": now, "source": STUDY_SOURCE}
+                self._db.execute("INSERT OR IGNORE INTO learning_cards VALUES (?, ?, 'study', ?)", (session_id, card_id, _to_json(body)))
+            else:
+                body = {**note, "id": card["id"], "created_at": card["created_at"], "updated_at": now, "source": STUDY_SOURCE}
+                self._db.execute("UPDATE learning_cards SET body = ? WHERE session_id = ? AND id = ?", (_to_json(body), session_id, card["id"]))
+            cards[note["concept_id"]] = body
 
     def _apply_evidence(self, session_id: str, turn_id: str, evidence: dict[str, Any] | None, learner_text: str) -> None:
         if evidence is None or not learner_text.strip():
@@ -286,6 +304,7 @@ class LearningStore:
                 if row["kind"] == "study":
                     score = self._db.execute("SELECT attempts,correct_count FROM concepts WHERE session_id=? AND concept_id=?", (session_id,body["concept_id"])).fetchone()
                     body["practice"] = {"attempts": score[0], "correct": score[1]} if score else None
+                    body["edited"] = body.get("source") == EDITED_SOURCE
                     notes.append(body)
                     continue
                 public = {k: body[k] for k in ("id", "concept_id", "title", "question", "created_at")}
@@ -293,7 +312,8 @@ class LearningStore:
                 public["choices"] = [{"id": str(i), "text": text} for i, text in enumerate(body["choices"])]
                 events = list(self._db.execute("SELECT result FROM retry_events WHERE session_id=? AND card_id=? ORDER BY rowid", (session_id, body["id"])))
                 public["attempts"] = len(events)
-                public["status"] = ("重做已答对" if events and json.loads(events[-1][0])["correct"] else "待复习")
+                public["solved"] = bool(events) and json.loads(events[-1][0])["correct"]
+                public["status"] = "重做已答对" if public["solved"] else "待复习"
                 mistakes.append(public)
             return {"enabled": True, "mistakes": mistakes, "study_notes": notes}
 
@@ -312,7 +332,7 @@ class LearningStore:
             row = self._db.execute("SELECT body FROM learning_cards WHERE session_id=? AND id=? AND kind='study'", (session_id,card_id)).fetchone()
             if not row:
                 raise ValueError("card_not_found")
-            body = {**json.loads(row[0]), **fields, "source": "学习者编辑（未经核验）"}
+            body = {**json.loads(row[0]), **fields, "source": EDITED_SOURCE}
             self._db.execute("UPDATE learning_cards SET body=? WHERE session_id=? AND id=?", (_to_json(body),session_id,card_id))
 
     @storage_boundary
@@ -356,6 +376,8 @@ class LearningStore:
 
 
 NOTE_SECTIONS = ("profile", "concepts", "error_records", "review_plan")
+STUDY_SOURCE = "本次教学对话"             # a study card written from the coach's explanations
+EDITED_SOURCE = "学习者编辑（未经核验）"   # a study card the learner changed; never overwritten
 
 
 def _empty_notes() -> dict[str, Any]:

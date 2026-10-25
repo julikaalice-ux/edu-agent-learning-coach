@@ -841,8 +841,12 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
                 output, state = await self.pipeline(runner).run(messages("整理笔记", *exchange("我在工作")),
                                                                 session_id="s", turn_id=f"note-{number}")
                 self.assert_protocol(output)
-                self.assertIn("没有整理成功", output["message"])
-                self.assertNotIn("notes_upto_turn", state.get("context", {}))
+                if number == 0:
+                    # Only the entry that does not quote the learner is dropped, and the reply says so.
+                    self.assertIn("对不上你的原话", output["message"])
+                else:
+                    self.assertIn("没有整理成功", output["message"])
+                    self.assertNotIn("notes_upto_turn", state.get("context", {}))
                 self.assertNotIn("SECRET", json.dumps(output))
                 self.assertEqual(self.store.snapshot("s")["profile"], {})
 

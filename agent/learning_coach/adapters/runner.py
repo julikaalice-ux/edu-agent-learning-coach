@@ -21,11 +21,21 @@ from learning_coach.service.execution import BUDGET, CALL_RESERVE, REPLY_SINK, S
 
 
 def native_schema(schema):
-    """Always use an object root; distinct visual kinds make anyOf equivalent."""
+    """Always use an object root; distinct visual kinds make anyOf equivalent.
+
+    Strict structured output wants every property listed as required. An
+    optional property (study_notes in the notes, a diagram edge's label) is
+    therefore always written in native mode; each such property allows an
+    empty value ([] or ""), and the reply is still checked against the
+    original schema.
+    """
     def convert(value):
         if isinstance(value, dict):
-            return {("anyOf" if key == "oneOf" else key): convert(item)
-                    for key, item in value.items() if key != "$schema"}
+            converted = {("anyOf" if key == "oneOf" else key): convert(item)
+                         for key, item in value.items() if key != "$schema"}
+            if isinstance(converted.get("properties"), dict):
+                converted["required"] = list(converted["properties"])
+            return converted
         if isinstance(value, list):
             return [convert(item) for item in value]
         return value

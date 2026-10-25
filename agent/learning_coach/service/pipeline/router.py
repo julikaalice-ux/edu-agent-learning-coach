@@ -16,8 +16,8 @@ from enum import StrEnum
 
 from learning_coach.service.pipeline.state import Key, waiting_question
 from learning_coach.service.pipeline.texts import (CHECK_NO, CHECK_YES, CMD_FORGET, CMD_MEMORY_OFF, CMD_MEMORY_ON,
-                                                   CONFIRM_DELETE, NOTES_NO, NOTES_REQUEST, NOTES_YES, RECORD_DELETE,
-                                                   RECORD_OFF, RECORD_ON, SKIP_QUESTION)
+                                                   CONFIRM_DELETE, MISTAKES_REQUEST, NOTES_NO, NOTES_REQUEST, NOTES_YES,
+                                                   RECORD_DELETE, RECORD_OFF, RECORD_ON, SKIP_QUESTION)
 
 
 class Command(StrEnum):
@@ -38,6 +38,7 @@ class Phase(StrEnum):
 class Action(StrEnum):
     TEACH = "teach"
     COMPILE_NOTES = "compile_notes"
+    SHOW_MISTAKES = "show_mistakes"
     DECLINE_NOTES = "decline_notes"
     ASK_CHECK = "ask_check"
     DECLINE_CHECK = "decline_check"
@@ -48,6 +49,7 @@ class Action(StrEnum):
 # Every other combination is a teaching turn.
 PHASE_TABLE = (
     (Phase.ANY, NOTES_REQUEST, Action.COMPILE_NOTES),
+    (Phase.ANY, MISTAKES_REQUEST, Action.SHOW_MISTAKES),
     (Phase.OFFER_NOTES, NOTES_YES, Action.COMPILE_NOTES),
     (Phase.OFFER_NOTES, NOTES_NO, Action.DECLINE_NOTES),
     (Phase.OFFER_CHECK, CHECK_YES, Action.ASK_CHECK),

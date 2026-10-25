@@ -50,6 +50,7 @@ class Budgets:
     memory: int = 1500             # slice of the learning records
     notes: int = 1000              # conversation notes
     notes_messages: int = 3000     # learner messages given to the notes agent
+    notes_teaching: int = 8000     # the coach's explanations given to the notes agent
 
     @classmethod
     def from_env(cls, environ=None) -> "Budgets":
@@ -181,6 +182,37 @@ def learner_messages(numbered, *, after_turn: int, budget: int, message_max: int
         chosen.insert(0, shown)
         used += size
     return chosen
+
+
+TEACHING_MESSAGE_MAX = 2500  # tokens of one explanation given to the notes agent
+
+
+def notes_window(numbered, *, after_turn: int, learner_budget: int, teaching_budget: int,
+                 message_max: int) -> tuple[list[dict], list[dict], int]:
+    """What the notes agent sees: whole turns after after_turn, oldest first.
+
+    Turns are added while the learner's words and the coach's explanations
+    both stay within their budgets (the first turn always goes in). Returns
+    (learner messages, teaching messages, last turn given); a later compile
+    continues after that turn, so nothing is skipped and nothing repeated.
+    """
+    learner, teaching, last = [], [], after_turn
+    used_learner = used_teaching = 0
+    for number in sorted({item["turn"] for item in numbered if item["turn"] > after_turn}):
+        said = [{"turn": number, "text": trim_text(item["text"], message_max)}
+                for item in numbered if item["turn"] == number and item["role"] == "user"]
+        taught = [{"turn": number, "role": "assistant", "text": trim_text(item["text"], TEACHING_MESSAGE_MAX)}
+                  for item in numbered if item["turn"] == number and item["role"] == "assistant"]
+        size_said, size_taught = sum(map(count_tokens, said)), sum(map(count_tokens, taught))
+        if last > after_turn and (used_learner + size_said > learner_budget
+                                  or used_teaching + size_taught > teaching_budget):
+            break
+        learner += said
+        teaching += taught
+        used_learner += size_said
+        used_teaching += size_taught
+        last = number
+    return learner, teaching, last
 
 
 # ---------------------------------------------------------------- conversation notes

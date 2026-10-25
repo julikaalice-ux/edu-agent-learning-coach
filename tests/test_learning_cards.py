@@ -98,17 +98,23 @@ class LearningProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.history += [{'role':'user','text':'再讲一个例子'}, {'role':'assistant','text':'1/7+3/7=4/7。'}]
         self.runner.note_results.append({**notes(),'study_notes':[{**STUDY,'source_turns':[2]}]})
         result=await self.action('compile')
-        self.assertEqual(len(result['view']['study_notes']),2)
+        # The same concept compiled again updates its one card.
+        self.assertEqual(len(result['view']['study_notes']),1)
+        self.assertEqual(result['view']['study_notes'][0]['source_turns'],[2])
+        self.assertIn('updated_at',result['view']['study_notes'][0])
     async def test_minor_consent_not_bypassed(self):
         self.state={'onboarding':{'who':'self','stage':'小学','step':'done','records':'off'}}
         result=await self.action('records',enabled=True)
         self.assertFalse(result['view']['enabled']); self.assertIn('家长',result['message'])
-    async def test_bad_source_rejects_whole_note(self):
+    async def test_a_card_citing_a_turn_not_shown_is_dropped_alone(self):
         self.store.set_enabled('s',True)
         self.history=[{'role':'user','text':'讲讲分数'}, {'role':'assistant','text':'分母表示等分的份数。'}]
-        self.runner.note_results.clear();self.runner.note_results.append({**notes(),'study_notes':[{**STUDY,'source_turns':[999]}]})
+        self.runner.note_results.clear()
+        self.runner.note_results.append({**notes(),'study_notes':[{**STUDY,'source_turns':[999]},
+                                                                  {**STUDY,'concept_id':'denominator','source_turns':[1]}]})
         result=await self.action('compile')
-        self.assertEqual(result['view']['study_notes'],[]); self.assertIn('没有整理成功',result['message'])
+        self.assertEqual([card['concept_id'] for card in result['view']['study_notes']],['denominator'])
+        self.assertIn('有 1 条对不上',result['message'])
 
     async def test_full_quiz_flow_saves_wrong_question(self):
         from tests.test_pipeline import plan, QUIZ
@@ -125,6 +131,8 @@ class LearningProtocolTests(unittest.IsolatedAsyncioTestCase):
         from learning_coach.api.host import LearningCoachAgent
         from unittest.mock import patch
         host=LearningCoachAgent(self.pipeline); session=host.create_session()
+        # Records follow the platform user only when scoped to the user.
+        scope=patch.dict('os.environ',{'LEARNING_COACH_RECORDS_SCOPE':'user'}); scope.start(); self.addCleanup(scope.stop)
         with patch('learning_coach.api.host.platform_learner_id',return_value='owner-a'):
             response=await host.run('/learning {"action":"records","enabled":true}',session=session)
             self.assertTrue(json.loads(response.text)['view']['enabled'])

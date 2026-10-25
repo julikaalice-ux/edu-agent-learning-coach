@@ -206,6 +206,8 @@ class LearningPipeline:
             return await self.notes.compile(turn)
         if action is Action.DECLINE_NOTES:
             return self.notes.decline(turn)
+        if action is Action.SHOW_MISTAKES:
+            return self.notes.show_mistakes(turn)
         if action is Action.ASK_CHECK:
             return await self.quiz.ask_check(turn, offers[Key.CHECK_OFFER])
         if action is Action.DECLINE_CHECK:
