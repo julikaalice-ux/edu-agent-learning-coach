@@ -13,6 +13,14 @@ class CallBudget:
     remaining: int = DEFAULT_CALL_BUDGET
 
 
+@dataclass
+class TurnOutcome:
+    status: str = "completed"
+    error_code: str | None = None
+
+
+TURN_OUTCOME = ContextVar("learning_coach_turn_outcome", default=None)
+
 BUDGET = ContextVar("learning_coach_budget", default=None)
 # Optional concurrent workers inherit the reservation; the final responder does
 # not. The runner checks it before every real model request, including retries.

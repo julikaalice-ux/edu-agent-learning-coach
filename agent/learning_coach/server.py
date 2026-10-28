@@ -226,7 +226,7 @@ def create_pipeline(*, client=None, data_dir=None, public_base_url=None, native_
     if architecture == "single":
         agent = SingleAgentRunner(create_single_agent(client, PROMPTS_DIR), observer=stage_observer)
         return SingleAgentPipeline(agent, provider, store, artifacts, response_schema, **shared)
-    native = os.environ.get("LEARNING_COACH_NATIVE_JSON", "0") == "1" if native_json is None else native_json
+    native = os.environ.get("LEARNING_COACH_NATIVE_JSON", "1") == "1" if native_json is None else native_json
     runner = StructuredRunner(create_agents(client, INSTRUCTIONS_PATH, role_clients=role_clients,
                                             role_options=role_options_from_env()),
                               native_json=native, observer=stage_observer)

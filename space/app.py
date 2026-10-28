@@ -683,26 +683,36 @@ def run_combined(port: int) -> None:
                     outcome = "failed"
                     try:
                         for event in space_proxy.stream_reply(conversation, user_input):
-                            if "delta" in event:
+                            if "replace" in event:
+                                timer.mark("first_text_ms")
+                                frame = json.dumps({"replace": event["replace"]}, ensure_ascii=False)
+                            elif "delta" in event:
                                 timer.mark("first_text_ms")
                                 frame = json.dumps({"delta": event["delta"]}, ensure_ascii=False)
                             else:
                                 frame = json.dumps({"done": True, "conversation": event["conversation"],
-                                                    "text": event["text"],
+                                                    "text": event["text"], "status": event["status"], "error_code": event.get("error_code"),
                                                     "options": space_proxy.extract_options(event["text"])},
                                                    ensure_ascii=False)
                             yield f"data: {frame}\n\n"
-                        outcome = "response_received"
+                        outcome = event.get("status", "unknown")
+                    except Exception as error:
+                        outcome = "failed"
+                        frame = json.dumps({"done": True, "conversation": conversation, "status": "failed",
+                                            "error_code": proxy_error(error), "options": [],
+                                            "text": "本次请求未完整返回，请重试刚才的问题。"}, ensure_ascii=False)
+                        yield f"data: {frame}\n\n"
                     finally:
                         timer.log(outcome)
                 return StreamingResponse(events(), media_type="text/event-stream",
                                          headers={"Cache-Control": "no-cache"})
             result = space_proxy.call("responses", {"conversation": conversation, "input": user_input})
             timer.mark("first_text_ms")
-            text = space_proxy.extract_text(result) or "这次处理没有顺利完成，请再试一次。"
-            timer.log("response_received")
+            turn_result = space_proxy.decode_turn(space_proxy.raw_text(result))
+            text = turn_result["text"]
+            timer.log(turn_result["status"])
             return JSONResponse(status_code=200, content={
-                "conversation": conversation, "text": text,
+                "conversation": conversation, **turn_result,
                 "options": space_proxy.extract_options(text)})
         except Exception as error:
             timer.log("failed")

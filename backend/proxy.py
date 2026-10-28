@@ -184,34 +184,50 @@ def stream_events(conversation: str, user_input: str):
                 data_lines.append(line[len("data:"):].strip())
 
 
+def decode_turn(text):
+    """Program-owned UI envelope; old hosted versions remain readable."""
+    try:
+        frames = [json.loads(line) for line in text.splitlines() if line.strip()]
+        if frames and all(isinstance(f, dict) and f.get("turn_protocol") == 1 for f in frames):
+            final = frames[-1]
+            if final.get("type") != "final" or final.get("status") not in ("completed", "partial", "failed"):
+                raise RuntimeError("agent_response_incomplete")
+            return {"text": final["text"], "status": final["status"], "error_code": final.get("error_code")}
+    except (ValueError, KeyError, TypeError):
+        pass
+    return {"text": text, "status": "unknown", "error_code": None}
+
+
 def stream_reply(conversation: str, user_input: str):
-    """逐段产出回复文本，最后产出 (conversation, 全文)。"""
-    full = []
+    """Checked previews replace the bubble; only a completed event finalizes it."""
+    raw, buffer, completed = [], "", None
     for event, data in stream_events(conversation, user_input):
+        payload = json.loads(data)
         if event == "response.output_text.delta":
-            try:
-                delta = json.loads(data).get("delta", "")
-            except json.JSONDecodeError:
-                continue
-            if delta:
-                full.append(delta)
-                yield {"delta": delta}
+            delta = payload.get("delta", "")
+            raw.append(delta)
+            buffer += delta
+            while "\n" in buffer:
+                line, buffer = buffer.split("\n", 1)
+                try:
+                    frame = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(frame, dict) and frame.get("turn_protocol") == 1 and frame.get("type") == "preview":
+                    yield {"replace": frame["text"]}
         elif event == "response.completed":
-            try:
-                payload = json.loads(data)
-                completed = payload.get("response") or payload
-                text = extract_text(completed)
-                response_id = completed.get("id", "")
-                if not isinstance(response_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,160}", response_id):
-                    response_id = "unknown"
-                outcome = "application_failed" if "这次处理没有顺利完成" in text else "response_received"
-                LOG.info("agent_response response_id=%s outcome=%s", response_id, outcome)
-                if text:
-                    full = [text]
-            except json.JSONDecodeError:
-                pass
-    yield {"done": True, "conversation": conversation,
-           "text": "".join(full).strip() or "这次处理没有顺利完成，请再试一次。"}
+            response = payload.get("response") or payload
+            completed = decode_turn(raw_text(response) or "".join(raw))
+            response_id = response.get("id", "")
+            if not isinstance(response_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,160}", response_id):
+                response_id = "unknown"
+            LOG.warning("agent_response response_id=%s outcome=%s code=%s", response_id,
+                        completed["status"], completed.get("error_code"))
+        elif event in ("response.failed", "response.incomplete", "error"):
+            raise RuntimeError("agent_response_failed")
+    if completed is None:
+        raise RuntimeError("agent_response_incomplete")
+    yield {"done": True, "conversation": conversation, **completed}
 
 
 def learning_action(conversation, action):
@@ -232,7 +248,7 @@ def learning_action(conversation, action):
     return {**result, "conversation": conversation}
 
 
-def extract_text(payload: dict) -> str:
+def raw_text(payload: dict) -> str:
     text = []
     for item in payload.get("output", []):
         if item.get("type") != "message":
@@ -241,6 +257,10 @@ def extract_text(payload: dict) -> str:
             if content.get("type") in ("output_text", "text") and content.get("text"):
                 text.append(content["text"])
     return "\n\n".join(text).strip()
+
+
+def extract_text(payload: dict) -> str:
+    return decode_turn(raw_text(payload))["text"]
 
 
 def extract_options(text: str) -> list[dict]:
@@ -322,19 +342,22 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Cache-Control", "no-cache")
                 self.end_headers()
                 for event in stream_reply(conversation, user_input):
-                    if "delta" in event:
+                    if "replace" in event:
+                        frame = json.dumps({"replace": event["replace"]}, ensure_ascii=False)
+                    elif "delta" in event:
                         frame = json.dumps({"delta": event["delta"]}, ensure_ascii=False)
                     else:
                         frame = json.dumps({"done": True, "conversation": event["conversation"],
-                                            "text": event["text"],
+                                            "text": event["text"], "status": event["status"], "error_code": event.get("error_code"),
                                             "options": extract_options(event["text"])},
                                            ensure_ascii=False)
                     self.wfile.write(f"data: {frame}\n\n".encode())
                     self.wfile.flush()
                 return
             result = call("responses", {"conversation": conversation, "input": user_input})
-            text = extract_text(result) or "这次处理没有顺利完成，请再试一次。"
-            self._reply(200, {"conversation": conversation, "text": text,
+            turn_result = decode_turn(raw_text(result))
+            text = turn_result["text"]
+            self._reply(200, {"conversation": conversation, **turn_result,
                               "options": extract_options(text)})
         except Exception as error:
             self._reply(502, {"error": type(error).__name__})

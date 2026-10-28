@@ -74,6 +74,8 @@ export interface TurnRequest {
 }
 
 export interface TurnResponse {
+  status?: "completed" | "partial" | "failed" | "unknown";
+  error_code?: string | null;
   conversation: string;
   text: string;
   options: OptionCard[];
@@ -97,6 +99,7 @@ export async function sendTurn(request: TurnRequest): Promise<TurnResponse> {
 export async function streamTurn(
   request: TurnRequest,
   onDelta: (text: string) => void,
+  onReplace?: (text: string) => void,
 ): Promise<TurnResponse> {
   const response = await fetch("/turn", {
     method: "POST",
@@ -122,6 +125,7 @@ export async function streamTurn(
       if (!line) continue;
       try {
         const payload = JSON.parse(line.slice(5).trim());
+        if (typeof payload.replace === "string") onReplace?.(payload.replace);
         if (payload.delta) onDelta(payload.delta);
         if (payload.done) result = payload;
       } catch {

@@ -20,7 +20,7 @@ import re
 from typing import Callable
 
 from learning_coach.domain.contracts import ContractError, validate
-from learning_coach.service.execution import (BUDGET, CallBudget, StageFailure, EXTERNAL_CAPABILITIES,
+from learning_coach.service.execution import (BUDGET, CallBudget, StageFailure, TURN_OUTCOME, EXTERNAL_CAPABILITIES,
                                               EXTERNAL_PERMISSIONS, EXTERNAL_DECLINED, EXPLANATION_SINK)
 from learning_coach.service.pipeline.state import ASSISTANT, USER, Key
 from learning_coach.service.pipeline.texts import question, reply
@@ -164,6 +164,10 @@ class TurnShell:
             code = str(error) if isinstance(error, (ContractError, StageFailure)) else ""
             if not re.fullmatch(r"[a-z][a-z0-9_]{0,79}", code):
                 code = "unclassified"
+            outcome = TURN_OUTCOME.get()
+            if outcome is not None:
+                outcome.status = "partial" if delivered else "failed"
+                outcome.error_code = code
             origin = error.__traceback__
             while origin and origin.tb_next:
                 origin = origin.tb_next

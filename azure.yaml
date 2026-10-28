@@ -62,6 +62,8 @@ services:
       # Foundry evaluations send each case as a new conversation; skip the
       # first-meeting questions so the reply answers the case itself.
       LEARNING_COACH_ONBOARDING: '0'
+      LEARNING_COACH_NATIVE_JSON: '1'
+      LEARNING_COACH_UI_PROTOCOL: '1'
       # Context isolation: a reopened conversation link (other platform user,
       # or older than this many seconds) starts fresh, dropping history and state.
       LEARNING_COACH_CONTEXT_TTL_SECONDS: '900'

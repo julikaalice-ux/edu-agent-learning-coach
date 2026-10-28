@@ -1,1 +1,1 @@
-{"root":["./src/app.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/components/chatscene.tsx","./src/components/greetingscene.tsx","./src/hooks/useintrovideo.ts","./src/lib/api.ts"],"version":"5.9.3"}
+{"root":["./src/app.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/components/chatscene.tsx","./src/components/greetingscene.tsx","./src/components/learningpanels.tsx","./src/hooks/useintrovideo.ts","./src/lib/api.ts"],"version":"5.9.3"}

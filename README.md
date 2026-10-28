@@ -52,6 +52,7 @@ cp agent/.env.example agent/.env   # 填 FOUNDRY_PROJECT_ENDPOINT 和 AZURE_AI_M
 | `LEARNING_COACH_DEMO_MODE` | | 设为 `1` 时跳过首次问答，学段取 `LEARNING_COACH_DEMO_STAGE` |
 | `DEMO_ACCESS_KEY` | | 演示页邀请码，访问链接需带 `?key=` |
 | `DEMO_MAX_TURNS_PER_DAY` / `DEMO_MAX_IMAGES_PER_DAY` | | 演示页每日上限，默认 150 / 20 |
+| `LEARNING_COACH_RECORDS_SCOPE` | | 托管入口的学习记录按谁保存：默认按对话保存（同一身份进来的访客，比如 Space，不会共用记录）；设成 `user` 时按平台用户编号跨对话保存，只在每个学习者都用自己的账号登录时使用 |
 | `LEARNING_COACH_CONTEXT_TTL_SECONDS` | | 托管入口的会话隔离时限：同一会话链接距上轮超过该秒数（默认 900）重开，或换了一个平台用户打开时，历史与做题进度一律作废，从当前消息重新开始；`0` 关闭时间重置 |
 
 当前模型分工：核对（查证和审图）、画图用 `gpt-6-luna`，主 agent（含写搜索词）、出题、笔记用 `gpt-5.4-mini`，配图 `flux-2-pro`。三处入口要一致：本地看 `agent/.env`，托管看 `azure.yaml`，Space 看它的 Variables。

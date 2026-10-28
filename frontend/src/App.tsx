@@ -135,11 +135,15 @@ export default function App() {
           const shown = streamed;
           setSession((prev) => ({ ...prev, messages: withReply(prev.messages, shown) }));
         },
+        (replacement) => {
+          streamed = replacement;
+          setSession((prev) => ({ ...prev, messages: withReply(prev.messages, replacement) }));
+        },
       );
 
-      // Legacy hosted protocol has no status field: recognize only its fixed failure text.
-      const failed = replyMessages(reply.text)[0].content.startsWith("这次处理没有顺利完成");
-      if (failed) setRetryInput(text);
+      const failed = reply.status === "failed";
+      const partial = reply.status === "partial";
+      if (failed || partial) setRetryInput(text);
       setSession((prev) => {
         const messages = withReply(prev.messages, failed
           ? "这次处理没有顺利完成。可以重试刚才的问题，或继续提问。" : reply.text);
@@ -151,7 +155,7 @@ export default function App() {
           messages,
         };
       });
-      if (failed) return;
+      if (failed || partial) return;
       try {
         applyLearning(await learningAction(reply.conversation, { action: "read" }));
       } catch {
