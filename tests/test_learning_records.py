@@ -142,6 +142,36 @@ class MistakesTests(RecordsTestBase):
         self.assertEqual(known, [{"concept_id": "fraction-addition", "title": "分数加法"}])
 
 
+class PracticeEndTests(RecordsTestBase):
+    async def finish_one_question_set(self):
+        from test_pipeline import QUIZ, plan
+        runner = FakeRunner([plan("C", quiz_action="start", quiz_topic="分数", quiz_total=1),
+                             plan("C", quiz_action="continue", quiz_topic="分数", quiz_total=1)], quiz=[QUIZ])
+        pipeline = self.pipeline(runner)
+        first, state = await pipeline.run([{"role": "user", "text": "考我分数"}], session_id="s", returning_visitor=True)
+        history = [{"role": "user", "text": "考我分数"},
+                   {"role": "assistant", "text": first["message"] + "\n\n" + first["next_step"]["text"]},
+                   {"role": "user", "text": "B"}]
+        output, _ = await pipeline.run(history, session_id="s", state=state, returning_visitor=True)
+        return output
+
+    async def test_with_records_off_the_reply_says_the_set_was_not_saved(self):
+        from learning_coach.service.pipeline.texts import RECORDS_OFF_AFTER_PRACTICE
+        self.store.set_enabled("s", False)
+        output = await self.finish_one_question_set()
+        self.assertTrue(output["message"].endswith(RECORDS_OFF_AFTER_PRACTICE))
+        self.assertIsNone(output["next_step"])
+        self.assertEqual(self.store.learning_view("s")["mistakes"], [])
+
+    async def test_with_records_on_the_reply_offers_notes_instead(self):
+        from learning_coach.service.pipeline import NOTES_OFFER
+        from learning_coach.service.pipeline.texts import RECORDS_OFF_AFTER_PRACTICE
+        output = await self.finish_one_question_set()
+        self.assertNotIn(RECORDS_OFF_AFTER_PRACTICE, output["message"])
+        self.assertEqual(output["next_step"]["text"], NOTES_OFFER)
+        self.assertEqual(len(self.store.learning_view("s")["mistakes"]), 1)
+
+
 class StrictSchemaTests(unittest.TestCase):
     def test_native_requests_list_every_field_while_replies_keep_their_optional_fields(self):
         from learning_coach.adapters.runner import native_schema

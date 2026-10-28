@@ -43,9 +43,10 @@ from learning_coach.service.pipeline.state import (NOTES_FOR_QUESTIONS, NOTES_FO
                                                    apply_task, default_participant, is_first_meeting,
                                                    mark_evidence, model_view, read_memory, record_quiz_result,
                                                    track_tasks)
-from learning_coach.service.pipeline.texts import (NOTES_OFFER, QUIZ_PICTURE_LINK, RESEARCH_NOTES, RESPONSE_VERSION,
-                                                   STEP_QUESTION, VISUAL_FAILED, VISUAL_FAILED_REASON,
-                                                   VISUAL_FAILURE_REASONS, VISUAL_LINK, question, render_question)
+from learning_coach.service.pipeline.texts import (NOTES_OFFER, QUIZ_PICTURE_LINK, RECORDS_OFF_AFTER_PRACTICE,
+                                                   RESEARCH_NOTES, RESPONSE_VERSION, STEP_QUESTION, VISUAL_FAILED,
+                                                   VISUAL_FAILED_REASON, VISUAL_FAILURE_REASONS, VISUAL_LINK,
+                                                   question, render_question)
 from learning_coach.service.ports import CallPhase, Role
 from learning_coach.service.visual_generation import VisualGenerationService
 
@@ -528,8 +529,11 @@ def kept_direct_answer(head) -> bool:
 
 
 def offer_notes_after_practice(output, memory_enabled) -> bool:
-    """A practice set is done: the reply ends; with records on, it asks once whether to compile notes."""
+    """A practice set is done: the reply ends. With records on, it asks once whether
+    to compile notes; with records off, it says the answers were not saved."""
     output["next_step"] = question(NOTES_OFFER) if memory_enabled else None
+    if not memory_enabled:
+        output["message"] += "\n\n" + RECORDS_OFF_AFTER_PRACTICE
     return memory_enabled
 
 

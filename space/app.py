@@ -647,15 +647,28 @@ def run_combined(port: int) -> None:
     @fastapi_app.post("/turn")
     async def turn(request: FastAPIRequest):
         payload = await request.json()
-        if not TURN_LIMIT.take():
-            return JSONResponse(status_code=200, content={
-                "conversation": None, "text": LIMIT_TEXT, "options": []})
         if "learning_action" in payload:
+            # Reading, switching, retrying and editing records run no model; only
+            # compiling notes does, so only that counts toward the daily limit.
+            action = payload["learning_action"]
+            if isinstance(action, dict) and action.get("action") == "compile" and not TURN_LIMIT.take():
+                return JSONResponse(content={"learning_protocol": 1, "ok": False, "message": LIMIT_TEXT,
+                                             "conversation": payload.get("conversation")})
             try:
                 result = await asyncio.to_thread(space_proxy.learning_action, payload.get("conversation"), payload["learning_action"])
                 return JSONResponse(content=result)
             except Exception as error:
                 return JSONResponse(status_code=502, content={"error": proxy_error(error)})
+        if not TURN_LIMIT.take():
+            # Keep the conversation, so the records already switched on stay with
+            # it; a streaming page gets the notice as its final frame.
+            limited = {"conversation": payload.get("conversation"), "status": "completed",
+                       "error_code": None, "text": LIMIT_TEXT, "options": []}
+            if payload.get("stream"):
+                frame = json.dumps({"done": True, **limited}, ensure_ascii=False)
+                return StreamingResponse(iter([f"data: {frame}\n\n"]), media_type="text/event-stream",
+                                         headers={"Cache-Control": "no-cache"})
+            return JSONResponse(content=limited)
         user_input = str(payload.get("input", "")).strip()
         if not user_input:
             return JSONResponse(status_code=400, content={"error": "empty_input"})

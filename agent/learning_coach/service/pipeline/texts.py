@@ -21,6 +21,8 @@ CONFIRM_DELETE = "确定删除"
 
 # Notes are compiled after a practice set, only when the learner agrees, or on request.
 NOTES_OFFER = "要把这次学的整理成笔记吗？\n1. 整理\n2. 不用"
+# After a practice set while records are off: nothing was saved, and how to save from now on.
+RECORDS_OFF_AFTER_PRACTICE = "这组题的作答没有保存，因为学习记录没开。想保存之后答错的题，可以说“开启记录”。"
 NOTES_REQUEST = ("整理笔记", "帮我整理笔记", "整理一下笔记", "生成笔记", "做笔记", "请帮我整理笔记")
 # Wrong answers are saved when they are graded; asking for them only reports what is saved.
 MISTAKES_REQUEST = ("整理错题", "帮我整理错题", "请帮我整理错题", "错题整理", "看看错题", "看看我的错题", "我的错题")

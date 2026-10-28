@@ -1,5 +1,5 @@
 import { LearningPanels } from "./LearningPanels";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { ChatMessage, Mistake, OptionCard, SessionNotes, SessionSettings, LearningAction, LearningReply } from "../lib/api";
 import { STAGE_OPTIONS, WHO_OPTIONS } from "../lib/api";
 
@@ -82,6 +82,36 @@ interface ChatSceneProps {
 /** 场景 B · 对话：纯色背景，功能菜单（学习工作台/错题集合/学习笔记/设置）。 */
 export function ChatScene(props: ChatSceneProps) {
   const [menu, setMenu] = useState<MenuKey>("workbench");
+  // 学习记录引导：ask 显示卡片；confirmed 显示一行已开启（发下一句时收起）；
+  // dismissed / hidden 本次打开页面不再出现（只在内存里，下次打开页面会再问）。
+  const [guide, setGuide] = useState<"ask" | "confirmed" | "dismissed" | "hidden">("ask");
+  const [guideError, setGuideError] = useState("");
+  useEffect(() => {
+    // 在对话里说“开启记录”或在设置里打开后，卡片不再出现。
+    if (props.settings.recordsOn) setGuide((current) => (current === "ask" ? "hidden" : current));
+  }, [props.settings.recordsOn]);
+
+  const send = (text?: string) => {
+    setGuide((current) => (current === "confirmed" ? "hidden" : current));
+    props.onSend(text);
+  };
+  const enableRecords = async () => {
+    setGuideError("");
+    try {
+      const result = await props.onLearning({ action: "records", enabled: true });
+      if (result.view?.enabled) setGuide("confirmed");
+      else setGuideError(result.message || "这次没有开启成功，请再试一次。");
+    } catch (error) {
+      setGuideError(error instanceof Error ? error.message : "这次没有开启成功，请再试一次。");
+    }
+  };
+  const guideNode =
+    guide === "ask" && !props.settings.recordsOn ? (
+      <RecordsGuide busy={props.thinking} error={guideError} onEnable={() => void enableRecords()}
+        onDismiss={() => setGuide("dismissed")} />
+    ) : guide === "confirmed" && props.settings.recordsOn ? (
+      <p role="status" className="mb-3 text-sm text-moss">已开启学习记录，答错的题会自动保存。</p>
+    ) : null;
 
   const MENU: { key: MenuKey; label: string }[] = [
     { key: "workbench", label: "学习工作台" },
@@ -115,14 +145,15 @@ export function ChatScene(props: ChatSceneProps) {
         </div>
       </header>
 
-      {menu === "workbench" && <Workbench {...props} />}
+      {menu === "workbench" && <Workbench {...props} onSend={send} guide={guideNode} />}
       {(menu === "mistakes" || menu === "notes") && <LearningPanels mode={menu} mistakes={props.mistakes}
         notes={props.notes} enabled={props.settings.recordsOn} busy={props.thinking} message={props.learningMessage}
-        onLearning={props.onLearning} onShowMistakes={() => setMenu("mistakes")} onPractice={text => { setMenu("workbench"); props.onSend(text); }} />}
+        onLearning={props.onLearning} onShowMistakes={() => setMenu("mistakes")} onPractice={text => { setMenu("workbench"); send(text); }} />}
       {menu === "settings" && props.learningMessage && <p role="status" className="px-6 py-2">{props.learningMessage}</p>}
       {menu === "settings" && (
         <SettingsPanel
           settings={props.settings}
+          busy={props.thinking}
           history={props.messages}
           onChange={props.onSettingsChange}
         />
@@ -131,7 +162,7 @@ export function ChatScene(props: ChatSceneProps) {
   );
 }
 
-function Workbench({ messages, options, thinking, input, onInput, onSend, onRetry }: ChatSceneProps) {
+function Workbench({ messages, options, thinking, input, onInput, onSend, onRetry, guide }: ChatSceneProps & { guide: ReactNode }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-4 overflow-y-auto px-6 py-6">
@@ -196,6 +227,7 @@ function Workbench({ messages, options, thinking, input, onInput, onSend, onRetr
         )}
       </div>
       <div className="mx-auto w-full max-w-3xl px-6 pb-6">
+        {guide}
         <div className="flex gap-3">
           <input
             value={input}
@@ -217,16 +249,43 @@ function Workbench({ messages, options, thinking, input, onInput, onSend, onRetr
   );
 }
 
+/** 学习记录没开时，输入框上方的引导卡片。 */
+function RecordsGuide({ busy, error, onEnable, onDismiss }: {
+  busy: boolean; error: string; onEnable: () => void; onDismiss: () => void;
+}) {
+  return (
+    <div className="mb-3 rounded-xl border border-line bg-white px-4 py-3">
+      <p className="font-semibold text-ink">要保存这次的学习记录吗？</p>
+      <p className="mt-1 text-sm leading-relaxed text-muted">
+        开启后，自己做题答错的题会自动存进「错题集合」，讲过的内容可以整理成「学习笔记」。只在这次对话里有效，随时可以在设置里关掉。
+      </p>
+      {error && <p role="alert" className="mt-2 text-sm text-ink">{error}</p>}
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button type="button" onClick={onEnable} disabled={busy}
+          className="rounded-full bg-moss px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">
+          开启学习记录
+        </button>
+        <button type="button" onClick={onDismiss} disabled={busy}
+          className="rounded-full border border-line bg-white px-4 py-2 text-sm text-ink disabled:opacity-50">
+          先不用
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function EmptyHint({ text }: { text: string }) {
   return <p className="px-6 py-10 text-center text-muted">{text}</p>;
 }
 
 function SettingsPanel({
   settings,
+  busy,
   history,
   onChange,
 }: {
   settings: SessionSettings;
+  busy: boolean;
   history: ChatMessage[];
   onChange: (settings: SessionSettings) => void;
 }) {
@@ -269,12 +328,15 @@ function SettingsPanel({
         <label className="flex items-center justify-between rounded-lg border border-line bg-white px-4 py-3">
           <span className="text-sm font-semibold text-ink">保存学习进度</span>
           <span className="flex items-center gap-2">
-            <span className="text-xs text-muted">{settings.recordsOn ? "已开启" : "未开启"}</span>
+            <span className="text-xs text-muted">
+              {busy ? "等这次回复完成后再切换" : settings.recordsOn ? "已开启" : "未开启"}
+            </span>
             <button
               role="switch"
               aria-checked={settings.recordsOn}
+              disabled={busy}
               onClick={() => onChange({ ...settings, recordsOn: !settings.recordsOn })}
-              className={`relative h-6 w-11 rounded-full transition-colors ${
+              className={`relative h-6 w-11 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                 settings.recordsOn ? "bg-moss" : "bg-control"
               }`}
             >
